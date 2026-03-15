@@ -28,7 +28,17 @@ Next, generate the distribution archives (this will create `.tar.gz` and `.whl` 
 python -m build
 ```
 
-Finally, upload the distributions to PyPI (you will need to register an account at pypi.org and generate an API token):
+Finally, upload the distributions to PyPI. To do this, you must first create an account and generate an API token explicitly for `twine`:
+
+1. **Sign up for an account**: Navigate to [PyPI Registration](https://pypi.org/account/register/) to create your free account.
+2. **Setup Two-Factor Authentication**: PyPI requires 2FA to publish packages (using a mobile authenticator app or security key).
+3. **Generate an API Token**: 
+   - Go to your [PyPI Account Settings](https://pypi.org/manage/account/).
+   - Scroll down to the **API tokens** section and click **Add API token**.
+   - Input a token name (e.g., `riskpy-publisher`) and select "Entire account" for scope.
+   - *Save the generated token securely* (it starts with `pypi-`).
+
+4. **Upload the Package**: Run the following command in your terminal. When it prompts for a username, type `__token__`. When it prompts for the password, paste your `pypi-` token.
 ```bash
 twine upload dist/*
 ```
