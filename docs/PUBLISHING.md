@@ -2,7 +2,7 @@
 
 The goal of this project is to be an open-source tool available to any actuary in the world. 
 
-To achieve this, the project has been packaged using `scikit-build-core`, meaning the complex C++ CMake configuration is completely hidden from the end user. They simply need to type `pip install riskpy`.
+To achieve this, the project has been packaged using `scikit-build-core`, meaning the complex C++ CMake configuration is completely hidden from the end user. They simply need to type `pip install open-riskpy`.
 
 ## 1. Publishing to GitHub
 The first step to accessibility is open-sourcing the code so the community can contribute new Actuarial C++ models.
@@ -46,6 +46,6 @@ twine upload dist/*
 ## 3. User Installation
 Once published to PyPI, any actuary, data scientist, or underwriter can install the entire C++ framework on their machine by running:
 ```bash
-pip install riskpy
+pip install open-riskpy
 ```
 *(Note: Because this is a C++ Pybind extension, the user must have a C++ compiler installed on their system, such as GCC, Clang, or MSVC, which is standard on most developer machines).*

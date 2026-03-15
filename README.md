@@ -20,7 +20,7 @@ You write clean, readable pricing rules in Python. We execute them instantly in 
 
 ## Installation
 ```bash
-pip install riskpy
+pip install open-riskpy
 ```
 
 ## Quick Start

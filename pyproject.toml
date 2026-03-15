@@ -3,7 +3,7 @@ requires = ["scikit-build-core>=0.5.0", "pybind11>=2.11.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "riskpy"
+name = "open-riskpy"
 version = "0.1.0"
 description = "A high-performance C++ powered actuarial pricing and underwriting framework."
 readme = "README.md"
