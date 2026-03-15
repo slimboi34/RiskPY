@@ -14,10 +14,19 @@ You write clean, readable pricing rules in Python. We execute them instantly in 
 - **Monte Carlo Predictive Modeling**: Simulate millions of Stochastic Tail Risk scenarios natively in C++ (Lognormal Severities for P&C, Systemic Mortality Shocks for Life) instantly generating predictive Histograms in Tkinter.
 
 ## Documentation
-- **[API Reference](docs/API_REFERENCE.md)**: Complete method-by-method documentation with parameters, return types, and code examples.
-- **[How It Works](docs/HOW_IT_WORKS.md)**: Explore the dual C++ to Python architecture.
-- **[Actuarial Use Cases](docs/USE_CASES.md)**: Real-world insurance pricing scenarios with code.
-- **[Publishing & Accessibility](docs/PUBLISHING.md)**: How to contribute and distribute.
+- **[API Reference](docs/API_REFERENCE.md)**: Complete method-by-method documentation with parameters, return types, and code examples for all 6 classes.
+- **[Tutorials](docs/TUTORIALS.md)**: Step-by-step guides for building auto insurance raters, catastrophe models, life portfolio stress tests, and batch CSV processors.
+- **[Architecture](docs/ARCHITECTURE.md)**: Deep technical dive into the C++/Python bridge, pybind11 internals, algorithm implementations, and CI/CD pipeline.
+- **[How It Works](docs/HOW_IT_WORKS.md)**: High-level overview of the hybrid architecture.
+- **[Use Cases](docs/USE_CASES.md)**: Real-world insurance pricing scenarios with code.
+- **[Publishing Guide](docs/PUBLISHING.md)**: How to contribute and distribute.
+
+## Examples
+Complete, runnable example scripts are included in the [`examples/`](examples/) directory:
+- **[Auto Insurance Rater](examples/auto_insurance_rater.py)** — Full P&C rating engine with territorial, age, vehicle, and claims factors
+- **[Life Annuity Pricing](examples/life_annuity_pricing.py)** — Present value, future value, mortality lookups, and portfolio simulation
+- **[Catastrophe Model](examples/catastrophe_model.py)** — Hurricane risk modeling with 200K+ stochastic scenarios and reinsurance analysis
+- **[Batch Processing](examples/batch_processing.py)** — Process 500 policy submissions from CSV and export to Excel
 
 ## Installation
 ```bash
