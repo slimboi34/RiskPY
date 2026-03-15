@@ -1,0 +1,18 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+_skbuild/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Generated test files
+bulk_quotes.csv
+test_policy_quote.xlsx

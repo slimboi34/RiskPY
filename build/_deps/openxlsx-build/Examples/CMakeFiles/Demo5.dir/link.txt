@@ -1,1 +1,0 @@
-/usr/bin/c++  -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/Demo5.dir/Demo5.cpp.o -o ../../../output/Demo5  ../../../output/libOpenXLSX.a
