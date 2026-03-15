@@ -29,6 +29,10 @@ pybind11_add_module(cpp_underwriter
     src/ActuarialMath.cpp
     src/FactorModel.cpp
     src/MonteCarlo.cpp
+    src/LossTriangle.cpp
+    src/ExperienceRating.cpp
+    src/ExposureRating.cpp
+    src/RateAnalyzer.cpp
 )
 
 target_link_libraries(cpp_underwriter PRIVATE OpenXLSX::OpenXLSX)

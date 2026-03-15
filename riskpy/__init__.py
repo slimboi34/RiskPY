@@ -1,5 +1,16 @@
 from .app import UnderwritingApp
-from .cpp_underwriter import FactorModel, ActuarialMath, RiskEngine, ExcelExporter, Field, MonteCarloSimulator
+from .cpp_underwriter import (
+    FactorModel, 
+    ActuarialMath, 
+    RiskEngine, 
+    ExcelExporter, 
+    Field, 
+    MonteCarloSimulator,
+    LossTriangle,
+    ExperienceRating,
+    ExposureRating,
+    RateAnalyzer,
+)
 
 __all__ = [
     "UnderwritingApp", 
@@ -8,5 +19,9 @@ __all__ = [
     "RiskEngine", 
     "ExcelExporter", 
     "Field",
-    "MonteCarloSimulator"
+    "MonteCarloSimulator",
+    "LossTriangle",
+    "ExperienceRating",
+    "ExposureRating",
+    "RateAnalyzer",
 ]
