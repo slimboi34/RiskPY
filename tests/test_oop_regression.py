@@ -67,13 +67,34 @@ def test_rate_analyzer_oop_baseline():
     assert math.isclose(ra.trend_factor(0.0, 1.0), 1.0)
 
 def test_monte_carlo_oop_baseline():
-    # Simulator with exactly 1 trial
-    sim = engine.MonteCarloSimulator(trials=1)
+    # Simulator with exactly 1 trial and a static seed to ensure determinism!
+    sim = engine.MonteCarloSimulator(trials=1, seed=123)
     
-    # We can't guarantee stochastic behavior bounds easily since it uses a random device
-    # But we can test if it configures without crashing and returns size = 1
+    # We can't guarantee stochastic bounds for lognormal/poisson easily equal exactly 1.0, and 
+    # mock execution testing handles simply that bounds run size=1 cleanly safely
     pc_res = sim.simulate_aggregate_loss(1.0, 1.0, 1.0)
     assert len(pc_res) == 1
 
     life_res = sim.simulate_life_portfolio(1, 1.0, 0.0, 1.0)
     assert len(life_res) == 1
+
+    # Economic Scenario: 
+    # Price = 1.0, drift = 0.0, vol = 0.0, steps = 1
+    # GBM math: price * exp((0 - 0) * 1 + 0) = 1.0 * exp(0) = 1.0
+    econ_res = sim.simulate_economic_path(1.0, 0.0, 0.0, 1)
+    assert math.isclose(econ_res[0], 1.0)
+
+    # Health Simulation:
+    # 1.0 frequency, 1.0 dispersion, 1.0 shape, 1.0 scale
+    # Just mathematically guarantee it can instantiate. (It draws randomly, but shape 1.0/scale 1.0 is exponential)
+    health_res = sim.simulate_health_claims(1.0, 1.0, 1.0, 1.0)
+    assert len(health_res) == 1
+
+    # Catastrophe Simulation:
+    # 0.0 probability -> guarantees NO event -> 0.0
+    cat_res_no = sim.simulate_catastrophe_loss(0.0, 1.0, 1.0)
+    assert math.isclose(cat_res_no[0], 0.0)
+
+    # 1.0 probability -> guarantees event.
+    cat_res_yes = sim.simulate_catastrophe_loss(1.0, 1.0, 1.0)
+    assert len(cat_res_yes) == 1

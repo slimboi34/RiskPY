@@ -53,9 +53,12 @@ PYBIND11_MODULE(cpp_underwriter, m) {
       .def("calculate", &FactorModel::calculate, py::arg("inputs"));
 
   py::class_<MonteCarloSimulator>(m, "MonteCarloSimulator")
-      .def(py::init<int>(), py::arg("trials") = 10000)
+      .def(py::init<int, unsigned int>(), py::arg("trials") = 10000, py::arg("seed") = 0)
       .def("simulate_aggregate_loss", &MonteCarloSimulator::simulate_aggregate_loss, py::arg("expected_frequency"), py::arg("expected_severity_mu"), py::arg("severity_sigma"))
-      .def("simulate_life_portfolio", &MonteCarloSimulator::simulate_life_portfolio, py::arg("policy_count"), py::arg("base_mortality_rate"), py::arg("shock_volatility"), py::arg("death_benefit"));
+      .def("simulate_life_portfolio", &MonteCarloSimulator::simulate_life_portfolio, py::arg("policy_count"), py::arg("base_mortality_rate"), py::arg("shock_volatility"), py::arg("death_benefit"))
+      .def("simulate_economic_path", &MonteCarloSimulator::simulate_economic_path, py::arg("initial_price"), py::arg("drift"), py::arg("volatility"), py::arg("time_steps"))
+      .def("simulate_health_claims", &MonteCarloSimulator::simulate_health_claims, py::arg("expected_frequency"), py::arg("dispersion"), py::arg("severity_shape"), py::arg("severity_scale"))
+      .def("simulate_catastrophe_loss", &MonteCarloSimulator::simulate_catastrophe_loss, py::arg("probability_of_event"), py::arg("pareto_xm"), py::arg("pareto_alpha"));
 
   // ===== NEW ENTERPRISE MODULES =====
 

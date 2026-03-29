@@ -99,17 +99,25 @@ print(f"Priced {success_count} quotes for ${total_book_premium:,.2f} Total Premi
 ```
 
 ### 4. Monte Carlo Simulator
-Blazing fast distributions processed over millions of trials. Safe bounds checking ensures standard deviations and mu limits are never negative.
+Blazing fast distributions processed over millions of trials. Safe bounds checking ensures standard deviations and mu limits are never negative. Now supporting Geometric Brownian Motion, Gamma-Health Claims, and Pareto Catastrophe Modeling!
 
 ```python
 from riskpy import MonteCarloSimulator
 import numpy as np
 
 sim = MonteCarloSimulator(trials=100000)
+
+# Example 1: Property & Casualty Aggregate Loss (Poisson Frequency x Lognormal Severity)
 losses = sim.simulate_aggregate_loss(
     expected_frequency=5.0, expected_severity_mu=10.0, severity_sigma=1.5
 )
-print(f"99% VaR: ${np.percentile(losses, 99):,.0f}")
+print(f"99% P&C VaR: ${np.percentile(losses, 99):,.0f}")
+
+# Example 2: Economic Scenarios (Geometric Brownian Motion) 
+asset_values = sim.simulate_economic_path(
+    initial_price=100.0, drift=0.08, volatility=0.15, time_steps=10
+)
+print(f"Mean Asset Value over 10 Years: ${np.mean(asset_values):,.2f}")
 ```
 
 ### 5. Exposure & Experience Rating
