@@ -5,7 +5,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "open-riskpy"
 version = "0.2.3"
-description = "A high-performance C++ powered actuarial pricing and underwriting framework."
+description = "An Object-Oriented, C++ powered Actuarial Engine featuring Sub-Millisecond Mock-Testable Monte Carlo (GBM, P&C, Life, Health) & P&C Pricing."
 readme = "README.md"
 authors = [
   { name = "Josh", email = "josh@example.com" }
