@@ -3,7 +3,7 @@
 A hyper-fast, C++ powered pricing framework built explicitly for actuaries across all lines of insurance (P&C, Life, Health). Includes a gorgeous desktop GUI, native batch Excel exporting, and sub-millisecond Monte Carlo simulations.
 
 > [!TIP]
-> **New in v0.2.2**: The core Actuarial Math engines have been fully secured with strict bounds checking, mathematical limit validation, and a comprehensive `pytest` TDD suite. The batch processor has also been rebuilt to naturally stream thousands of policy quotes to Excel instantly.
+> **New in v0.2.3**: The core Actuarial Math engines have been fully refactored into a stateful Object-Oriented Hierarchy! Math models are now instantiable configurations reducing duplicated arguments. They have also been secured with strict bounds checking, mathematical limit validation, and a comprehensive `pytest` regression TDD suite. The batch processor continues to naturally stream thousands of policy quotes to Excel instantly.
 
 ## The Painkiller
 Currently, actuaries are forced to write complex, slow `if/else` ladders in Python or rely on clunky Excel spreadsheets to process rating models and massive stochastic simulations. `RiskPY` solves this by providing a declarative, high-performance C++ backend combined with a gorgeous built-in Desktop UI.
@@ -105,9 +105,9 @@ Blazing fast distributions processed over millions of trials. Safe bounds checki
 from riskpy import MonteCarloSimulator
 import numpy as np
 
-losses = MonteCarloSimulator.simulate_aggregate_loss(
-    trials=100000, expected_frequency=5.0,
-    expected_severity_mu=10.0, severity_sigma=1.5
+sim = MonteCarloSimulator(trials=100000)
+losses = sim.simulate_aggregate_loss(
+    expected_frequency=5.0, expected_severity_mu=10.0, severity_sigma=1.5
 )
 print(f"99% VaR: ${np.percentile(losses, 99):,.0f}")
 ```
@@ -119,20 +119,20 @@ Complete P&C specific mathematical paradigms.
 from riskpy import ExperienceRating, ExposureRating
 
 # NCCI Workers' Comp Mod Calculation
-emf = ExperienceRating.experience_mod_factor(
-    actual_losses=800000, expected_losses=1000000, ballast=0.3
-)
+# Configure the model parameters once
+er = ExperienceRating(k_parameter=1082.0, ballast=0.3)
+emf = er.experience_mod_factor(actual_losses=800000, expected_losses=1000000)
 
 # ILF Pareto Curve (for Excess Layers)
-ilf = ExposureRating.increased_limits_factor(
-    base_limit=100000, target_limit=1000000, b_parameter=0.6
-)
+# Establish the layer characteristics
+layer = ExposureRating(base_limit=100000, b_parameter=0.6)
+ilf = layer.increased_limits_factor(target_limit=1000000)
 ```
 
 ---
 
 ## TDD & Security Assurances
-In version `0.2.2`, we migrated to a strict **Test-Driven Development (TDD)** environment utilizing `pytest`.
+In version `0.2.3`, we migrated to a strict **Test-Driven Development (TDD)** environment utilizing `pytest` including a full OOP baseline regression sequence.
 
 - **Division By Zero**: Eradicated. Functions like `RateAnalyzer.required_rate_change` mathematically secure denominator safety against 0 and NaN.
 - **Negative Bounds Validation**: Functions natively intercept impossible physical geometries (e.g. passing a negative claim count to `ExperienceRating.calculate_credibility`).
