@@ -16,3 +16,4 @@ Thumbs.db
 # Generated test files
 bulk_quotes.csv
 test_policy_quote.xlsx
+venv/
