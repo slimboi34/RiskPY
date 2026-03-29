@@ -49,6 +49,8 @@ class UnderwritingApp:
     def calculate_batch(self, csv_filepath, output_filename="batch_policy_quotes.xlsx"):
         total_premium = 0.0
         success_count = 0
+        batch_inputs = []
+        batch_premiums = []
         with open(csv_filepath, mode='r') as file:
             reader = csv.DictReader(file)
             for row in reader:
@@ -59,10 +61,13 @@ class UnderwritingApp:
                     except ValueError:
                         parsed_inputs[k] = str(v)
                 
-                total_premium += self.engine.execute(parsed_inputs)
+                prem = self.engine.execute(parsed_inputs)
+                batch_inputs.append(parsed_inputs)
+                batch_premiums.append(prem)
+                total_premium += prem
                 success_count += 1
                 
-        self.engine.export_to_excel(output_filename)
+        self.engine.export_batch_to_excel(output_filename, batch_inputs, batch_premiums)
         return total_premium, success_count
 
     def _render_simulation_tab(self, parent):

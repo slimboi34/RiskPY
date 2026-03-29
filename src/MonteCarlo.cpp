@@ -1,8 +1,13 @@
 #include "MonteCarlo.hpp"
 #include <random>
 #include <numeric>
+#include <stdexcept>
 
 std::vector<double> MonteCarloSimulator::simulate_aggregate_loss(int trials, double expected_frequency, double expected_severity_mu, double severity_sigma) {
+    if (trials <= 0) throw std::invalid_argument("Trials must be positive");
+    if (expected_frequency < 0.0) throw std::invalid_argument("Expected frequency cannot be negative");
+    if (severity_sigma <= 0.0) throw std::invalid_argument("Severity sigma must be strictly positive");
+    
     std::vector<double> results(trials, 0.0);
     
     // Seed the random number engine
@@ -26,6 +31,11 @@ std::vector<double> MonteCarloSimulator::simulate_aggregate_loss(int trials, dou
 }
 
 std::vector<double> MonteCarloSimulator::simulate_life_portfolio(int trials, int policy_count, double base_mortality_rate, double shock_volatility, double death_benefit) {
+    if (trials <= 0) throw std::invalid_argument("Trials must be positive");
+    if (policy_count < 0) throw std::invalid_argument("Policy count cannot be negative");
+    if (base_mortality_rate < 0.0 || base_mortality_rate > 1.0) throw std::invalid_argument("Base mortality rate must be between 0 and 1");
+    if (shock_volatility < 0.0) throw std::invalid_argument("Shock volatility cannot be negative");
+    if (death_benefit < 0.0) throw std::invalid_argument("Death benefit cannot be negative");
     std::vector<double> results(trials, 0.0);
     
     std::mt19937 generator(1337);

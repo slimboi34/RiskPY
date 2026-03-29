@@ -21,6 +21,7 @@ public:
 
   double execute(const std::map<std::string, DynamicField>& inputs);
   void export_to_excel(const std::string &filename);
+  void export_batch_to_excel(const std::string &filename, const std::vector<std::map<std::string, DynamicField>>& batch_inputs, const std::vector<double>& batch_premiums);
 
 private:
   std::vector<Field> fields;

@@ -22,6 +22,11 @@ classifiers = [
     "Topic :: Office/Business :: Financial",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0"
+]
+
 [tool.scikit-build]
 wheel.packages = ["riskpy"]
 cmake.minimum-version = "3.15"

@@ -3,6 +3,11 @@
 #include <numeric>
 
 void LossTriangle::add_origin_year(int year, const std::vector<double>& cumulative_payments) {
+    if (year < 0) throw std::invalid_argument("Origin year cannot be negative");
+    if (cumulative_payments.empty()) throw std::invalid_argument("Cumulative payments cannot be empty");
+    for (double p : cumulative_payments) {
+        if (p < 0.0) throw std::invalid_argument("Cumulative payments cannot be negative");
+    }
     origin_years.push_back(year);
     triangle_data.push_back(cumulative_payments);
 }
@@ -44,7 +49,10 @@ std::vector<double> LossTriangle::get_development_factors() const {
         
         if (sum_curr > 0.0) {
             factors.push_back(sum_next / sum_curr);
+        } else if (sum_curr == 0.0 && sum_next == 0.0) {
+            factors.push_back(1.0);
         } else {
+            // If sum_curr is 0 but sum_next > 0, mathematically infinite. Protect against it.
             factors.push_back(1.0);
         }
     }

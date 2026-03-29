@@ -30,3 +30,11 @@ void RiskEngine::export_to_excel(const std::string &filename) {
     std::cerr << "No exporter attached!" << std::endl;
   }
 }
+
+void RiskEngine::export_batch_to_excel(const std::string &filename, const std::vector<std::map<std::string, DynamicField>>& batch_inputs, const std::vector<double>& batch_premiums) {
+  if (current_exporter) {
+    current_exporter->write_batch_data(filename, batch_inputs, batch_premiums);
+  } else {
+    std::cerr << "No exporter attached!" << std::endl;
+  }
+}

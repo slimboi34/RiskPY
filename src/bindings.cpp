@@ -36,7 +36,8 @@ PYBIND11_MODULE(cpp_underwriter, m) {
       .def("set_math_logic", &RiskEngine::set_math_logic)
       .def("attach_exporter", &RiskEngine::attach_exporter)
       .def("execute", &RiskEngine::execute)
-      .def("export_to_excel", &RiskEngine::export_to_excel);
+      .def("export_to_excel", &RiskEngine::export_to_excel)
+      .def("export_batch_to_excel", &RiskEngine::export_batch_to_excel);
 
   py::class_<ActuarialMath>(m, "ActuarialMath")
       .def_static("present_value", &ActuarialMath::present_value, py::arg("rate"), py::arg("periods"), py::arg("payment"))

@@ -1,5 +1,6 @@
 #include "RateAnalyzer.hpp"
 #include <cmath>
+#include <stdexcept>
 
 double RateAnalyzer::on_level_factor(const std::vector<double>& rate_changes) {
     // On-level factor brings historical premiums to the CURRENT rate level
@@ -18,6 +19,8 @@ double RateAnalyzer::on_level_factor(const std::vector<double>& rate_changes) {
 }
 
 double RateAnalyzer::rate_change_impact(double old_premium, double new_premium) {
+    if (old_premium < 0.0) throw std::invalid_argument("Old premium cannot be negative");
+    if (new_premium < 0.0) throw std::invalid_argument("New premium cannot be negative");
     if (old_premium == 0.0) return 0.0;
     return (new_premium - old_premium) / old_premium;
 }
@@ -27,6 +30,9 @@ double RateAnalyzer::combined_ratio(double loss_ratio, double expense_ratio) {
 }
 
 double RateAnalyzer::required_rate_change(double target_combined_ratio, double current_loss_ratio, double expense_ratio) {
+    if (target_combined_ratio < 0.0) throw std::invalid_argument("Target combined ratio cannot be negative");
+    if (current_loss_ratio < 0.0) throw std::invalid_argument("Current loss ratio cannot be negative");
+    if (expense_ratio < 0.0) throw std::invalid_argument("Expense ratio cannot be negative");
     // Target CR = target_LR + expense_ratio
     // target_LR = target_CR - expense_ratio  
     // If current LR is above target LR, we need a rate increase
@@ -38,6 +44,9 @@ double RateAnalyzer::required_rate_change(double target_combined_ratio, double c
 
 std::vector<double> RateAnalyzer::on_level_premiums(const std::vector<double>& earned_premiums,
                                                      const std::vector<double>& rate_changes) {
+    if (rate_changes.size() > earned_premiums.size()) {
+        throw std::invalid_argument("Rate changes size cannot exceed earned premiums size");
+    }
     // Bring all historical premiums to the current rate level
     // For period i, the on-level factor = product of (1 + rate_change_j) for j = i to n-1
     
@@ -70,6 +79,8 @@ double RateAnalyzer::trend_factor(double annual_trend, double years) {
 }
 
 double RateAnalyzer::loss_cost_rate(double incurred_losses, double earned_exposure) {
-    if (earned_exposure <= 0.0) return 0.0;
+    if (incurred_losses < 0.0) throw std::invalid_argument("Incurred losses cannot be negative");
+    if (earned_exposure < 0.0) throw std::invalid_argument("Earned exposure cannot be negative");
+    if (earned_exposure == 0.0) return 0.0;
     return incurred_losses / earned_exposure;
 }
