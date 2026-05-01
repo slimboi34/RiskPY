@@ -51,7 +51,7 @@ class UnderwritingApp:
         success_count = 0
         batch_inputs = []
         batch_premiums = []
-        with open(csv_filepath, mode='r') as file:
+        with open(csv_filepath, mode='r', newline='') as file:
             reader = csv.DictReader(file)
             for row in reader:
                 parsed_inputs = {}
@@ -105,9 +105,9 @@ class UnderwritingApp:
             freq = float(e_freq.get())
             mu = float(e_mu.get())
             sigma = float(e_sigma.get())
-            
-            # Sub-millisecond C++ execution of 1M scenarios
-            losses = MonteCarloSimulator.simulate_aggregate_loss(trials, freq, mu, sigma)
+
+            sim = MonteCarloSimulator(trials=trials)
+            losses = sim.simulate_aggregate_loss(freq, mu, sigma)
             
             # Rendering
             ax.clear()

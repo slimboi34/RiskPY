@@ -1,5 +1,5 @@
 # headless test for the C++ Underwriting Framework using Wrapper
-from underwriter_app import UnderwritingApp
+from riskpy import UnderwritingApp
 import os
 
 print("Spinning up UnderwritingApp...")

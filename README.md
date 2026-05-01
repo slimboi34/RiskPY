@@ -3,6 +3,8 @@
 A hyper-fast, C++ powered pricing framework built explicitly for actuaries across all lines of insurance (P&C, Life, Health). Includes a gorgeous desktop GUI, native batch Excel exporting, and sub-millisecond Monte Carlo simulations.
 
 > [!TIP]
+> **New in v0.2.4**: Fixes a GUI Monte Carlo dispatch bug (the simulation tab now correctly instantiates a `MonteCarloSimulator` with the user's trial count instead of attempting a static call), repairs a broken headless smoke test, and hardens CSV batch ingestion for cross-platform line endings.
+>
 > **New in v0.2.3**: The core Actuarial Math engines have been fully refactored into a stateful Object-Oriented Hierarchy! Math models are now instantiable configurations reducing duplicated arguments. They have also been secured with strict bounds checking, mathematical limit validation, and a comprehensive `pytest` regression TDD suite. The batch processor continues to naturally stream thousands of policy quotes to Excel instantly.
 
 ## The Painkiller
