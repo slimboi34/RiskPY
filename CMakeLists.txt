@@ -5,6 +5,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Required on Linux/ELF when static deps (miniz/OpenXLSX) are linked into a .so
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(NOT MSVC)
+  # Ensure FetchContent C targets (miniz) also emit PIC objects
+  add_compile_options(-fPIC)
+endif()
+
 # ---------------------------------------------------------------------------
 # Install speed & build stability
 # ---------------------------------------------------------------------------
