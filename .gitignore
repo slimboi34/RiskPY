@@ -1,13 +1,20 @@
 # Build artifacts
 build/
 dist/
+wheelhouse/
 *.egg-info/
 _skbuild/
+.venv/
+venv/
+*.so
+*.pyd
+.eggs/
 
 # Python caches
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 
 # OS artifacts
 .DS_Store
@@ -16,4 +23,5 @@ Thumbs.db
 # Generated test files
 bulk_quotes.csv
 test_policy_quote.xlsx
-venv/
+test_batch_input.csv
+test_batch_quotes.xlsx

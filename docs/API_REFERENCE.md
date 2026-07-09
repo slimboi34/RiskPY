@@ -13,6 +13,9 @@ pip install open-riskpy
 - [FactorModel](#factormodel) — Declarative multiplicative rating engine
 - [MonteCarloSimulator](#montecarlosimulator) — Stochastic simulation engine
 - [ActuarialMath](#actuarialmath) — Core actuarial formulas
+- [LossTriangle](#losstriangle) — Chain ladder reserving
+- [RateAnalyzer](#rateanalyzer) — On-level & indicated rate change
+- [FourierTransform](#fouriertransform) — FFT & compound-Poisson PMF
 - [UnderwritingApp](#underwritingapp) — Interactive GUI application
 - [RiskEngine](#riskengine) — Low-level C++ calculation orchestrator
 - [ExcelExporter](#excelexporter) — Binary Excel output engine
@@ -361,6 +364,89 @@ app.run()
 | Parameter | Type | Description |
 |---|---|---|
 | `export_filename` | `str` | Default filename for single-quote Excel exports. Default: `"policy_quote.xlsx"` |
+
+---
+
+## LossTriangle
+
+Chain-ladder development factors, ultimate losses, and IBNR reserves.
+
+```python
+from riskpy import LossTriangle
+
+t = LossTriangle()
+t.add_origin_year(2020, [1000.0, 1500.0, 1800.0, 2000.0])
+t.add_origin_year(2021, [1200.0, 1800.0, 2160.0])
+print(t.get_development_factors())
+print(t.get_ultimate_losses())
+print(t.get_ibnr_reserves())
+```
+
+| Method | Returns | Description |
+|---|---|---|
+| `add_origin_year(year, cumulative_payments)` | `None` | Append an origin year row (finite, non-negative) |
+| `get_development_factors()` | `list[float]` | Weighted age-to-age LDFs |
+| `get_ultimate_losses()` | `list[float]` | Ultimate per origin year |
+| `get_ibnr_reserves()` | `list[float]` | Ultimate − latest diagonal (≥ 0) |
+| `get_origin_year_count()` | `int` | Number of origin years |
+| `get_development_period_count()` | `int` | Max development periods |
+
+---
+
+## RateAnalyzer
+
+On-level premiums, trend, combined ratio, and indicated rate change.
+
+```python
+from riskpy import RateAnalyzer
+
+ra = RateAnalyzer(target_combined_ratio=1.0, expense_ratio=0.30)
+print(ra.required_rate_change(0.84))          # 0.20
+print(ra.on_level_premiums([100, 110], [0.05, 0.0]))
+print(ra.trend_factor(0.05, 2.0))
+```
+
+| Method | Description |
+|---|---|
+| `on_level_factor(rate_changes)` | Product of `(1 + change)` |
+| `on_level_premiums(earned_premiums, rate_changes)` | Bring historical EP to current rate level (O(n)) |
+| `rate_change_impact(old_premium, new_premium)` | `(new/old) - 1` |
+| `combined_ratio(loss_ratio)` | LR + expense ratio |
+| `required_rate_change(current_loss_ratio)` | Indicated rate change to hit target CR |
+| `permissible_loss_ratio()` | Target CR − expense ratio |
+| `trend_factor(annual_trend, years)` | `(1 + trend)^years` |
+| `loss_cost_rate(incurred_losses, earned_exposure)` | Pure premium |
+
+---
+
+## FourierTransform
+
+Analytic Fourier utilities for aggregate-loss modeling (no Monte Carlo sampling error for the compound-Poisson PMF).
+
+```python
+from riskpy import FourierTransform
+
+re, im = FourierTransform.fft([1.0, 2.0, 3.0, 4.0], [0.0, 0.0, 0.0, 0.0])
+back_re, back_im = FourierTransform.ifft(re, im)
+
+conv = FourierTransform.convolve([1.0, 2.0, 3.0], [4.0, 5.0])
+
+# Compound Poisson: severity always 1 → S ~ Poisson(λ)
+pmf = FourierTransform.compound_poisson_pmf(
+    severity_pmf=[0.0, 1.0],
+    expected_frequency=2.0,
+    grid_size=64,   # power of 2, or 0 for auto
+)
+```
+
+| Method | Description |
+|---|---|
+| `fft(real, imag)` | Forward DFT; zero-pads to next power of 2; empty → empty |
+| `ifft(real, imag)` | Inverse DFT (1/N normalized) |
+| `convolve(a, b)` | Linear convolution, length `len(a)+len(b)-1` |
+| `compound_poisson_pmf(severity_pmf, expected_frequency, grid_size=0)` | Aggregate PMF via FFT; severity auto-normalized |
+
+**Notes:** Inputs must be finite. Severity mass must be positive (auto-normalized to a PMF). Output PMF is re-normalized to sum ≈ 1.
 
 ---
 

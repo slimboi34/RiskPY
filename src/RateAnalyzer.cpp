@@ -4,8 +4,12 @@
 
 RateAnalyzer::RateAnalyzer(double target_combined_ratio, double expense_ratio)
     : target_combined_ratio(target_combined_ratio), expense_ratio(expense_ratio) {
-    if (target_combined_ratio <= 0.0) throw std::invalid_argument("Target combined ratio must be positive");
-    if (expense_ratio < 0.0 || expense_ratio >= 1.0) throw std::invalid_argument("Expense ratio must be between 0 and 1");
+    if (!std::isfinite(target_combined_ratio) || target_combined_ratio <= 0.0) {
+        throw std::invalid_argument("Target combined ratio must be a finite positive number");
+    }
+    if (!std::isfinite(expense_ratio) || expense_ratio < 0.0 || expense_ratio >= 1.0) {
+        throw std::invalid_argument("Expense ratio must be finite and in [0, 1)");
+    }
 }
 
 double RateAnalyzer::on_level_factor(const std::vector<double>& rate_changes) const {
@@ -43,18 +47,18 @@ std::vector<double> RateAnalyzer::on_level_premiums(const std::vector<double>& e
         throw std::invalid_argument("Mismatched arrays: Prem and Rate vectors must be same size");
     }
 
-    std::vector<double> on_leveled;
-    on_leveled.reserve(earned_premiums.size());
+    const std::size_t n = earned_premiums.size();
+    std::vector<double> on_leveled(n, 0.0);
 
     double cumulative_factor = 1.0;
-    for (int i = rate_changes.size() - 1; i >= 0; --i) {
+    for (int i = static_cast<int>(n) - 1; i >= 0; --i) {
         if (rate_changes[i] <= -1.0) throw std::invalid_argument("Rate change cannot be <= -100%");
         if (earned_premiums[i] < 0.0) throw std::invalid_argument("Premium cannot be negative");
-        
-        on_leveled.insert(on_leveled.begin(), earned_premiums[i] * cumulative_factor);
+
+        on_leveled[static_cast<std::size_t>(i)] = earned_premiums[i] * cumulative_factor;
         cumulative_factor *= (1.0 + rate_changes[i]);
     }
-    
+
     return on_leveled;
 }
 

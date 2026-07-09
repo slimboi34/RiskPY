@@ -1,12 +1,17 @@
 [build-system]
-requires = ["scikit-build-core>=0.5.0", "pybind11>=2.11.0"]
+# scikit-build-core injects cmake/ninja as needed — do not list them here.
+requires = [
+    "scikit-build-core>=0.5.0",
+    "pybind11>=2.11.0",
+]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "open-riskpy"
-version = "0.2.5"
-description = "An Object-Oriented, C++ powered Actuarial Engine featuring Sub-Millisecond Mock-Testable Monte Carlo (GBM, P&C, Life, Health) & P&C Pricing."
+version = "0.2.6"
+description = "C++ powered actuarial engine: FactorModel, Monte Carlo, Loss Triangle, Fourier aggregate loss, and batch Excel export."
 readme = "README.md"
+license = { text = "MIT" }
 authors = [
   { name = "Josh", email = "josh@example.com" }
 ]
@@ -14,21 +19,69 @@ requires-python = ">=3.8"
 dependencies = [
     "matplotlib>=3.5.0"
 ]
+keywords = [
+    "actuarial",
+    "insurance",
+    "pricing",
+    "monte-carlo",
+    "reserving",
+    "fft",
+    "pybind11",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: C++",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Office/Business :: Financial",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Development Status :: 4 - Beta",
 ]
+
+[project.urls]
+Homepage = "https://github.com/slimboi34/RiskPY"
+Repository = "https://github.com/slimboi34/RiskPY"
+Documentation = "https://github.com/slimboi34/RiskPY#readme"
+Issues = "https://github.com/slimboi34/RiskPY/issues"
+Changelog = "https://github.com/slimboi34/RiskPY/blob/main/RELEASE_NOTES.md"
+"PyPI" = "https://pypi.org/project/open-riskpy/"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0"
+    "pytest>=7.0.0",
+    "build>=1.0.0",
+]
+gui = [
+    # Tkinter ships with most CPython builds; declared for documentation clarity.
 ]
 
 [tool.scikit-build]
 wheel.packages = ["riskpy"]
-cmake.minimum-version = "3.15"
+cmake.version = ">=3.15"
 cmake.build-type = "Release"
-cmake.args = ["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]
+# Policy floor for older dep CMakeLists (OpenXLSX).
+# Do not hard-force -G Ninja here — scikit-build-core selects Ninja when available,
+# which keeps Windows (MSVC) and constrained CI images working.
+cmake.args = [
+    "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+]
+# Isolate native build artifacts for fast rebuilds / editable installs.
+build-dir = "build/{wheel_tag}"
+build.verbose = false
+install.strip = true
+# redirect mode without auto-rebuild: import never shells out to cmake
+# (avoids FileNotFoundError when cmake is not on PATH after a wheel build).
+editable.mode = "redirect"
+editable.rebuild = false
+editable.verbose = false
+
+[tool.cibuildwheel]
+build-verbosity = 1
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,4 +1,5 @@
 #include "LossTriangle.hpp"
+#include <cmath>
 #include <stdexcept>
 #include <numeric>
 
@@ -6,7 +7,9 @@ void LossTriangle::add_origin_year(int year, const std::vector<double>& cumulati
     if (year < 0) throw std::invalid_argument("Origin year cannot be negative");
     if (cumulative_payments.empty()) throw std::invalid_argument("Cumulative payments cannot be empty");
     for (double p : cumulative_payments) {
-        if (p < 0.0) throw std::invalid_argument("Cumulative payments cannot be negative");
+        if (!std::isfinite(p) || p < 0.0) {
+            throw std::invalid_argument("Cumulative payments must be finite and non-negative");
+        }
     }
     origin_years.push_back(year);
     triangle_data.push_back(cumulative_payments);
@@ -35,7 +38,8 @@ std::vector<double> LossTriangle::get_development_factors() const {
     if (n_periods <= 1) return {};
     
     std::vector<double> factors;
-    
+    factors.reserve(static_cast<std::size_t>(n_periods - 1));
+
     for (int d = 0; d < n_periods - 1; ++d) {
         double sum_next = 0.0;
         double sum_curr = 0.0;
@@ -84,13 +88,12 @@ std::vector<double> LossTriangle::get_ultimate_losses() const {
     for (int i = 0; i < n_years; ++i) {
         int latest_col = static_cast<int>(triangle_data[i].size()) - 1;
         double latest_value = triangle_data[i][latest_col];
-        
-        // Apply cumulative development factor from latest column to ultimate
-        double cdf_remaining = 1.0;
-        for (int d = latest_col; d < n_periods - 1 && d < static_cast<int>(dev_factors.size()); ++d) {
-            cdf_remaining *= dev_factors[d];
-        }
-        
+
+        // O(1) lookup into precomputed cumulative factors from latest column to ultimate
+        double cdf_remaining = (latest_col >= 0 && latest_col < n_periods)
+                                   ? cum_factors[latest_col]
+                                   : 1.0;
+
         ultimates[i] = latest_value * cdf_remaining;
     }
     

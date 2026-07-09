@@ -15,7 +15,7 @@ void ExcelExporter::map_column(const std::string &col, const std::string &field_
 void ExcelExporter::write_data(const std::string &filename, const std::map<std::string, DynamicField>& inputs,
                                double premium) {
   XLDocument doc;
-  doc.create(filename);
+  doc.create(filename, XLForceOverwrite);
   auto wks = doc.workbook().worksheet("Sheet1");
 
   // Write Headers based on mapping
@@ -45,7 +45,7 @@ void ExcelExporter::write_data(const std::string &filename, const std::map<std::
 void ExcelExporter::write_batch_data(const std::string &filename, const std::vector<std::map<std::string, DynamicField>>& batch_inputs,
                                      const std::vector<double>& batch_premiums) {
   XLDocument doc;
-  doc.create(filename);
+  doc.create(filename, XLForceOverwrite);
   auto wks = doc.workbook().worksheet("Sheet1");
 
   // Write Headers based on mapping

@@ -2,6 +2,7 @@
 #include "ExperienceRating.hpp"
 #include "ExposureRating.hpp"
 #include "FactorModel.hpp"
+#include "FourierMath.hpp"
 #include "LossTriangle.hpp"
 #include "MonteCarlo.hpp"
 #include "RateAnalyzer.hpp"
@@ -97,4 +98,11 @@ PYBIND11_MODULE(cpp_underwriter, m) {
       .def("permissible_loss_ratio", &RateAnalyzer::permissible_loss_ratio)
       .def("trend_factor", &RateAnalyzer::trend_factor, py::arg("annual_trend"), py::arg("years"))
       .def("loss_cost_rate", &RateAnalyzer::loss_cost_rate, py::arg("incurred_losses"), py::arg("earned_exposure"));
+
+  py::class_<FourierTransform>(m, "FourierTransform")
+      .def_static("fft", &FourierTransform::fft, py::arg("real"), py::arg("imag"))
+      .def_static("ifft", &FourierTransform::ifft, py::arg("real"), py::arg("imag"))
+      .def_static("convolve", &FourierTransform::convolve, py::arg("a"), py::arg("b"))
+      .def_static("compound_poisson_pmf", &FourierTransform::compound_poisson_pmf,
+                  py::arg("severity_pmf"), py::arg("expected_frequency"), py::arg("grid_size") = 0);
 }

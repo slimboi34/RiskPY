@@ -3,7 +3,7 @@
 
 void RiskEngine::add_field(const Field &field) { fields.push_back(field); }
 
-std::vector<Field> RiskEngine::get_fields() const { return fields; }
+const std::vector<Field>& RiskEngine::get_fields() const { return fields; }
 
 void RiskEngine::set_math_logic(std::function<double(const std::map<std::string, DynamicField>&)> logic) {
   math_logic = logic;

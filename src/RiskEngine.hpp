@@ -14,7 +14,7 @@ public:
   RiskEngine() = default;
 
   void add_field(const Field &field);
-  std::vector<Field> get_fields() const;
+  const std::vector<Field>& get_fields() const;
 
   void set_math_logic(std::function<double(const std::map<std::string, DynamicField>&)> logic);
   void attach_exporter(ExcelExporter *exporter);
