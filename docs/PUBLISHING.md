@@ -105,9 +105,9 @@ twine upload dist/*
 ## End-user install
 
 ```bash
-pip install open-riskpy
-# upgrade
-pip install -U open-riskpy
+pip install open-riskpy              # core C++ APIs (no heavy deps)
+pip install "open-riskpy[gui]"       # + matplotlib/numpy for GUI charts
+pip install -U open-riskpy           # upgrade
 ```
 
 From source (needs C++17 + CMake):
