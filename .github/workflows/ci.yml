@@ -84,11 +84,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install .
       - name: Headless import must succeed
+        # Run outside the repo so the local source tree cannot shadow the install
+        working-directory: ${{ runner.temp }}
         run: |
           python - <<'PY'
           import riskpy
           from riskpy import FactorModel, FourierTransform, MonteCarloSimulator
           assert riskpy.__version__
-          print("headless OK", riskpy.__version__)
+          print("headless OK", riskpy.__version__, riskpy.__file__)
           # UnderwritingApp may or may not load; import of package itself must not crash
           PY

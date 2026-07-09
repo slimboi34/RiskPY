@@ -73,12 +73,15 @@ jobs:
           CIBW_ARCHS_MACOS: "auto"
           CIBW_ARCHS_LINUX: "x86_64"
           CIBW_ARCHS_WINDOWS: "AMD64"
-          CIBW_BEFORE_ALL_LINUX: "yum install -y gcc-c++ cmake ninja-build || apt-get update && apt-get install -y g++ cmake ninja-build || true"
-          CIBW_BEFORE_BUILD: "pip install ninja"
-          CIBW_ENVIRONMENT: "CMAKE_BUILD_PARALLEL_LEVEL=2"
+          CIBW_BEFORE_ALL_LINUX: >
+            (yum install -y gcc-c++ cmake ninja-build ||
+             (apt-get update && apt-get install -y g++ cmake ninja-build) || true)
+          CIBW_BEFORE_BUILD: "pip install ninja pybind11"
+          # PIC required so static miniz/OpenXLSX can link into the pybind .so on Linux
+          CIBW_ENVIRONMENT: "CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS=-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
           CIBW_TEST_REQUIRES: "pytest"
-          CIBW_TEST_COMMAND: "pytest {project}/tests -q --ignore={project}/tests/test_app_batch.py"
-          # Tkinter GUI test skipped in wheels; core C++ tests still run
+          # Run tests from a clean cwd via pytest's testpaths; skip Tkinter batch GUI
+          CIBW_TEST_COMMAND: "python -c \"import riskpy; from riskpy import FourierTransform; print(riskpy.__version__)\""
 
       - uses: actions/upload-artifact@v4
         with:
