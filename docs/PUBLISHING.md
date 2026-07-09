@@ -47,9 +47,7 @@ Already: `https://github.com/slimboi34/RiskPY` · default branch `main`.
    - **Owner:** `slimboi34`
    - **Repository:** `RiskPY`
    - **Workflow name:** `publish.yml`
-   - **Environment name:** `pypi`
-4. In GitHub → **Settings → Environments → New environment** named exactly `pypi`  
-   (optional protection rules / required reviewers).
+   - **Environment name:** *(leave blank — the workflow does not use a GitHub Environment)*
 
 OIDC (`id-token: write`) in `.github/workflows/publish.yml` does the rest.
 
