@@ -1,12 +1,24 @@
-import tkinter as tk
-from tkinter import ttk, filedialog
 import csv
-import numpy as np
 
-import matplotlib
-matplotlib.use("TkAgg")
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog
+except ImportError as exc:  # pragma: no cover
+    raise ImportError(
+        "UnderwritingApp requires Tkinter. Install a Python build with Tk support."
+    ) from exc
+
+try:
+    import numpy as np
+    import matplotlib
+    matplotlib.use("TkAgg")
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.figure import Figure
+except ImportError as exc:  # pragma: no cover
+    raise ImportError(
+        "UnderwritingApp GUI charts require matplotlib and numpy. "
+        "Install with: pip install 'open-riskpy[gui]'"
+    ) from exc
 
 from .cpp_underwriter import RiskEngine, ExcelExporter, Field, FactorModel, ActuarialMath, MonteCarloSimulator
 

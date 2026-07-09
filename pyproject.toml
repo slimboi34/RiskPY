@@ -16,9 +16,10 @@ authors = [
   { name = "Josh", email = "josh@example.com" }
 ]
 requires-python = ">=3.8"
-dependencies = [
-    "matplotlib>=3.5.0"
-]
+# Core C++ APIs have zero hard Python deps — keeps wheels lightweight and
+# manylinux installs free of Pillow/jpeg build headaches. GUI charts pull
+# matplotlib via the optional [gui] extra.
+dependencies = []
 keywords = [
     "actuarial",
     "insurance",
@@ -56,7 +57,8 @@ dev = [
     "build>=1.0.0",
 ]
 gui = [
-    # Tkinter ships with most CPython builds; declared for documentation clarity.
+    "matplotlib>=3.5.0",
+    "numpy>=1.20.0",
 ]
 
 [tool.scikit-build]

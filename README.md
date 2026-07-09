@@ -31,10 +31,14 @@ pmf = FourierTransform.compound_poisson_pmf([0.0, 1.0], expected_frequency=2.0, 
 pip install open-riskpy
 # upgrade
 pip install -U open-riskpy
+
+# Optional GUI charts (Monte Carlo plots)
+pip install "open-riskpy[gui]"
 ```
 
 Pre-built wheels are published for common platforms. From source you need a **C++17** compiler and CMake (pulled automatically by the build backend when missing).
 
+Core install has **no heavy Python deps** (matplotlib is optional via `[gui]`).  
 `import riskpy` is **headless-safe** (no Tkinter required). The GUI (`UnderwritingApp`) loads only when you use it.
 
 ---

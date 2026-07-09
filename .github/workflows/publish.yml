@@ -79,9 +79,8 @@ jobs:
           CIBW_BEFORE_BUILD: "pip install ninja pybind11"
           # PIC required so static miniz/OpenXLSX can link into the pybind .so on Linux
           CIBW_ENVIRONMENT: "CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS=-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
-          CIBW_TEST_REQUIRES: "pytest"
-          # Run tests from a clean cwd via pytest's testpaths; skip Tkinter batch GUI
-          CIBW_TEST_COMMAND: "python -c \"import riskpy; from riskpy import FourierTransform; print(riskpy.__version__)\""
+          # Smoke-test the installed wheel only (no matplotlib/Pillow in manylinux)
+          CIBW_TEST_COMMAND: "python -c \"import riskpy; from riskpy import FourierTransform, FactorModel; print(riskpy.__version__)\""
 
       - uses: actions/upload-artifact@v4
         with:
