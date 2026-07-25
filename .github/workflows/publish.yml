@@ -198,7 +198,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          find staging -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp -n {} dist/ \;
+          # Artifact names are unique per build, so a plain copy is enough; `cp -n`
+          # emits a portability warning per file and buries the listing.
+          find staging -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
           ls -lh dist/
           test -n "$(find dist -name '*.tar.gz' -print -quit)" || { echo "::error::no sdist"; exit 1; }
           test "$(find dist -name '*.whl' | wc -l)" -ge 1 || { echo "::error::no wheels"; exit 1; }
@@ -248,7 +250,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          find staging -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp -n {} dist/ \;
+          find staging -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
           {
             printf 'Install:\n\n```bash\npip install -U open-riskpy==%s\n```\n\n' "$VERSION"
             printf 'Full notes: [RELEASE_NOTES.md](https://github.com/%s/blob/main/RELEASE_NOTES.md)\n' "$GITHUB_REPOSITORY"
