@@ -1,21 +1,25 @@
 [build-system]
 # scikit-build-core injects cmake/ninja as needed — do not list them here.
 requires = [
-    "scikit-build-core>=0.5.0",
-    "pybind11>=2.11.0",
+    "scikit-build-core>=0.10.0",
+    "pybind11>=2.12.0",
 ]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "open-riskpy"
-version = "0.2.6"
+version = "0.2.7"
 description = "C++ powered actuarial engine: FactorModel, Monte Carlo, Loss Triangle, Fourier aggregate loss, and batch Excel export."
 readme = "README.md"
-license = { text = "MIT" }
+# PEP 639 SPDX expression (metadata 2.4) — replaces the deprecated table form.
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-  { name = "Josh", email = "josh@example.com" }
+  { name = "Josh Harty", email = "jharty1999@gmail.com" }
 ]
-requires-python = ">=3.8"
+# Matches the wheels we actually ship (cp310–cp314). Previously ">=3.8", which
+# made pip on 3.8/3.9 fall through to an sdist build that needs a C++ toolchain.
+requires-python = ">=3.10"
 # Core C++ APIs have zero hard Python deps — keeps wheels lightweight and
 # manylinux installs free of Pillow/jpeg build headaches. GUI charts pull
 # matplotlib via the optional [gui] extra.
@@ -35,8 +39,8 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: C++",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Office/Business :: Financial",
     "Intended Audience :: Financial and Insurance Industry",
@@ -81,8 +85,25 @@ editable.mode = "redirect"
 editable.rebuild = false
 editable.verbose = false
 
+# ---------------------------------------------------------------------------
+# Wheel matrix. Lives here (not in the workflow) so `pipx run cibuildwheel`
+# locally builds exactly what CI builds.
+# ---------------------------------------------------------------------------
 [tool.cibuildwheel]
+build = ["cp310-*", "cp311-*", "cp312-*", "cp313-*", "cp314-*"]
+# The cp*- patterns above still match 32-bit and musl variants, so exclude them
+# here: no OpenXLSX toolchain story on either.
+skip = ["*-win32", "*_i686", "*-musllinux_*"]
 build-verbosity = 1
+# cmake + ninja are injected into the isolated build env by scikit-build-core,
+# and manylinux_2_28 already ships a C++17 compiler — no yum/apt shims needed.
+environment = { CMAKE_BUILD_PARALLEL_LEVEL = "2", CMAKE_ARGS = "-DCMAKE_POSITION_INDEPENDENT_CODE=ON" }
+# Import-only test: manylinux has no matplotlib/Tk, so exercise the C++ core.
+test-command = "python -c \"import riskpy; from riskpy import FactorModel, FourierTransform, LossTriangle, MonteCarloSimulator; print(riskpy.__version__)\""
+
+[tool.cibuildwheel.macos]
+# Oldest macOS the arm64/x86_64 wheels claim support for.
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0", CMAKE_BUILD_PARALLEL_LEVEL = "3", CMAKE_ARGS = "-DCMAKE_POSITION_INDEPENDENT_CODE=ON" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

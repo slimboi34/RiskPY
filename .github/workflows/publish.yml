@@ -1,30 +1,86 @@
 name: Publish to PyPI
 
-# Super simple release path:
-#   1. Bump version in pyproject.toml
-#   2. git tag v0.2.6 && git push origin v0.2.6
-#   3. This workflow builds sdist (+ wheels) and uploads via Trusted Publishing
+# Release path is one command:
 #
-# One-time PyPI setup (Trusted Publisher):
+#   make release          # bumps nothing — tags v$(version from pyproject) and pushes
+#
+# Pushing the tag runs this workflow, which:
+#   1. guard        — refuses to build if the tag disagrees with pyproject version
+#   2. build-sdist  — builds the sdist AND installs from it (proves it is self-contained)
+#   3. build-wheels — cp310–cp314 on linux/x86_64, macos/arm64, windows/AMD64  (required)
+#   4. build-wheels-extra — linux/aarch64, macos/x86_64                       (best effort)
+#   5. publish      — twine check --strict, then PyPI via Trusted Publishing + attestations
+#   6. github-release — publishes the GitHub Release with all artifacts attached
+#
+# The wheel matrix itself lives in pyproject.toml [tool.cibuildwheel] so that
+# `pipx run cibuildwheel` locally reproduces CI exactly.
+#
+# One-time PyPI setup (Trusted Publisher) — no API tokens:
 #   https://pypi.org/manage/project/open-riskpy/settings/publishing/
-#   Owner: slimboi34  Repo: RiskPY  Workflow: publish.yml  Environment: pypi
+#   Owner: slimboi34  Repo: RiskPY  Workflow: publish.yml  Environment: (blank)
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
+      publish_pypi:
+        description: "Upload to PyPI (off = build and check only)"
+        type: boolean
+        default: false
       publish_testpypi:
-        description: "Also publish to TestPyPI"
+        description: "Upload to TestPyPI instead"
         type: boolean
         default: false
 
 permissions:
   contents: read
 
+# Never let two releases of the same tag race each other to PyPI.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # Fail in seconds, not after a 15-minute wheel matrix, if the tag is wrong.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Check tag matches version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: v
+        name: Compare tag to pyproject version
+        run: |
+          set -euo pipefail
+          version=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "pyproject version: $version"
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            echo "git tag:           ${GITHUB_REF_NAME}"
+            if [ "$tag" != "$version" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject version ${version}."
+              exit 1
+            fi
+          fi
+
+          if curl -sf "https://pypi.org/pypi/open-riskpy/$version/json" >/dev/null; then
+            echo "::warning::open-riskpy $version is already on PyPI — upload will be skipped (skip-existing)."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # A broken sdist is the classic "works in CI, breaks for users on ARM" bug,
+  # so build it and then actually install from it.
+  # ---------------------------------------------------------------------------
   build-sdist:
     name: Build sdist
+    needs: guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,93 +89,175 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install build tools
+      - name: Install build tooling
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends g++ cmake ninja-build
-          python -m pip install --upgrade pip build
+          python -m pip install --upgrade pip build twine
 
       - name: Build sdist
         run: python -m build --sdist
 
+      - name: Install from the sdist and smoke-import
+        # Run from a temp dir so the source tree cannot shadow the install.
+        run: |
+          set -euo pipefail
+          python -m pip install dist/*.tar.gz
+          cd "$RUNNER_TEMP"
+          python -c "import riskpy; from riskpy import FactorModel, FourierTransform; print('sdist OK', riskpy.__version__, riskpy.__file__)"
+
+      - name: twine check
+        run: twine check --strict dist/*
+
       - uses: actions/upload-artifact@v4
         with:
-          name: sdist
+          name: dist-sdist
           path: dist/*.tar.gz
 
+  # ---------------------------------------------------------------------------
+  # Required wheels — a failure here blocks the release.
+  # ---------------------------------------------------------------------------
   build-wheels:
-    name: Wheels (${{ matrix.os }})
+    name: Wheels ${{ matrix.label }}
+    needs: guard
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - { os: ubuntu-latest,  arch: x86_64, label: "linux/x86_64" }
+          - { os: macos-latest,   arch: arm64,  label: "macos/arm64" }
+          - { os: windows-latest, arch: AMD64,  label: "windows/AMD64" }
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU (manylinux aarch64 optional skip)
-        if: runner.os == 'Linux'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: all
-        continue-on-error: true
-
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.22.0
+        uses: pypa/cibuildwheel@v4.1.1
         env:
-          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
-          CIBW_SKIP: "*-win32 *-manylinux_i686 *-musllinux_* pp*"
-          CIBW_ARCHS_MACOS: "auto"
-          CIBW_ARCHS_LINUX: "x86_64"
-          CIBW_ARCHS_WINDOWS: "AMD64"
-          CIBW_BEFORE_ALL_LINUX: >
-            (yum install -y gcc-c++ cmake ninja-build ||
-             (apt-get update && apt-get install -y g++ cmake ninja-build) || true)
-          CIBW_BEFORE_BUILD: "pip install ninja pybind11"
-          # PIC required so static miniz/OpenXLSX can link into the pybind .so on Linux
-          CIBW_ENVIRONMENT: "CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS=-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
-          # Smoke-test the installed wheel only (no matplotlib/Pillow in manylinux)
-          CIBW_TEST_COMMAND: "python -c \"import riskpy; from riskpy import FourierTransform, FactorModel; print(riskpy.__version__)\""
+          CIBW_ARCHS: ${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}
+          name: dist-wheels-${{ matrix.arch }}-${{ matrix.os }}
           path: wheelhouse/*.whl
 
-  publish:
-    name: Upload to PyPI
-    needs: [build-sdist, build-wheels]
-    runs-on: ubuntu-latest
-    # Note: Trusted Publisher on PyPI should list workflow "publish.yml".
-    # Environment name is optional; omit it so the job is not stuck queued.
-    permissions:
-      id-token: write  # Trusted Publishing (OIDC) — no API token secret needed
-      contents: read
+  # ---------------------------------------------------------------------------
+  # Extra architectures. Best effort: these are a bonus for users, not a reason
+  # to hold back a release, so the job is allowed to fail without blocking.
+  # linux/aarch64 uses a native ARM runner (free on public repos) — QEMU
+  # emulation would take hours to build OpenXLSX five times.
+  # ---------------------------------------------------------------------------
+  build-wheels-extra:
+    name: Wheels ${{ matrix.label }} (best effort)
+    needs: guard
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04-arm, arch: aarch64, label: "linux/aarch64" }
+          - { os: macos-latest,     arch: x86_64,  label: "macos/x86_64 (cross)" }
 
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v4.1.1
+        env:
+          CIBW_ARCHS: ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-wheels-${{ matrix.arch }}-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Upload to PyPI
+    needs: [guard, build-sdist, build-wheels]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Trusted Publishing (OIDC) — no API token secret
+      contents: read
+    steps:
+      # Collects dist-sdist + every dist-wheels-* that succeeded, including
+      # best-effort ones, into a single flat directory.
       - uses: actions/download-artifact@v4
         with:
-          path: dist
+          pattern: dist-*
+          path: staging
           merge-multiple: true
 
-      - name: Show artifacts
-        run: |
-          mkdir -p upload
-          find dist -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} upload/ \;
-          ls -lah upload/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: actions/setup-python@v5
         with:
-          packages-dir: upload/
-          skip-existing: true
-          verbose: true
+          python-version: "3.12"
 
-      - name: Publish to TestPyPI (optional)
+      - name: Collect and verify artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find staging -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp -n {} dist/ \;
+          ls -lh dist/
+          test -n "$(find dist -name '*.tar.gz' -print -quit)" || { echo "::error::no sdist"; exit 1; }
+          test "$(find dist -name '*.whl' | wc -l)" -ge 1 || { echo "::error::no wheels"; exit 1; }
+          python -m pip install --upgrade twine
+          twine check --strict dist/*
+          echo "### Artifacts for ${{ needs.guard.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          (cd dist && ls -1) | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish to TestPyPI
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_testpypi }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: upload/
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
+          verbose: true
+
+      - name: Publish to PyPI
+        # Tag pushes always publish; manual runs must opt in.
+        if: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish_pypi) }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+          attestations: true
+          verbose: true
+
+  # ---------------------------------------------------------------------------
+  github-release:
+    name: GitHub Release
+    needs: [guard, publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: staging
+          merge-multiple: true
+
+      - name: Publish release with artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find staging -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp -n {} dist/ \;
+          {
+            printf 'Install:\n\n```bash\npip install -U open-riskpy==%s\n```\n\n' "$VERSION"
+            printf 'Full notes: [RELEASE_NOTES.md](https://github.com/%s/blob/main/RELEASE_NOTES.md)\n' "$GITHUB_REPOSITORY"
+          } > notes.md
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/* \
+              --title "RiskPY ${GITHUB_REF_NAME}" \
+              --notes-file notes.md \
+              --verify-tag
+          fi

@@ -4,7 +4,7 @@
 #   make build     → sdist + wheel
 #   make release   → tag + push (triggers PyPI workflow)
 
-.PHONY: help install test build clean smoke release check
+.PHONY: help install test build clean smoke release check wheels
 
 PYTHON ?= python3
 PKG    := open-riskpy
@@ -46,14 +46,21 @@ clean:
 check: install test smoke
 	@echo "All checks passed for $(PKG) $(VERSION)"
 
-# Creates git tag vX.Y.Z and pushes it + main. GitHub Release / workflow_dispatch
-# publish.yml then uploads to PyPI via Trusted Publishing.
+# Creates git tag vX.Y.Z and pushes it + main. The tag push is the only trigger
+# needed: publish.yml builds sdist + wheels, uploads to PyPI via Trusted
+# Publishing, and creates the GitHub Release with all artifacts attached.
 release:
 	@echo "Releasing $(PKG) v$(VERSION)"
 	@test -z "$$(git status --porcelain)" || (echo "Working tree not clean — commit first"; exit 1)
+	@if git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null; then \
+	  echo "Tag v$(VERSION) already exists — bump version in pyproject.toml"; exit 1; \
+	fi
 	git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
 	git push origin main
 	git push origin "v$(VERSION)"
-	@echo "Tag v$(VERSION) pushed. Create a GitHub Release from the tag to publish to PyPI:"
-	@echo "  gh release create v$(VERSION) --generate-notes"
-	@echo "Or: Actions → Publish to PyPI → Run workflow"
+	@echo "Tag v$(VERSION) pushed — Actions will build, publish to PyPI, and cut the GitHub Release."
+	@echo "  Watch: gh run watch \$$(gh run list -w 'Publish to PyPI' -L1 --json databaseId -q '.[0].databaseId')"
+
+# Dry run of the exact wheel matrix CI uses (config lives in pyproject.toml).
+wheels:
+	pipx run cibuildwheel==4.1.1 --output-dir wheelhouse

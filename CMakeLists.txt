@@ -46,12 +46,15 @@ include(FetchContent)
 
 # Prefer an already-installed pybind11 (venv/system/cibuildwheel) to skip a git clone.
 set(PYBIND11_FINDPYTHON ON)
-find_package(pybind11 2.11 CONFIG QUIET)
+find_package(pybind11 2.12 CONFIG QUIET)
 if(NOT pybind11_FOUND)
+  # Fallback only; normally satisfied by build-system.requires. Kept in step
+  # with that floor so Python 3.13/3.14 builds work without a pip-installed
+  # pybind11 (2.11 predates 3.13 support).
   FetchContent_Declare(
     pybind11
     GIT_REPOSITORY https://github.com/pybind/pybind11.git
-    GIT_TAG        v2.11.1
+    GIT_TAG        v3.0.4
     GIT_SHALLOW    TRUE
   )
   FetchContent_MakeAvailable(pybind11)

@@ -13,22 +13,49 @@ This repo uses **scikit-build-core** + **GitHub Actions Trusted Publishing** so 
 ## Super-short path (maintainers)
 
 ```bash
-# 1. Land work on main
-git add -A && git commit -m "feat: ..." && git push origin main
+# 1. Bump [project].version in pyproject.toml + add a RELEASE_NOTES.md entry
+# 2. Land it on main
+git add -A && git commit -m "release: v0.2.7" && git push origin main
 
-# 2. Bump version in pyproject.toml (already done for a release branch/commit)
-# 3. Tag + push + open a GitHub Release
+# 3. Tag + push — this is the whole release
 make release
-gh release create v0.2.6 --generate-notes
 
-# 4. Wait for Actions → "Publish to PyPI" (green)
-# 5. Verify
+# 4. Verify
 pip install -U open-riskpy
 python -c "import riskpy; print(riskpy.__version__)"
 ```
 
-`make release` tags `vX.Y.Z` from `pyproject.toml` and pushes `main` + the tag.  
-Creating the **GitHub Release** (or running the workflow manually) triggers PyPI upload.
+`make release` tags `vX.Y.Z` from `pyproject.toml` and pushes `main` + the tag.
+**The tag push is the only trigger.** It builds the sdist and wheels, uploads to
+PyPI via Trusted Publishing, and creates the GitHub Release with every artifact
+attached. There is no manual `gh release create` step.
+
+To rehearse without uploading: **Actions → Publish to PyPI → Run workflow**,
+leaving `publish_pypi` off. That builds and runs every check, uploading nothing.
+
+---
+
+## Pre-publish gates
+
+The workflow refuses to upload a broken release. In order:
+
+| Gate | Catches |
+|------|---------|
+| `guard` — tag vs `pyproject` version | Tagging `v0.2.8` with `version = "0.2.7"`. Fails in seconds, before the wheel matrix runs. |
+| `guard` — PyPI version probe | Warns when the version is already published (upload would be a no-op). |
+| sdist install + import from a temp dir | An sdist missing `src/` or `CMakeLists.txt` — the classic "wheels fine, source install broken" bug. |
+| `twine check --strict` | Malformed README/metadata that PyPI would reject *after* a 15-minute build. |
+| cibuildwheel `test-command` | A wheel that builds but cannot import its own C++ extension. |
+
+### Wheel coverage
+
+| Job | Targets | Blocks release? |
+|-----|---------|-----------------|
+| `build-wheels` | linux/x86_64, macos/arm64, windows/AMD64 — cp310–cp314 | **Yes** |
+| `build-wheels-extra` | linux/aarch64 (native ARM runner), macos/x86_64 (cross) | No — best effort |
+
+The matrix itself lives in `pyproject.toml` under `[tool.cibuildwheel]`, so CI
+and local builds cannot drift. Reproduce it locally with `make wheels`.
 
 ---
 
@@ -62,8 +89,8 @@ Add a second trusted publisher against `test.pypi.org`, then:
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| **CI** (`.github/workflows/ci.yml`) | push/PR to `main` | Build + `pytest` on Ubuntu/macOS × Python 3.10–3.12; headless import check |
-| **Publish** (`.github/workflows/publish.yml`) | GitHub Release published, or manual dispatch | Build **sdist** + **wheels** (cibuildwheel: Linux/macOS/Windows) → upload to PyPI |
+| **CI** (`.github/workflows/ci.yml`) | push/PR to `main` | Build + `pytest` on Ubuntu/macOS/Windows × Python 3.10–3.13; headless import check |
+| **Publish** (`.github/workflows/publish.yml`) | push of a `v*` tag, or manual dispatch | Verify → **sdist** + **cp310–cp314 wheels** → PyPI (Trusted Publishing + attestations) → GitHub Release |
 
 Wheels mean end users usually **do not need a C++ compiler**. Source installs still work when a compiler is available.
 

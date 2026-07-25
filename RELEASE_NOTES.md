@@ -1,3 +1,72 @@
+# RiskPY v0.2.7 — Release Notes
+
+**Release date:** 2026-07-25  
+**Type:** Packaging + release-pipeline release  
+**Install:** `pip install -U open-riskpy`
+
+---
+
+## TL;DR
+
+Correct package metadata, wheels for **Python 3.14** and **Linux aarch64**, and a
+release pipeline that verifies what it ships before it ships it. No API changes —
+upgrading is safe.
+
+```bash
+pip install -U open-riskpy
+python -c "import riskpy; print(riskpy.__version__)"
+```
+
+---
+
+## Fixed
+
+- **Broken author metadata.** `pyproject.toml` shipped a literal placeholder
+  (`[EMAIL_ADDRESS]`, no `@`) as the author email. v0.2.6 on PyPI carries it;
+  0.2.7 has a real address.
+- **`requires-python` claimed more than we shipped.** It said `>=3.8` while
+  wheels covered only cp310–cp313, so pip on 3.8/3.9 silently fell through to a
+  source build needing a full C++ toolchain. Now `>=3.10`, matching the wheels.
+- **Stale pybind11 floor.** The CMake `FetchContent` fallback pinned v2.11.1,
+  which predates Python 3.13 support, so a build without a pip-installed
+  pybind11 could not target 3.13/3.14. Floor and fallback are now 2.12 / v3.0.4.
+- **`CMAKE_CXX_COMPILER_LAUNCHER=ccache` was set on all CI platforms**, including
+  the Windows image, which has no ccache.
+
+## Added
+
+- **cp314 wheels** — Python 3.14 is supported and classified.
+- **linux/aarch64 wheels**, built on a native ARM runner rather than QEMU.
+- **macos/x86_64 wheels** (cross-compiled) alongside arm64.
+- **Windows CI** — the platform we ship wheels for is now actually tested.
+- `make wheels` — reproduce the full CI wheel matrix locally.
+
+## Changed
+
+- **Release is one command.** `make release` tags and pushes; the tag push
+  builds, publishes to PyPI, and cuts the GitHub Release with artifacts
+  attached. Previously the tag push did nothing and a GitHub Release had to be
+  created by hand — despite the workflow comments claiming otherwise.
+- **New pre-publish gates**, so a bad release fails before upload, not after:
+  - tag-vs-`pyproject` version check (fails in seconds, not after a 15-min matrix)
+  - the sdist is installed and imported from a temp dir, proving it is self-contained
+  - `twine check --strict` on every artifact
+  - a warning if the version is already on PyPI
+- **Best-effort extra architectures.** linux/aarch64 and macos/x86_64 cannot
+  block a release; core linux/macos/windows wheels still must pass.
+- **cibuildwheel 2.22 → 4.1.1.** Brings `manylinux_2_28`, automatic
+  `delvewheel` DLL bundling on Windows, and `abi3audit` checks. The old
+  `yum || apt` compiler shim is gone — the modern image already has C++17 and
+  scikit-build-core injects cmake/ninja.
+- **Wheel matrix moved into `pyproject.toml`** (`[tool.cibuildwheel]`) so local
+  builds and CI cannot drift apart.
+- **PEP 639 licensing** — `License-Expression: MIT` (metadata 2.4) replaces the
+  deprecated `license = { text = ... }` table.
+- **PyPI attestations** (PEP 740) are now published with each upload.
+- Explicit `MACOSX_DEPLOYMENT_TARGET=11.0` for reproducible macOS wheel tags.
+
+---
+
 # RiskPY v0.2.6 — Release Notes
 
 **Release date:** 2026-07-09  

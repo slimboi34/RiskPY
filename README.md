@@ -21,7 +21,7 @@ pmf = FourierTransform.compound_poisson_pmf([0.0, 1.0], expected_frequency=2.0, 
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **v0.2.6** — FourierTransform, hot-path performance, headless-safe imports, wheels via GitHub Actions → PyPI. See [RELEASE_NOTES.md](RELEASE_NOTES.md).
+> **v0.2.7** — corrected package metadata, wheels for Python 3.14 and Linux aarch64, and a self-verifying release pipeline. See [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ---
 
@@ -131,19 +131,20 @@ total, n = app.calculate_batch("book.csv", "quotes.xlsx")
 
 ## Releasing to GitHub + PyPI (maintainers)
 
-One-time: configure [PyPI Trusted Publishing](https://pypi.org/manage/project/open-riskpy/settings/publishing/) for this repo (`publish.yml`, environment `pypi`). Details in [docs/PUBLISHING.md](docs/PUBLISHING.md).
+One-time: configure [PyPI Trusted Publishing](https://pypi.org/manage/project/open-riskpy/settings/publishing/) for this repo (workflow `publish.yml`, no environment name). Details in [docs/PUBLISHING.md](docs/PUBLISHING.md).
 
 ```bash
 # After merging to main and bumping version in pyproject.toml:
-make release
-gh release create v0.2.6 --generate-notes
-# Actions → "Publish to PyPI" builds wheels + sdist and uploads
+make release   # tags vX.Y.Z and pushes — that is the whole release
 ```
+
+The tag push builds the sdist and wheels, verifies them, uploads to PyPI, and
+cuts the GitHub Release with artifacts attached.
 
 | Workflow | When | What |
 |----------|------|------|
-| **CI** | every push/PR to `main` | build + pytest (Linux/macOS) |
-| **Publish** | GitHub Release / manual | wheels + sdist → PyPI |
+| **CI** | every push/PR to `main` | build + pytest on Linux/macOS/Windows, Python 3.10–3.13 |
+| **Publish** | push of a `v*` tag (or manual) | verify → sdist + cp310–cp314 wheels → PyPI → GitHub Release |
 
 ---
 
@@ -153,7 +154,7 @@ gh release create v0.2.6 --generate-notes
 |------|--------|
 | C++17 compiler | Apple Clang, GCC ≥ 9, MSVC 2019+ |
 | CMake ≥ 3.15 | Injected by the build backend if needed |
-| Python ≥ 3.8 | 3.10+ recommended |
+| Python ≥ 3.10 | Prebuilt wheels ship for 3.10–3.14 |
 | Ninja / ccache | Optional; speeds CI and local rebuilds |
 
 ```bash
