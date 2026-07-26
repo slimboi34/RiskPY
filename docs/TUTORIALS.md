@@ -88,7 +88,7 @@ A desktop window opens with two tabs:
 1. **Pricing & Rating** — Fill in the form, click "Calculate Profile", get a premium, and export to Excel
 2. **Monte Carlo Predictor** — Run stochastic simulations on your portfolio
 
-**Full working example**: See [`examples/auto_insurance_rater.py`](../examples/auto_insurance_rater.py)
+**Full working example**: See [`examples/auto_insurance_rater.py`](https://github.com/slimboi34/RiskPY/blob/main/examples/auto_insurance_rater.py)
 
 ---
 
@@ -143,7 +143,7 @@ print(f"99.5% VaR (1-in-200):  ${np.percentile(results, 99.5):,.0f}")
 
 The **99.5th percentile** is your 1-in-200 year loss — the amount regulators require you to hold as capital.
 
-**Full working example**: See [`examples/catastrophe_model.py`](../examples/catastrophe_model.py)
+**Full working example**: See [`examples/catastrophe_model.py`](https://github.com/slimboi34/RiskPY/blob/main/examples/catastrophe_model.py)
 
 ---
 
@@ -173,7 +173,7 @@ results = MonteCarloSimulator.simulate_life_portfolio(
 
 A shock factor of 1.5 represents a 50% increase in mortality (pandemic scenario). A shock factor of 0.8 represents a mild year.
 
-**Full working example**: See [`examples/life_annuity_pricing.py`](../examples/life_annuity_pricing.py)
+**Full working example**: See [`examples/life_annuity_pricing.py`](https://github.com/slimboi34/RiskPY/blob/main/examples/life_annuity_pricing.py)
 
 ---
 
@@ -203,4 +203,4 @@ print(f"Processed {count} policies. Total: ${total_premium:,.2f}")
 
 The C++ engine reads each row, applies all `FactorModel` rules, calculates the premium, and writes the result directly to a binary Excel file using the OpenXLSX C++ library — completely bypassing Python's GIL.
 
-**Full working example**: See [`examples/batch_processing.py`](../examples/batch_processing.py)
+**Full working example**: See [`examples/batch_processing.py`](https://github.com/slimboi34/RiskPY/blob/main/examples/batch_processing.py)

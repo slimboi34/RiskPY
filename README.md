@@ -1,27 +1,42 @@
 # RiskPY: Enterprise Actuarial Engine 🚀
 
-A hyper-fast, **C++ powered** pricing framework for actuaries (P&C, Life, Health): declarative rating, Monte Carlo, chain-ladder reserving, Fourier aggregate loss, batch Excel export, and an optional desktop GUI.
+A hyper-fast, **C++ powered** pricing framework for actuaries and quants (P&C, Life, Health): declarative rating, Monte Carlo, chain-ladder reserving, Fourier aggregate loss, option pricing, batch Excel export, and an optional desktop GUI.
+
+### 📖 [**Documentation & user manual → slimboi34.github.io/RiskPY**](https://slimboi34.github.io/RiskPY/)
+
+Worked examples, every chart the library produces, and the full API — start there.
 
 ```bash
-pip install open-riskpy
+pip install open-riskpy          # core, zero dependencies
+pip install open-riskpy[sim]     # + the Monte Carlo engine
+pip install open-riskpy[viz]     # + the charts
 ```
 
 ```python
-from riskpy import FactorModel, FourierTransform
+from riskpy.mc import Model, Poisson, LogNormal, Normal
 
-model = FactorModel(1000.0)
-model.add_multiplier("state", "FL", 3.0)
-print(model.calculate({"state": "FL"}))  # 3000.0
+model = Model(
+    claim_count = Poisson(mean=140),
+    severity    = LogNormal.from_moments(mean=18_000, sd=42_000),
+    inflation   = Normal(mean=0.043, sd=0.012),
+)
 
-pmf = FourierTransform.compound_poisson_pmf([0.0, 1.0], expected_frequency=2.0, grid_size=64)
+@model.formula
+def annual_loss(claim_count, severity, inflation):
+    return claim_count * severity * (1 + inflation)
+
+result = model.run(200_000, seed=42)
+print(result.summary())          # mean, VaR, TVaR at every level
+result.plot()                     # distribution with the tail marked
 ```
 
 [![CI](https://github.com/slimboi34/RiskPY/actions/workflows/ci.yml/badge.svg)](https://github.com/slimboi34/RiskPY/actions/workflows/ci.yml)
+[![Docs](https://github.com/slimboi34/RiskPY/actions/workflows/docs.yml/badge.svg)](https://slimboi34.github.io/RiskPY/)
 [![PyPI](https://img.shields.io/pypi/v/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **v0.2.7** — corrected package metadata, wheels for Python 3.14 and Linux aarch64, and a self-verifying release pipeline. See [RELEASE_NOTES.md](RELEASE_NOTES.md).
+> **v0.2.8** — a generic Monte Carlo engine (any formula, any distributions), a six-chart visualisation layer, and a quantitative finance module: Black–Scholes with Greeks and implied vol, GBM and jump-diffusion paths, portfolio VaR/ES, and Heston pricing by Fourier inversion. Plus a [documentation site](https://slimboi34.github.io/RiskPY/). See [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ---
 
@@ -32,7 +47,13 @@ pip install open-riskpy
 # upgrade
 pip install -U open-riskpy
 
-# Optional GUI charts (Monte Carlo plots)
+# The generic Monte Carlo engine (riskpy.mc) — NumPy only
+pip install "open-riskpy[sim]"
+
+# Charts (riskpy.viz) — NumPy + Matplotlib
+pip install "open-riskpy[viz]"
+
+# Optional desktop GUI
 pip install "open-riskpy[gui]"
 ```
 

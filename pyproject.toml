@@ -8,8 +8,8 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "open-riskpy"
-version = "0.2.7"
-description = "C++ powered actuarial engine: FactorModel, Monte Carlo, Loss Triangle, Fourier aggregate loss, and batch Excel export."
+version = "0.2.8"
+description = "C++ powered actuarial and quant engine: generic Monte Carlo, risk visualisation, Black-Scholes and Heston pricing, loss triangles, Fourier aggregate loss, batch Excel export."
 readme = "README.md"
 # PEP 639 SPDX expression (metadata 2.4) — replaces the deprecated table form.
 license = "MIT"
@@ -32,6 +32,12 @@ keywords = [
     "reserving",
     "fft",
     "pybind11",
+    "quantitative-finance",
+    "black-scholes",
+    "heston",
+    "value-at-risk",
+    "risk-management",
+    "simulation",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -50,7 +56,7 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/slimboi34/RiskPY"
 Repository = "https://github.com/slimboi34/RiskPY"
-Documentation = "https://github.com/slimboi34/RiskPY#readme"
+Documentation = "https://slimboi34.github.io/RiskPY/"
 Issues = "https://github.com/slimboi34/RiskPY/issues"
 Changelog = "https://github.com/slimboi34/RiskPY/blob/main/RELEASE_NOTES.md"
 "PyPI" = "https://pypi.org/project/open-riskpy/"
