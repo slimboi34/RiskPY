@@ -1,0 +1,61 @@
+site_name: RiskPY
+site_description: C++ powered actuarial and quantitative risk engine — Monte Carlo, Fourier pricing, loss reserving.
+site_url: https://slimboi34.github.io/RiskPY/
+repo_url: https://github.com/slimboi34/RiskPY
+repo_name: slimboi34/RiskPY
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    # Dark by default, with a toggle — the charts are rendered on a dark
+    # surface, so this is the mode they were designed against.
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: blue
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: blue
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Monte Carlo: monte-carlo.md
+  - Visualisation: visualisation.md
+  - Quant finance: quant.md
+  - Guides:
+      - How it works: HOW_IT_WORKS.md
+      - Tutorials: TUTORIALS.md
+      - Use cases: USE_CASES.md
+      - Architecture: ARCHITECTURE.md
+      - API reference: API_REFERENCE.md
+      - Publishing: PUBLISHING.md
+
+not_in_nav: |
+  generate_gallery.py
