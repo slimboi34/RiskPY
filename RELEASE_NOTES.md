@@ -1,3 +1,137 @@
+# RiskPY v0.2.8 — Release Notes
+
+**Release date:** 2026-07-26  
+**Type:** Feature release — new modules, no breaking changes  
+**Install:** `pip install -U open-riskpy`  
+**Documentation:** <https://slimboi34.github.io/RiskPY/>
+
+---
+
+## TL;DR
+
+Three new pure-Python modules on top of the C++ core, and a documentation site.
+The compiled engine is untouched, `dependencies` is still empty, and nothing
+that worked in 0.2.7 changed — the new layers ship as optional extras.
+
+```bash
+pip install -U open-riskpy          # core, zero dependencies
+pip install -U "open-riskpy[sim]"   # + the Monte Carlo engine
+pip install -U "open-riskpy[viz]"   # + the charts
+```
+
+---
+
+## Added
+
+### `riskpy.mc` — generic Monte Carlo
+
+`MonteCarloSimulator` is fast but fixed: five specific actuarial scenarios, each
+with its own signature. There was no way to say *"here is my formula, here are
+my uncertain inputs, go"*. That is the common case, and it is now the front door.
+
+```python
+from riskpy.mc import Model, Poisson, LogNormal, Normal
+
+model = Model(
+    claim_count = Poisson(mean=140),
+    severity    = LogNormal.from_moments(mean=18_000, sd=42_000),
+    inflation   = Normal(mean=0.043, sd=0.012),
+)
+
+@model.formula
+def annual_loss(claim_count, severity, inflation):
+    return claim_count * severity * (1 + inflation)
+
+result = model.run(200_000, seed=42)
+print(result.summary())
+```
+
+The formula is called **once**, with arrays — 200k trials is one vectorised
+expression, not a Python loop. `vectorised=False` falls back to looping for
+formulas NumPy cannot express.
+
+Fourteen distributions. Two carry alternative constructors because the raw
+parameters are never the ones you have to hand:
+`LogNormal.from_moments(mean, sd)` and
+`NegativeBinomial.from_mean_dispersion(mean, dispersion)`.
+
+`Result` answers what people actually ask of a run: `.var()`, `.tvar()`,
+`.percentile()`, `.prob_above()`, `.standard_error`, `.convergence()`,
+`.sensitivity()`, `.summary()`, `.to_frame()`.
+
+### `riskpy.viz` — six charts, one theme
+
+`distribution`, `exceedance`, `convergence`, `tornado`, `fan`, `compare`. Dark
+by default, light available, both palettes validated for contrast and colour
+vision deficiency. Each returns a Matplotlib `Figure` and none call `show()`, so
+the same call works in a notebook, a script and a test.
+
+### `riskpy.quant` — pricing, Greeks, paths, portfolio risk
+
+Black–Scholes, Greeks and implied volatility are **pure Python** — no NumPy — so
+they work in the lean install beside the C++ core. Greeks come back in the units
+people quote them in: vega per percentage point, theta per calendar day.
+
+Implied vol uses bisection rather than Newton, because vega collapses in the
+wings and Newton diverges exactly where you most want an answer.
+
+With NumPy: `gbm_paths` and `merton_jump_paths` for path simulation,
+`historical_var`, `parametric_var` and `expected_shortfall` for portfolio risk.
+
+`heston_price` prices European options by Fourier inversion of the
+characteristic function — the concrete version of *"the formula is too big to
+solve, so transform it instead of simulating it"*, and the same idea the
+compiled `FourierTransform` already uses for aggregate loss. It uses the "little
+Heston trap" formulation, which keeps the complex logarithm on its principal
+branch; the textbook form is algebraically identical and numerically wrong past
+a couple of years.
+
+### Documentation site
+
+<https://slimboi34.github.io/RiskPY/> — worked examples, every chart the library
+produces, and the full API. The gallery is regenerated from the library on every
+build, so the pictures cannot drift from the code, and a broken module fails the
+docs build rather than publishing a stale screenshot.
+
+---
+
+## Changed
+
+- `Documentation` in the package metadata now points at the site rather than a
+  README anchor. This is the link PyPI renders.
+- Package summary and keywords cover the quant side: Black–Scholes, Heston,
+  value at risk.
+- New `[sim]`, `[viz]` and `[docs]` extras. `[gui]` is unchanged.
+
+---
+
+## Testing
+
+60 new cases across `tests/test_mc.py` and `tests/test_quant.py`, on top of the
+existing suite. The pricing tests lean on identities rather than only on
+published values, because identities catch classes of error a single reference
+number does not:
+
+- put–call parity, exactly, for both Black–Scholes and Heston
+- every Greek checked as a numerical derivative of the price
+- Heston collapsing to Black–Scholes as vol-of-vol → 0
+- `parametric_var` against the known normal quantile
+- Merton jump-diffusion keeping its drift, which is what the compensator is for
+
+Statistical assertions use fixed seeds and generous tolerances: a test that
+fails once a month teaches people to re-run it, and then they re-run it the day
+it breaks for real.
+
+---
+
+## Upgrading
+
+Nothing to do. No API changed, no dependency was added to the core install. The
+new modules import lazily, so `import riskpy` on a machine with no NumPy behaves
+exactly as it did in 0.2.7.
+
+---
+
 # RiskPY v0.2.7 — Release Notes
 
 **Release date:** 2026-07-25  
