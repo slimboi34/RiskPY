@@ -52,12 +52,26 @@ __all__ = [
     "ExposureRating",
     "RateAnalyzer",
     "FourierTransform",
+    # Pure-Python layers, lazily imported below.
+    "mc",
+    "viz",
+    "quant",
     "__version__",
 ]
 
+# Submodules resolved on first attribute access rather than imported here.
+# riskpy.mc and riskpy.viz depend on NumPy and Matplotlib, which are optional
+# extras — importing them eagerly would make `import riskpy` fail on a lean
+# install, which is exactly the property the zero-dependency core exists to
+# protect.
+_LAZY_SUBMODULES = {"mc", "viz", "quant"}
+
 
 def __getattr__(name: str) -> Any:
-    """Lazy-load the Tkinter GUI so headless imports never require _tkinter."""
+    """Lazy-load optional submodules and the Tkinter GUI."""
+    if name in _LAZY_SUBMODULES:
+        return importlib.import_module(f".{name}", __name__)
+
     if name == "UnderwritingApp":
         try:
             from .app import UnderwritingApp as _UnderwritingApp

@@ -64,6 +64,22 @@ gui = [
     "matplotlib>=3.5.0",
     "numpy>=1.20.0",
 ]
+# riskpy.mc — the generic Monte Carlo engine. NumPy only: it vectorises the
+# formula across trials, which is what makes 100k trials a single expression.
+sim = [
+    "numpy>=1.20.0",
+]
+# riskpy.viz — the plotting layer. Implies sim, since every chart takes a Result.
+viz = [
+    "matplotlib>=3.5.0",
+    "numpy>=1.20.0",
+]
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.5.0",
+    "matplotlib>=3.5.0",
+    "numpy>=1.20.0",
+]
 
 [tool.scikit-build]
 wheel.packages = ["riskpy"]
