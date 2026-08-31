@@ -8,7 +8,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "open-riskpy"
-version = "0.2.8"
+version = "0.2.9"
 description = "C++ powered actuarial and quant engine: generic Monte Carlo, risk visualisation, Black-Scholes and Heston pricing, loss triangles, Fourier aggregate loss, batch Excel export."
 readme = "README.md"
 # PEP 639 SPDX expression (metadata 2.4) — replaces the deprecated table form.

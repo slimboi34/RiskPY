@@ -1,3 +1,16 @@
+# RiskPY v0.2.9 — Release Notes
+
+**Release date:** 2026-08-31  
+**Type:** Maintenance re-release — no functional changes  
+**Install:** `pip install -U open-riskpy`  
+**Documentation:** <https://slimboi34.github.io/RiskPY/>
+
+v0.2.9 is functionally identical to v0.2.8. There are no source changes; the
+artifacts are simply rebuilt and republished with the current toolchain. There
+is no need to upgrade, and nothing changes if you do.
+
+---
+
 # RiskPY v0.2.8 — Release Notes
 
 **Release date:** 2026-07-26  
