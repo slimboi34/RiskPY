@@ -1,3 +1,210 @@
+# RiskPY v0.3.0 — Release Notes
+
+**Release date:** 2026-09-12  
+**Type:** Feature release — four new fields of risk, a rewritten simulation engine, and a verification suite. One important fix.  
+**Install:** `pip install -U open-riskpy`  
+**Documentation:** <https://slimboi34.github.io/RiskPY/>
+
+---
+
+## TL;DR
+
+RiskPY grows from a Monte Carlo engine with a quant module into a general risk
+and actuarial library. Four new modules — **life contingencies**, **claims
+reserving**, **interest rates** and **credit risk** — sit beside a rewritten
+`riskpy.mc` whose twenty distributions now carry a full analytic layer, draw
+Latin hypercube samples, and accept rank correlations. The chart library goes
+from six charts to twenty-two. And every identity the library claims is now
+checked by `riskpy.verify` — 125 checks against closed forms, published
+tables and independent routes — on every push, nightly, and on the docs site.
+
+The compiled core is untouched. `dependencies` is still empty. Nothing that
+worked in 0.2.9 changed its result, with one exception below that was wrong
+before and is right now.
+
+```bash
+pip install -U open-riskpy          # core, zero dependencies
+pip install -U "open-riskpy[sim]"   # + NumPy
+pip install -U "open-riskpy[viz]"   # + Matplotlib
+```
+
+---
+
+## Fixed
+
+### `quant.heston_price` returned the wrong price
+
+The Fourier inversion evaluated the characteristic function of the log
+*return* but used `log(K)` where it needed log-moneyness `log(K/S)`. At the
+textbook parameters (`S = K = 100`) the price came back as roughly zero
+instead of 8.93. The identity test that should have caught it — Heston
+collapsing to Black–Scholes as vol-of-vol goes to zero — was in the suite and
+was failing; it is now green, and the same identity is in the verification
+suite so it cannot regress quietly.
+
+### The examples did not run
+
+`examples/catastrophe_model.py`, `examples/life_annuity_pricing.py` and three
+documentation pages still called `MonteCarloSimulator.simulate_aggregate_loss(trials=…)`
+as a static method, an API that changed in 0.2.4. They now construct the
+simulator, and both examples run as part of checking this release.
+
+### Smaller
+
+- `Result.convergence()` started its running variance at one trial, where
+  the sample variance is undefined, so the first band half-width was zero. It
+  now starts at two and uses the unbiased estimator.
+- `quant._normal_quantile` was Acklam's approximation on its own (relative
+  error 1e-9). It now delegates to the new full-precision `norm_ppf`, which
+  also tightened `parametric_var` and the reserving lognormal percentile.
+- The light-mode chart palette failed the 3:1 contrast check on three
+  colours. They are re-stepped; both palettes now pass all six categorical
+  checks.
+
+---
+
+## Added
+
+### `riskpy.life` — life contingencies
+
+Pure Python, no NumPy. `LifeTable` from rates, from survivors, from Gompertz
+or Makeham parameters, from an arbitrary force of mortality, or the AMLCR
+Standard Ultimate Life Table. Every insurance and annuity present value —
+whole life, term, pure endowment, endowment, deferred, increasing, mthly by
+Woolhouse — with a `continuous=True` UDD adjustment. Net and gross premiums,
+prospective reserves and reserve profiles, joint-life and last-survivor
+statuses, commutation functions.
+
+It reproduces the printed values in Dickson, Hardy & Waters to their printed
+precision: `ä_40 = 18.4578`, `A_40 = 0.12106`, `l_100 = 6248.17`.
+
+### `riskpy.reserving` — claims reserving
+
+`Triangle` (ragged lists or NaN arrays, cumulative or incremental),
+`chain_ladder` with volume, simple or regression averages and a tail,
+`mack_chain_ladder` with process and parameter standard errors,
+`bornhuetter_ferguson`, `cape_cod`, `expected_claims`, an England–Verrall ODP
+`bootstrap_chain_ladder` whose result wraps as a `riskpy.mc.Result`, and
+`fit_tail`. The GenIns triangle ships as `reserving.genins()`.
+
+On GenIns it reproduces R's `ChainLadder` exactly: reserve 18,680,856, Mack
+total standard error 2,447,095.
+
+### `riskpy.rates` — interest rates
+
+Discounting conventions and conversions; `YieldCurve` with linear or
+log-linear interpolation, built directly, by bootstrap from par rates, or
+parametrically (Nelson–Siegel, Svensson — which keep their formula, so the
+limits hold exactly); `Bond` with price, yield, Macaulay and modified
+duration, convexity, DV01, curve pricing and z-spread; Vasicek and CIR
+closed-form bonds and curves, exact-transition Vasicek paths and
+full-truncation CIR paths.
+
+The CIR bond uses a `log1p` arrangement of the closed form that stays exact
+as `σ → 0`; the textbook arrangement loses every digit below `σ ≈ 10⁻⁶`.
+
+### `riskpy.credit` — credit risk
+
+Expected and unexpected loss; `merton` (equity as a call on assets, distance
+to default, spread); hazard rates, the credit triangle, CDS legs and par
+spreads; the Vasicek / ASRF loss distribution, Basel asset correlations and
+IRB capital (reproducing the BCBS table: 92.32% risk weight for PD 1%, LGD
+45%); a one-factor Gaussian copula `credit_portfolio_loss` returning a
+`Result`; `TransitionMatrix` with powers and cumulative default
+probabilities, and a realistic S&P-style matrix to start from.
+
+### `riskpy.mc` — rewritten
+
+- **An analytic layer on every distribution**: `pdf`, `cdf`, `ppf`,
+  `moments()` and `support()`, vectorised, scalar in → scalar out. Quantiles
+  are accurate to around 1e-10 relative or better everywhere and to machine
+  precision in the extreme tails — the upper tail inverts the survival
+  function rather than the CDF, and heavy-shape betas and gammas whose lower
+  quantiles sit near 1e-35 are seeded from the series expansion.
+- **Six new distributions**: `Weibull`, `StudentT`, `Categorical`,
+  `Mixture`, `Truncated`, and `Gamma.from_moments` /
+  `LogNormal.from_median_cv` constructors.
+- **Latin hypercube sampling**: `run(..., sampling="lhs")`. Same marginal,
+  the noise on the mean cut by a factor of two to three.
+- **Rank correlation**: `model.correlate("a", "b", 0.7)` or
+  `simulate(..., correlation=...)`, imposed by Iman–Conover so the marginals
+  are untouched. Jointly impossible correlations are rejected with the
+  smallest eigenvalue named. `correlation_matrix()` and `iman_conover()` are
+  public.
+- **A copula hook**: `simulate(..., copula=obj)` for any object with `.dim`
+  and `.uniforms(n, rng)`.
+- **`Result` additions**: `median`, `skewness`, `kurtosis`, `cdf`,
+  `percentiles`, `histogram`, `exceedance_curve`, `describe`,
+  `sensitivity(method="pearson" | "contribution")`, `__len__`; quantile
+  queries sort once and cache.
+- **`Model` additions**: `correlate`, `sample`, `sweep` (re-run with one
+  input swapped, same seed for every scenario).
+
+### `riskpy.viz` — twenty-two charts
+
+New: `density`, `cdf`, `qq`, `dashboard`, `spread`, `correlation`, `scatter`,
+`triangle`, `development`, `reserve_range`, `survival`, `mortality`,
+`reserve_profile`, `curve`, `allocation`, `waterfall`. Every chart is
+factored so `dashboard` can draw into panels. Tick labels are compact
+(`8.1m`, not `8,091,985`), `distribution` clips a heavy tail at the 99.9th
+percentile and counts what it clipped, and direct labels de-collide with
+leader lines. The palettes carry sequential and diverging ramps; both modes
+pass the six categorical checks.
+
+### `riskpy._special` — dependency-free special functions
+
+Incomplete gamma and beta, the normal (with an `erfc` tail good to
+`x ≈ −37`), Student-t and chi-square distributions, the Kolmogorov
+distribution, digamma and trigamma, Brent, bisection, a bounded scalar
+minimiser, Nelder–Mead and Simpson. Validated against SciPy to 1e-14 in the
+tests without SciPy ever being a dependency. Vectorised variants iterate only
+the unconverged points, which is what keeps a 200,000-point beta CDF at 37 ms.
+
+### `riskpy.verify` — the verification suite
+
+`verify.run()` returns a `Report`; `python -m riskpy.verify` and the
+`riskpy-verify` console script print it, with `--bench` for timings and
+`--json` / `--markdown` for machines. Each module contributes checks through
+a `_verification_checks()` hook. It runs in CI on every push, in a new
+nightly `verify.yml` workflow with the SciPy oracle and benchmarks, and the
+docs workflow publishes the report.
+
+---
+
+## Changed
+
+- `Poisson`, `NegativeBinomial`, `Bernoulli` and `Binomial` samples are
+  float arrays (they were integer arrays), so every distribution returns the
+  same dtype and formulas need no casts.
+- `viz.distribution` clips its axis at the 99.9th percentile by default;
+  pass `clip=None` for the full range.
+- The light palette's series colours changed (contrast); the dark palette is
+  as before.
+- The `[dev]` extra now installs NumPy, Matplotlib and SciPy, since the test
+  suite uses all three. `[docs]` requires mkdocs ≥ 1.6.
+- New console script: `riskpy-verify`.
+- Package summary and keywords describe the wider scope.
+
+---
+
+## Testing
+
+341 tests and 125 verification checks. The new tests follow the rule the
+0.2.8 notes set out — identities before reference values — and add an
+external witness where one exists: the special functions, the analytic
+distribution layer and the truncated normal against SciPy; reserving against
+R's `ChainLadder`; life against AMLCR; credit against the BCBS table.
+
+---
+
+## Upgrading
+
+No API was removed. Code written against 0.2.9 runs unchanged, with three
+things worth knowing: Heston prices are now correct, integer-distribution
+samples are floats, and `viz.distribution` clips its axis unless told not to.
+
+---
+
 # RiskPY v0.2.9 — Release Notes
 
 **Release date:** 2026-08-31  

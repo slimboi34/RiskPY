@@ -106,18 +106,17 @@ premium = model.calculate({"state": "CA", "driver_age": 22.0})
 
 ## MonteCarloSimulator
 
-High-performance stochastic simulation engine running natively in C++. All methods are static — no instantiation required.
+High-performance stochastic simulation engine running natively in C++. Construct it with the trial count (and an optional seed), then call the scenario methods.
 
 ### Methods
 
-#### `simulate_aggregate_loss(trials, expected_frequency, expected_severity_mu, severity_sigma)`
+#### `MonteCarloSimulator(trials, seed=0).simulate_aggregate_loss(expected_frequency, expected_severity_mu, severity_sigma)`
 Simulates aggregate insurance losses for Property & Casualty portfolios. Each trial generates a random number of claims (Poisson distributed) with random severity amounts (Lognormal distributed), then sums them.
 
 ```python
 from riskpy import MonteCarloSimulator
 
-results = MonteCarloSimulator.simulate_aggregate_loss(
-    trials=100000,
+results = MonteCarloSimulator(trials=100000).simulate_aggregate_loss(
     expected_frequency=5.0,
     expected_severity_mu=10.0,
     severity_sigma=1.5
@@ -131,7 +130,6 @@ print(f"99% Value-at-Risk: ${var_99:,.0f}")
 
 | Parameter | Type | Description |
 |---|---|---|
-| `trials` | `int` | Number of simulation iterations (e.g., `100000`) |
 | `expected_frequency` | `float` | Average number of claims per period — the λ parameter for Poisson distribution |
 | `expected_severity_mu` | `float` | Mean of the log of severity — the μ parameter for Lognormal distribution |
 | `severity_sigma` | `float` | Standard deviation of the log of severity — the σ parameter for Lognormal distribution |
@@ -142,12 +140,11 @@ print(f"99% Value-at-Risk: ${var_99:,.0f}")
 
 ---
 
-#### `simulate_life_portfolio(trials, policy_count, base_mortality_rate, shock_volatility, death_benefit)`
+#### `MonteCarloSimulator(trials, seed=0).simulate_life_portfolio(policy_count, base_mortality_rate, shock_volatility, death_benefit)`
 Simulates total mortality claims for a life insurance portfolio. Each trial applies a stochastic shock to the base mortality rate, then determines how many policyholders die and calculates total claims.
 
 ```python
-results = MonteCarloSimulator.simulate_life_portfolio(
-    trials=50000,
+results = MonteCarloSimulator(trials=50000).simulate_life_portfolio(
     policy_count=10000,
     base_mortality_rate=0.001,
     shock_volatility=0.2,
@@ -161,7 +158,6 @@ print(f"Expected annual claims: ${expected_claims:,.0f}")
 
 | Parameter | Type | Description |
 |---|---|---|
-| `trials` | `int` | Number of simulation iterations |
 | `policy_count` | `int` | Number of policies in the portfolio |
 | `base_mortality_rate` | `float` | Base probability of death per policyholder per period (e.g., `0.001` = 0.1%) |
 | `shock_volatility` | `float` | Standard deviation of the multiplicative mortality shock (Normal distribution centered at 1.0) |

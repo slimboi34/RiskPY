@@ -1,5 +1,5 @@
 site_name: RiskPY
-site_description: C++ powered actuarial and quantitative risk engine — Monte Carlo, Fourier pricing, loss reserving.
+site_description: Risk and actuarial engine with a C++ core — Monte Carlo, life contingencies, claims reserving, yield curves, credit risk, option pricing, and a verification suite.
 site_url: https://slimboi34.github.io/RiskPY/
 repo_url: https://github.com/slimboi34/RiskPY
 repo_name: slimboi34/RiskPY
@@ -43,19 +43,29 @@ markdown_extensions:
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
+  - pymdownx.snippets:
+      base_path: ["docs"]
+      check_paths: true
 
 nav:
   - Home: index.md
-  - Monte Carlo: monte-carlo.md
-  - Visualisation: visualisation.md
-  - Quant finance: quant.md
-  - Guides:
+  - Modelling:
+      - Monte Carlo: monte-carlo.md
+      - Visualisation: visualisation.md
+      - Quant finance: quant.md
+      - Life contingencies: life.md
+      - Claims reserving: reserving.md
+      - Interest rates: rates.md
+      - Credit risk: credit.md
+  - Verification: verification.md
+  - The compiled core:
       - How it works: HOW_IT_WORKS.md
       - Tutorials: TUTORIALS.md
       - Use cases: USE_CASES.md
       - Architecture: ARCHITECTURE.md
       - API reference: API_REFERENCE.md
-      - Publishing: PUBLISHING.md
+  - Publishing: PUBLISHING.md
 
-not_in_nav: |
+exclude_docs: |
   generate_gallery.py
+  assets/verification.md

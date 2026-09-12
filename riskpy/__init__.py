@@ -1,4 +1,33 @@
-"""RiskPY — high-performance actuarial engine (C++ core + optional Tkinter GUI)."""
+"""RiskPY — a risk and actuarial engine: compiled core, readable Python on top.
+
+Two layers, deliberately separated by what they cost you to install.
+
+The **core** is C++ compiled through pybind11 and has no Python dependencies at
+all: factor rating, loss triangles, Fourier aggregate loss, exposure and
+experience rating, Monte Carlo, Excel export. ``import riskpy`` on a machine
+with nothing else installed works.
+
+The **modelling layers** are ordinary Python you can read, and each is imported
+only when you touch it:
+
+===================  =========================================================
+:mod:`riskpy.mc`     generic Monte Carlo — any formula, any distributions,
+                     rank correlation, Latin hypercube, twenty distributions
+                     with a full analytic layer
+:mod:`riskpy.viz`    the charts, one theme, light and dark
+:mod:`riskpy.quant`  option pricing, Greeks, paths, portfolio risk
+:mod:`riskpy.life`   life contingencies — tables, annuities, premiums, reserves
+:mod:`riskpy.reserving`  claims reserving — chain ladder, Mack, Bornhuetter–
+                     Ferguson, Cape Cod, bootstrap
+:mod:`riskpy.rates`  curves, bonds, durations, short-rate models
+:mod:`riskpy.credit` credit risk — Merton, hazard rates, CDS, Basel, portfolios
+:mod:`riskpy.verify` the verification suite — every identity, checked
+===================  =========================================================
+
+    pip install open-riskpy          # core, zero dependencies
+    pip install open-riskpy[sim]     # + NumPy: simulation and the numeric layers
+    pip install open-riskpy[viz]     # + Matplotlib: the charts
+"""
 
 from __future__ import annotations
 
@@ -40,6 +69,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 __all__ = [
+    # Compiled core.
     "UnderwritingApp",
     "FactorModel",
     "ActuarialMath",
@@ -56,15 +86,28 @@ __all__ = [
     "mc",
     "viz",
     "quant",
+    "life",
+    "reserving",
+    "rates",
+    "credit",
+    "verify",
     "__version__",
 ]
 
 # Submodules resolved on first attribute access rather than imported here.
-# riskpy.mc and riskpy.viz depend on NumPy and Matplotlib, which are optional
-# extras — importing them eagerly would make `import riskpy` fail on a lean
-# install, which is exactly the property the zero-dependency core exists to
-# protect.
-_LAZY_SUBMODULES = {"mc", "viz", "quant"}
+# Most of them depend on NumPy, which is an optional extra — importing them
+# eagerly would make `import riskpy` fail on a lean install, which is exactly
+# the property the zero-dependency core exists to protect.
+_LAZY_SUBMODULES = {
+    "mc",
+    "viz",
+    "quant",
+    "life",
+    "reserving",
+    "rates",
+    "credit",
+    "verify",
+}
 
 
 def __getattr__(name: str) -> Any:

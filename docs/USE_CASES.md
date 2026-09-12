@@ -28,8 +28,7 @@ from riskpy import MonteCarloSimulator
 
 # Runs 1,000,000 simulations instantly in C++ using true Hardware Randomness
 # Returns a Python array of the aggregated losses for plotting
-results = MonteCarloSimulator.simulate_aggregate_loss(
-    trials=1000000, 
+results = MonteCarloSimulator(trials=1000000).simulate_aggregate_loss(
     expected_frequency=5.0, 
     expected_severity_mu=10.0, 
     severity_sigma=1.5

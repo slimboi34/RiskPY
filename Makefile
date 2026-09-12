@@ -4,7 +4,7 @@
 #   make build     → sdist + wheel
 #   make release   → tag + push (triggers PyPI workflow)
 
-.PHONY: help install test build clean smoke release check wheels
+.PHONY: help install test verify docs build clean smoke release check wheels
 
 PYTHON ?= python3
 PKG    := open-riskpy
@@ -14,6 +14,8 @@ help:
 	@echo "RiskPY developer commands"
 	@echo "  make install   Editable install with [dev] extras"
 	@echo "  make test      Run pytest suite"
+	@echo "  make verify    Run the verification suite (every identity, checked)"
+	@echo "  make docs      Render the gallery and build the docs site"
 	@echo "  make smoke     Import + tiny API check"
 	@echo "  make build     Build sdist + wheel into dist/"
 	@echo "  make clean     Remove build artifacts"
@@ -30,6 +32,13 @@ install:
 test:
 	$(PYTHON) -m pytest tests/ -v --tb=short
 
+verify:
+	$(PYTHON) -m riskpy.verify --bench
+
+docs:
+	$(PYTHON) docs/generate_gallery.py
+	$(PYTHON) -m mkdocs build --strict
+
 smoke:
 	$(PYTHON) -c "import riskpy; from riskpy import FactorModel, FourierTransform; \
 m=FactorModel(100); m.add_multiplier('s','A',1.5); assert m.calculate({'s':'A'})==150; \
@@ -43,7 +52,7 @@ clean:
 	rm -rf build dist *.egg-info _skbuild .pytest_cache
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-check: install test smoke
+check: install test verify smoke
 	@echo "All checks passed for $(PKG) $(VERSION)"
 
 # Creates git tag vX.Y.Z and pushes it + main. The tag push is the only trigger

@@ -1,0 +1,54 @@
+# Nightly verification and benchmarks.
+#
+# CI already runs the verification suite on every push. This workflow runs it
+# again every night with the SciPy oracle switched on and the benchmarks
+# included, and keeps the JSON report as an artifact, so a slow drift in
+# either accuracy or speed leaves a trail even on days nobody pushes.
+
+name: Verify
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verification + benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ cmake ninja-build
+
+      - name: Install with the SciPy oracle
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Run the suite
+        run: |
+          python -m riskpy.verify --bench --verbose --json verification.json --markdown verification.md
+          {
+            echo "## Verification report"
+            echo
+            cat verification.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-${{ github.run_number }}
+          path: |
+            verification.json
+            verification.md

@@ -26,8 +26,7 @@ print("=" * 60)
 
 print("\n--- Scenario 1: Moderate Hurricane Season ---")
 
-moderate = MonteCarloSimulator.simulate_aggregate_loss(
-    trials=200000,
+moderate = MonteCarloSimulator(trials=200000).simulate_aggregate_loss(
     expected_frequency=3.0,
     expected_severity_mu=17.7,    # ln($50M) ≈ 17.7
     severity_sigma=0.8
@@ -47,8 +46,7 @@ print(f"  99.5% VaR (1-in-200):  ${np.percentile(moderate, 99.5):>15,.0f}")
 
 print("\n--- Scenario 2: Severe Hurricane Season ---")
 
-severe = MonteCarloSimulator.simulate_aggregate_loss(
-    trials=200000,
+severe = MonteCarloSimulator(trials=200000).simulate_aggregate_loss(
     expected_frequency=7.0,
     expected_severity_mu=18.4,    # ln($100M) ≈ 18.4
     severity_sigma=1.2

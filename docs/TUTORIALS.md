@@ -96,7 +96,7 @@ A desktop window opens with two tabs:
 
 **Goal**: Simulate 200,000 hurricane seasons to determine the 1-in-200 year loss for capital requirements.
 
-**What You'll Learn**: `MonteCarloSimulator.simulate_aggregate_loss`, Poisson/Lognormal distributions, Value-at-Risk
+**What You'll Learn**: `MonteCarloSimulator(...).simulate_aggregate_loss`, Poisson/Lognormal distributions, Value-at-Risk
 
 ### The Actuarial Problem
 
@@ -116,8 +116,7 @@ The two key assumptions for aggregate loss modelling:
 ### Step 2: Run the Simulation
 
 ```python
-results = MonteCarloSimulator.simulate_aggregate_loss(
-    trials=200000,         # Number of simulated years
+results = MonteCarloSimulator(trials=200000).simulate_aggregate_loss(
     expected_frequency=5.0, # Average 5 hurricane landfalls per year
     expected_severity_mu=17.7, # ln($50M average loss) ≈ 17.7
     severity_sigma=1.2     # High volatility in loss amounts
@@ -151,13 +150,12 @@ The **99.5th percentile** is your 1-in-200 year loss — the amount regulators r
 
 **Goal**: Determine how much capital a life insurer needs to survive a pandemic-level mortality shock.
 
-**What You'll Learn**: `MonteCarloSimulator.simulate_life_portfolio`, mortality shocks, portfolio risk
+**What You'll Learn**: `MonteCarloSimulator(...).simulate_life_portfolio`, mortality shocks, portfolio risk
 
 ### The Model
 
 ```python
-results = MonteCarloSimulator.simulate_life_portfolio(
-    trials=50000,
+results = MonteCarloSimulator(trials=50000).simulate_life_portfolio(
     policy_count=10000,          # 10,000 life policies
     base_mortality_rate=0.002,   # 0.2% base annual mortality (qx)
     shock_volatility=0.3,        # 30% volatility in mortality shock

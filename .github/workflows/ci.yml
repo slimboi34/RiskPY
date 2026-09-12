@@ -77,6 +77,11 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short
 
+      # The verification suite: every identity the library claims, checked
+      # against closed forms and published values. A wrong number fails CI.
+      - name: Verify the mathematics
+        run: python -m riskpy.verify --no-oracle
+
   # Headless-friendly path: no Tk required for core APIs
   headless-import:
     name: Headless import (Ubuntu)

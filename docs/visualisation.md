@@ -1,9 +1,9 @@
 # Visualisation
 
-`riskpy.viz` is six charts that answer six questions. Each takes a
-[`Result`](monte-carlo.md), returns a Matplotlib `Figure`, and never calls
-`show()` — so the same call works in a notebook, in a script that saves a PNG,
-and in a test.
+`riskpy.viz` is twenty-two charts that answer twenty-two questions. Each takes
+data — a [`Result`](monte-carlo.md), an array, a life table, a reserving
+result — returns a Matplotlib `Figure`, and never calls `show()`. So the same
+call works in a notebook, in a script that saves a PNG, and in a test.
 
 ```bash
 pip install "open-riskpy[viz]"
@@ -20,14 +20,14 @@ Or straight off the result:
 
 ```python
 result.plot()                  # distribution
-result.plot("convergence")
-result.plot("tornado")
-result.plot("exceedance")
+result.plot("dashboard")       # the four usual diagnostics on one page
 ```
 
 ---
 
-## Where is the risk?
+## Simulation output
+
+### Where is the risk?
 
 ```python
 viz.distribution(result, levels=(0.95, 0.995))
@@ -36,11 +36,16 @@ viz.distribution(result, levels=(0.95, 0.995))
 ![Distribution](assets/distribution.png)
 
 Histogram with VaR and TVaR marked at each level you ask for. The shape tells
-the story; the rules are what anyone acts on. The y-axis is deliberately
-unlabelled — trial counts carry no decision, and numbering them invites people
-to read a simulation artefact as a quantity.
+the story; the rules are what anyone acts on. The axis is clipped at the
+99.9th percentile by default — a loss distribution is heavy-tailed by nature,
+and drawn to its maximum every other trial lands in the first bin — with the
+trials past the edge counted in a note rather than dropped.
 
-## How likely is something worse?
+`viz.density(result)` is the same question smoothed, for when the histogram
+bins are doing the arguing; `viz.cdf(result)` reads a probability off
+directly.
+
+### How likely is something worse?
 
 ```python
 viz.exceedance(result, log_y=True)
@@ -52,7 +57,7 @@ P(loss > x) plotted against x. Far easier to read off than a histogram tail, and
 the natural chart for a reinsurance conversation. Log scale by default, because
 every interesting probability here is near zero.
 
-## Did I run enough trials?
+### Did I run enough trials?
 
 ```python
 viz.convergence(result)
@@ -63,7 +68,7 @@ viz.convergence(result)
 Running mean with a 95% band. If the band is still narrowing at the right-hand
 edge, run more trials.
 
-## What is driving it?
+### What is driving it?
 
 ```python
 viz.tornado(result, top=12)
@@ -75,11 +80,44 @@ Rank correlation of each input with the output, strongest first, signed. Every
 bar is the same colour on purpose — the length already encodes the magnitude,
 and tinting by size would say it twice while burning the only free channel.
 
-## What do the paths look like?
+### Does the distribution fit?
 
 ```python
-from riskpy import quant
+viz.qq(result, dist=fitted)
+```
 
+![Q–Q](assets/qq.png)
+
+Points on the line mean the distribution fits. The informative part is always
+the ends.
+
+### All of it at once
+
+```python
+viz.dashboard(result)
+```
+
+![Dashboard](assets/dashboard.png)
+
+## Comparison
+
+```python
+viz.compare({"no cover": baseline, "quota share 15%": quota, "negotiated": negotiated})
+viz.spread({...})
+```
+
+![Scenario comparison](assets/compare.png)
+
+`compare` overlays histograms — one colour per scenario, always a legend, and
+past eight scenarios it raises rather than inventing a ninth hue. `spread`
+draws nested quantile ranges per scenario instead, and stays readable for
+dozens.
+
+![Scenario ranges](assets/spread.png)
+
+### Paths
+
+```python
 paths = quant.gbm_paths(S0=100, mu=0.07, sigma=0.22, T=1.0, trials=20_000)
 viz.fan(paths, levels=(0.5, 0.8, 0.95), ylabel="price")
 ```
@@ -87,29 +125,56 @@ viz.fan(paths, levels=(0.5, 0.8, 0.95), ylabel="price")
 ![Fan chart](assets/gbm_fan.png)
 
 Nested percentile bands with the median as a line. Twenty thousand spaghetti
-lines communicate nothing; three bands communicate the distribution.
+lines communicate nothing; three bands communicate the distribution. `paths`
+is any `(trials, steps)` array, so this works for reserve run-off and rate
+paths as well as prices.
 
-`paths` is any `(trials, steps)` array, so this works for reserve run-off and
-projections as well as prices.
-
-## How do scenarios compare?
+## Dependence
 
 ```python
-viz.compare({
-    "no cover":        baseline,
-    "quota share 15%": quota,
-    "negotiated":      negotiated,
-})
+viz.correlation(result)                      # Spearman matrix of the sampled inputs
+viz.scatter(result, "claim_count", "inflation")
 ```
 
-![Scenario comparison](assets/compare.png)
+![Correlation](assets/correlation.png)
 
-One axis, one colour per scenario, always a legend — colour here is identity, so
-it can never be the only channel.
+The matrix is on a diverging scale with a neutral midpoint — zero has to read
+as nothing — and every cell carries its number, because nobody can read a
+value off a colour ramp to better than a decimal.
 
-Past eight scenarios this raises rather than inventing a ninth hue. Nine
-categorical colours cannot be told apart reliably; group the tail or facet into
-separate charts instead.
+## Reserving
+
+```python
+viz.triangle(tri)                        # link ratios as a heatmap; kind="cumulative" for amounts
+viz.development(chain_ladder_result)     # each origin to ultimate, projection dashed
+viz.reserve_range(mack_result)           # reserve by origin ± standard error
+```
+
+![Development](assets/development.png)
+
+Dashing is doing real work in the development chart: it separates what has
+been paid from what the factors project, which is the one distinction a
+reserving chart has to make.
+
+## Life
+
+```python
+viz.survival(table)          # l_x
+viz.mortality(table)         # q_x on a log axis, where Gompertz is a straight line
+viz.reserve_profile(profile) # a policy reserve over its life
+```
+
+![Mortality](assets/mortality.png)
+
+## Rates and capital
+
+```python
+viz.curve(yield_curve)                   # zero and one-year forward rates
+viz.allocation({"Motor": 41.2e6, ...})   # capital by unit, shares labelled
+viz.waterfall({"gross": 53e6, "reinsurance": -12.4e6, ...})
+```
+
+![Waterfall](assets/waterfall.png)
 
 ---
 
@@ -121,10 +186,14 @@ Dark by default, because that is the surface the charts were designed against.
 viz.theme("light")     # or "dark"
 ```
 
-Both palettes are validated: every series colour clears 3:1 contrast against its
-own background, and adjacent slots stay separable under the common forms of
-colour vision deficiency. `viz.PALETTE` holds both if you want to match other
-charts to them.
+![Light theme](assets/distribution_light.png)
+
+Both palettes are validated with the six checks a categorical palette has to
+pass: every series colour clears 3:1 contrast against its own background, the
+lightness band and chroma floor hold, and adjacent slots stay separable under
+protanopia, deuteranopia and tritanopia. `viz.PALETTE` holds both, plus the
+sequential and diverging ramps, if you want to match other charts to them.
+The verification suite recomputes the contrast claim on every run.
 
 ## Rules worth not undoing by accident
 
@@ -139,6 +208,8 @@ These are choices, not defaults, and each one is easy to break without noticing:
   the data.
 - **Gridlines are solid hairlines.** Dashed grid reads as a threshold when it is
   just a grid.
+- **Sequential means one hue, light to dark; diverging means two opposed hues
+  and a neutral grey midpoint.** Never a rainbow.
 - **Nothing is gated behind a tooltip.** Every value is reachable as text.
 
 ## Saving

@@ -111,8 +111,7 @@ else:
 
 print(f"\n--- Monte Carlo Life Portfolio Simulation ---")
 
-results = MonteCarloSimulator.simulate_life_portfolio(
-    trials=50000,
+results = MonteCarloSimulator(trials=50000).simulate_life_portfolio(
     policy_count=10000,
     base_mortality_rate=0.002,
     shock_volatility=0.3,

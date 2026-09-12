@@ -8,8 +8,8 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "open-riskpy"
-version = "0.2.9"
-description = "C++ powered actuarial and quant engine: generic Monte Carlo, risk visualisation, Black-Scholes and Heston pricing, loss triangles, Fourier aggregate loss, batch Excel export."
+version = "0.3.0"
+description = "Risk and actuarial engine with a C++ core: Monte Carlo with correlation and Latin hypercube, life contingencies, claims reserving (chain ladder, Mack, bootstrap), yield curves and short-rate models, credit risk, option pricing, twenty-two charts, and a verification suite that checks every identity."
 readme = "README.md"
 # PEP 639 SPDX expression (metadata 2.4) — replaces the deprecated table form.
 license = "MIT"
@@ -38,6 +38,16 @@ keywords = [
     "value-at-risk",
     "risk-management",
     "simulation",
+    "life-contingencies",
+    "chain-ladder",
+    "mack",
+    "bootstrap",
+    "yield-curve",
+    "credit-risk",
+    "merton",
+    "basel",
+    "copula",
+    "latin-hypercube",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -61,10 +71,16 @@ Issues = "https://github.com/slimboi34/RiskPY/issues"
 Changelog = "https://github.com/slimboi34/RiskPY/blob/main/RELEASE_NOTES.md"
 "PyPI" = "https://pypi.org/project/open-riskpy/"
 
+[project.scripts]
+riskpy-verify = "riskpy.verify:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
     "build>=1.0.0",
+    "numpy>=1.20.0",
+    "matplotlib>=3.5.0",
+    "scipy>=1.10.0",
 ]
 gui = [
     "matplotlib>=3.5.0",
@@ -81,8 +97,9 @@ viz = [
     "numpy>=1.20.0",
 ]
 docs = [
-    "mkdocs>=1.5.0",
+    "mkdocs>=1.6.0",
     "mkdocs-material>=9.5.0",
+    "pymdown-extensions>=10.0",
     "matplotlib>=3.5.0",
     "numpy>=1.20.0",
 ]
