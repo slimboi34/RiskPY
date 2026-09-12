@@ -189,7 +189,7 @@ docs workflow publishes the report.
 
 ## Testing
 
- test cases and 125 verification checks. The new tests follow the rule the
+407 test cases and 125 verification checks. The new tests follow the rule the
 0.2.8 notes set out — identities before reference values — and add an
 external witness where one exists: the special functions, the analytic
 distribution layer and the truncated normal against SciPy; reserving against

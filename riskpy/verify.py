@@ -607,6 +607,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("-q", "--quiet", action="store_true", help="print nothing; exit status only")
     args = parser.parse_args(argv)
 
+    # Check names carry λ, Φ, ä and friends. A Windows console in a legacy
+    # code page raises on those, and a verifier that crashes while reporting
+    # a pass is worse than useless — so degrade the glyphs, never the run.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="backslashreplace")
+            except (ValueError, OSError):  # pragma: no cover - closed or odd streams
+                pass
+
     report = run(args.modules, bench=args.bench, oracle=not args.no_oracle)
     if args.json:
         report.to_json(args.json)
