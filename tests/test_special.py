@@ -23,7 +23,9 @@ from riskpy import _special as sp
 def test_norm_cdf_at_zero_and_symmetry():
     assert sp.norm_cdf(0.0) == 0.5
     for x in (0.3, 1.0, 2.5, 6.0):
-        assert sp.norm_cdf(x) + sp.norm_cdf(-x) == pytest.approx(1.0, abs=1e-16)
+        # A couple of ulps of 1.0: MSVC's erfc rounds the last place
+        # differently from glibc's, and 1e-16 is below one ulp.
+        assert sp.norm_cdf(x) + sp.norm_cdf(-x) == pytest.approx(1.0, abs=5e-16)
 
 
 def test_norm_cdf_keeps_the_far_tail():

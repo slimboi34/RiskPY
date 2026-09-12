@@ -123,7 +123,7 @@ the SciPy oracle, and the docs site publishes the latest report.
 git clone https://github.com/slimboi34/RiskPY.git
 cd RiskPY
 make install    # pip install -e ".[dev]"
-make test       # pytest — 341 tests
+make test       # pytest —  test cases
 make verify     # the verification suite
 ```
 
