@@ -36,13 +36,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install ".[dev]"
 
+      # Run from outside the checkout: from the repo root, the uncompiled
+      # source tree would shadow the installed package. This way the suite
+      # verifies exactly the artifact a user installs.
       - name: Run the suite
+        working-directory: ${{ runner.temp }}
         run: |
-          python -m riskpy.verify --bench --verbose --json verification.json --markdown verification.md
+          python -m riskpy.verify --bench --verbose \
+            --json "$GITHUB_WORKSPACE/verification.json" \
+            --markdown "$GITHUB_WORKSPACE/verification.md"
           {
             echo "## Verification report"
             echo
-            cat verification.md
+            cat "$GITHUB_WORKSPACE/verification.md"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
