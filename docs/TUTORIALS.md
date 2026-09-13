@@ -73,6 +73,7 @@ app = UnderwritingApp(title="Auto Insurance Rater")
 app.add_field("state", "State", "A", choices=["NY", "CA", "FL"])
 app.add_field("driver_age", "Driver Age", "B")
 app.add_field("vehicle_type", "Vehicle Type", "C", choices=["Sedan", "Sports Car"])
+app.set_premium_column("D", "Premium")   # where the premium lands in the Excel export
 app.set_factor_model(model)
 app.run()
 ```
