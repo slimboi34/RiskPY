@@ -198,10 +198,11 @@ CA,45,SUV,1 Claim
 ### Step 2: Process the Batch
 
 ```python
+app.set_premium_column("E", "Premium")   # otherwise the workbook has the inputs but no premium
 total_premium, count = app.calculate_batch("submissions.csv", "rated_book.xlsx")
 print(f"Processed {count} policies. Total: ${total_premium:,.2f}")
 ```
 
-The C++ engine reads each row, applies all `FactorModel` rules, calculates the premium, and writes the result directly to a binary Excel file using the OpenXLSX C++ library — completely bypassing Python's GIL.
+`calculate_batch` reads the CSV in Python and prices each row with the C++ `FactorModel`, then writes the whole book to a binary Excel file in one call to the OpenXLSX C++ library. Only the columns mapped with `add_field` and `set_premium_column` are written.
 
 **Full working example**: See [`examples/batch_processing.py`](https://github.com/slimboi34/RiskPY/blob/main/examples/batch_processing.py)
