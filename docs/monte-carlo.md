@@ -11,7 +11,11 @@ pip install "open-riskpy[sim]"
 ## The shape of it
 
 ```python
-from riskpy.mc import Model, Poisson, LogNormal, Normal, PERT
+from riskpy import viz
+from riskpy.mc import (
+    Model, Poisson, LogNormal, Normal, PERT,
+    Gamma, NegativeBinomial, Pareto, Mixture, Truncated, Categorical,
+)
 
 model = Model(
     claim_count          = Poisson(mean=140),
