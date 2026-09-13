@@ -366,7 +366,7 @@ def parametric_var(
         mean = float(data.mean()) if mean is None else mean
         sd = float(data.std(ddof=1)) if sd is None else sd
 
-    z = _normal_quantile(1.0 - level)
+    z = _special.norm_ppf(1.0 - level)
     return float(-(mean + z * sd))
 
 
