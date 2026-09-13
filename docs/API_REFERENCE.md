@@ -1,10 +1,18 @@
 # RiskPY API Reference
 
-Complete documentation for every class and method available in the `riskpy` package.
+Reference for the compiled core — the classes you import straight from `riskpy` —
+and the `UnderwritingApp` GUI. The Python modelling layers have their own pages:
+[Monte Carlo](monte-carlo.md), [Quant](quant.md), [Life](life.md),
+[Reserving](reserving.md), [Rates](rates.md) and [Credit](credit.md).
 
 ```bash
-pip install open-riskpy
+pip install open-riskpy            # the compiled core
+pip install "open-riskpy[gui]"     # + Matplotlib and NumPy, for UnderwritingApp and the NumPy snippets below
 ```
+
+Not yet documented on this page: `ExperienceRating`, `ExposureRating`, `Field`,
+the `simulate_economic_path`, `simulate_health_claims` and
+`simulate_catastrophe_loss` scenarios, and `RiskEngine.export_batch_to_excel`.
 
 ---
 
