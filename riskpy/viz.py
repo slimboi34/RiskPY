@@ -916,8 +916,7 @@ def triangle(tri, kind: str = "link", title: Optional[str] = None, figsize=(10, 
 
     fig, ax = _figure(figsize)
     masked = np.ma.masked_invalid(matrix)
-    cmap = _colormap("sequential")
-    cmap.set_bad(c["surface"])
+    cmap = _colormap("sequential").with_extremes(bad=c["surface"])
     image = ax.imshow(masked, cmap=cmap, aspect="auto")
 
     origins = [str(o) for o in tri.origin]
