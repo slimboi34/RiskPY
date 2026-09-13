@@ -13,8 +13,11 @@ Step-by-step guides for building real actuarial applications with RiskPY.
 ### Step 1: Install RiskPY
 
 ```bash
-pip install open-riskpy
+pip install "open-riskpy[gui]"    # the GUI's charts need Matplotlib and NumPy
 ```
+
+The window also needs a Python build with Tkinter. The python.org installers
+include it; some Linux distributions package it separately (e.g. `python3-tk`).
 
 ### Step 2: Import the Framework
 
