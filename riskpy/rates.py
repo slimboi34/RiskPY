@@ -29,6 +29,8 @@ import numbers
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
+from .mc import _numpy
+
 __all__ = [
     "discount_factor",
     "zero_rate",
