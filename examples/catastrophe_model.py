@@ -8,7 +8,8 @@ Simulates hurricane losses for a P&C portfolio using:
 - Poisson distribution for claim frequency
 - Lognormal distribution for claim severity
 
-Run this file:
+Run this file (the summary statistics need NumPy):
+    pip install "open-riskpy[sim]"
     python catastrophe_model.py
 """
 from riskpy import MonteCarloSimulator
@@ -22,13 +23,13 @@ print("=" * 60)
 # SCENARIO 1: MODERATE HURRICANE SEASON
 # =============================================
 # Expected 3 hurricane landfalls per year
-# Average loss per event: ~$50M (mu=17.7, sigma=0.8 in log-space)
+# Loss per event: median ~$49M, mean ~$67M (mu=17.7, sigma=0.8 in log-space)
 
 print("\n--- Scenario 1: Moderate Hurricane Season ---")
 
 moderate = MonteCarloSimulator(trials=200000).simulate_aggregate_loss(
     expected_frequency=3.0,
-    expected_severity_mu=17.7,    # ln($50M) ≈ 17.7
+    expected_severity_mu=17.7,    # log of the median loss: e^17.7 ≈ $49M
     severity_sigma=0.8
 )
 
