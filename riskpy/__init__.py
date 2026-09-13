@@ -115,11 +115,12 @@ def __getattr__(name: str) -> Any:
         try:
             from .app import UnderwritingApp as _UnderwritingApp
         except ImportError as exc:
+            # app.py says which piece is missing — Tkinter, or Matplotlib/NumPy
+            # from the [gui] extra — so pass that on instead of blaming Tkinter.
             raise ImportError(
-                "UnderwritingApp requires Tkinter GUI extras, which are not "
-                "available in this environment (missing _tkinter). Install a "
-                "Python build with Tk support, or use the headless C++ APIs "
-                "(FactorModel, MonteCarloSimulator, FourierTransform, etc.)."
+                f"UnderwritingApp is unavailable: {exc} The headless C++ APIs "
+                "(FactorModel, MonteCarloSimulator, FourierTransform, etc.) "
+                "work without it."
             ) from exc
         return _UnderwritingApp
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
