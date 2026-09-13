@@ -167,9 +167,9 @@ results = MonteCarloSimulator(trials=50000).simulate_life_portfolio(
 ```
 
 **What happens inside C++**:
-1. For each trial, a **mortality shock factor** is drawn from `Normal(mean=1.0, std=0.3)`
-2. The effective mortality rate = `base_rate × shock_factor` (clamped to [0, 1])
-3. For each of the 10,000 policies, a random draw determines if the policyholder dies
+1. For each trial, a **mortality shock factor** is drawn from `Normal(mean=1.0, std=0.3)`, floored at 0
+2. The effective mortality rate = `base_rate × shock_factor`, capped at 1
+3. The number of deaths is drawn in one step from `Binomial(10,000, effective rate)`
 4. Total claims = number of deaths × death benefit
 
 A shock factor of 1.5 represents a 50% increase in mortality (pandemic scenario). A shock factor of 0.8 represents a mild year.
