@@ -61,7 +61,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import _special
 from .mc import _numpy
-from .quant import _normal_quantile
 
 __all__ = [
     "Triangle",
