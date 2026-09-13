@@ -15,7 +15,7 @@ This repo uses **scikit-build-core** + **GitHub Actions Trusted Publishing** so 
 ```bash
 # 1. Bump [project].version in pyproject.toml + add a RELEASE_NOTES.md entry
 # 2. Land it on main
-git add -A && git commit -m "release: v0.2.7" && git push origin main
+git add -A && git commit -m "release: vX.Y.Z" && git push origin main
 
 # 3. Tag + push — this is the whole release
 make release
