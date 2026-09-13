@@ -89,8 +89,10 @@ Add a second trusted publisher against `test.pypi.org`, then:
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| **CI** (`.github/workflows/ci.yml`) | push/PR to `main` | Build + `pytest` on Ubuntu/macOS/Windows × Python 3.10–3.13; headless import check |
-| **Publish** (`.github/workflows/publish.yml`) | push of a `v*` tag, or manual dispatch | Verify → **sdist** + **cp310–cp314 wheels** → PyPI (Trusted Publishing + attestations) → GitHub Release |
+| **CI** (`.github/workflows/ci.yml`) | push/PR to `main` | Build + `pytest` + `riskpy.verify --no-oracle` on Ubuntu/macOS/Windows × Python 3.10–3.13; headless import check |
+| **Verify** (`.github/workflows/verify.yml`) | nightly, or manual dispatch | Verification suite with the SciPy oracle and benchmarks; JSON and Markdown report kept as an artifact |
+| **Docs** (`.github/workflows/docs.yml`) | push to `main` touching `docs/`, `riskpy/` or `mkdocs.yml` | Regenerate the chart gallery and verification report, build the site, deploy GitHub Pages |
+| **Publish** (`.github/workflows/publish.yml`) | push of a `v*` tag, or manual dispatch | Version guard → **sdist** (installed and smoke-imported) + **cp310–cp314 wheels** (import-tested) → `twine check` → PyPI (Trusted Publishing + attestations) → GitHub Release |
 
 Wheels mean end users usually **do not need a C++ compiler**. Source installs still work when a compiler is available.
 
