@@ -17,7 +17,9 @@ double ExposureRating::layer_premium(double ground_up_premium, double attachment
     if (attachment < 0.0 || limit <= 0.0) throw std::invalid_argument("Invalid attachment or limit");
     
     double ilf_at_base = increased_limits_factor(base_limit);
-    double ilf_at_attachment = increased_limits_factor(attachment);
+    // The power-curve ILF is only defined for limits > 0, but the limited expected
+    // value at zero is zero for any severity curve, so a ground-up layer uses 0.
+    double ilf_at_attachment = attachment > 0.0 ? increased_limits_factor(attachment) : 0.0;
     double ilf_at_limit = increased_limits_factor(attachment + limit);
     
     if (ilf_at_base == 0.0) throw std::invalid_argument("ILF Base cannot be zero");
