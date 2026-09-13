@@ -181,7 +181,7 @@ Details in [docs/PUBLISHING.md](docs/PUBLISHING.md).
 | **CI** | every push/PR to `main` | build + pytest + verification on Linux/macOS/Windows, Python 3.10–3.13 |
 | **Verify** | nightly | verification with the SciPy oracle, benchmarks, JSON report as an artifact |
 | **Docs** | push to `main` | regenerate the gallery and the verification report, build and publish the site |
-| **Publish** | push of a `v*` tag | verify → sdist + cp310–cp314 wheels → PyPI → GitHub Release |
+| **Publish** | push of a `v*` tag | version guard → sdist + cp310–cp314 wheels (import-tested) → PyPI → GitHub Release |
 
 ---
 
