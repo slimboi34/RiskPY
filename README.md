@@ -171,8 +171,9 @@ only when you use it.
 make release   # tags vX.Y.Z and pushes — that is the whole release
 ```
 
-The tag push builds the sdist and wheels, verifies them, uploads to PyPI via
-Trusted Publishing, and cuts the GitHub Release with artifacts attached.
+The tag push checks the tag against the version, builds the sdist and wheels
+and smoke-tests their imports, uploads to PyPI via Trusted Publishing, and cuts
+the GitHub Release with artifacts attached.
 Details in [docs/PUBLISHING.md](docs/PUBLISHING.md).
 
 | Workflow | When | What |
