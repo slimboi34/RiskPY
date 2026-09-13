@@ -31,5 +31,5 @@ make check
 - Validate actuarial edge cases (non-finite, empty, negative bounds) in C++ with `std::invalid_argument`
 - Prefer tests that assert exact hand-checked math over soft tolerances where possible
 - Keep `import riskpy` free of Tkinter side effects, and free of NumPy — the modelling layers import it lazily
-- Never import SciPy inside `riskpy/`; it is a test-time oracle only. What you need is in `riskpy._special`
-- When you add a formula, add an identity for it to the module's `_verification_checks()` hook — something that would catch a class of error, not one typo
+- Never import SciPy in the library modules; it is an oracle only, used by the tests and by the optional oracle checks in `riskpy.verify`. What you need is in `riskpy._special`
+- When you add a formula, add an identity for it to the verification suite — something that would catch a class of error, not one typo. `life`, `reserving`, `rates` and `credit` contribute through their `_verification_checks()` hook; checks for the core, `_special`, `mc`, `quant` and `viz` live in `riskpy/verify.py`
