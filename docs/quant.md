@@ -44,8 +44,8 @@ print(g)
 ```
 
 ```
-price 5.4127   delta -0.3184   gamma +0.019841
-vega  +0.2612/pt  theta -0.0091/day  rho -0.1478/pt
+price 4.8480   delta -0.3322   gamma +0.018340
+vega  +0.2568/pt  theta -0.0166/day  rho -0.1903/pt
 ```
 
 **Units are the ones people quote**, not the raw derivatives: `vega` is per one
