@@ -60,7 +60,7 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 | **`riskpy.reserving`** | Chain ladder, Mack standard errors, Bornhuetter–Ferguson, Cape Cod, ODP bootstrap, tail fitting — reproduces R's `ChainLadder` on GenIns to the unit | NumPy |
 | **`riskpy.rates`** | Yield curves (bootstrap, Nelson–Siegel, Svensson), bonds with duration, convexity, DV01, z-spread; Vasicek and CIR with closed-form bonds and simulated paths | — / NumPy |
 | **`riskpy.credit`** | Merton, hazard rates and CDS, Vasicek / Basel ASRF with IRB capital, one-factor copula portfolio simulation, rating transition matrices | — / NumPy |
-| **`riskpy.verify`** | The verification suite: 125 checks against closed forms, published tables and identities, plus benchmarks. `riskpy-verify` on the command line | — |
+| **`riskpy.verify`** | The verification suite: 111 checks against closed forms, published tables and identities — 125 with SciPy installed as an oracle — plus benchmarks. `riskpy-verify` on the command line | NumPy |
 | **Compiled core** | `FactorModel`, `MonteCarloSimulator`, `LossTriangle`, `FourierTransform`, `ExperienceRating`, `ExposureRating`, `RateAnalyzer`, `ActuarialMath`, `RiskEngine`, `ExcelExporter`, the optional Tkinter `UnderwritingApp` | — |
 
 Every layer is imported lazily, so `import riskpy` on a machine with nothing
