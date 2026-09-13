@@ -24,7 +24,7 @@ make check
 | `src/` | C++ core + pybind11 bindings |
 | `riskpy/` | Python package: `mc`, `viz`, `quant`, `life`, `reserving`, `rates`, `credit`, `verify`, `_special`, the GUI |
 | `tests/` | pytest suite |
-| `.github/workflows/` | CI + PyPI publish |
+| `.github/workflows/` | CI, nightly verification, docs site, PyPI publish |
 
 ## Style notes
 
