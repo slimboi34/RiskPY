@@ -74,7 +74,7 @@ print(f"  → Investment gain:     ${fv - (premium * accumulation_years):,.0f}")
 # =============================================
 # Look up qx (probability of death within 1 year) for key ages.
 
-print(f"\n--- CSO Mortality Table (qx) ---")
+print(f"\n--- Illustrative Mortality Bands (qx, not a published table) ---")
 print(f"  {'Age':>5} | {'qx':>10} | {'Interpretation'}")
 print(f"  {'-'*5}-+-{'-'*10}-+-{'-'*30}")
 
