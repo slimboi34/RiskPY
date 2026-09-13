@@ -191,18 +191,23 @@ result.describe()                   # a dict of the lot
 result.values                       # the raw array
 ```
 
-`summary()` prints the headline table:
+`summary()` returns the headline table as a string. For the model on this page,
+with its two correlations and `sampling="lhs"`:
 
 ```
 Monte Carlo — annual_loss
   trials       200,000   seed 42
-  mean         2,630,174.94   ± 27,271.35 (95% CI)
-  std dev      6,222,510.08   skew +20.19
-  min / max    2,180.43 / 744,297,808.62
+  mean         2,178,785.66   ± 23,229.21 (95% CI)
+  std dev      5,300,213.95   skew +25.06
+  min / max    1,809.39 / 737,951,531.59
 
   level        VaR              TVaR
-  50.000%        1,031,906.39     4,809,952.32
-  99.500%       34,853,572.74    59,849,181.61
+  50.000%          847,483.26     3,988,906.14
+  75.000%        2,134,575.78     6,608,175.09
+  90.000%        4,916,632.64    11,708,574.21
+  95.000%        8,128,962.41    17,180,392.03
+  99.000%       20,664,267.01    37,318,456.01
+  99.500%       29,220,862.23    50,413,329.25
 ```
 
 Quantile queries sort once and cache the order, so asking for a dozen VaR
