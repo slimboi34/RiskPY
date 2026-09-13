@@ -92,6 +92,7 @@ bond.z_spread(bond.price(0.045), curve)
 
 # Credit: Basel capital and a correlated portfolio
 credit.basel_irb_capital(pd=0.01, lgd=0.45, ead=1e6).risk_weight    # 92.32%
+pds, lgds, eads = [0.01] * 500, [0.45] * 500, [1e6] * 500             # 500 identical loans
 credit.credit_portfolio_loss(pds, lgds, eads, rho=0.2, trials=100_000, seed=1).var(0.999)
 
 # Quant: still pure Python for the closed forms
