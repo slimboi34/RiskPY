@@ -49,7 +49,7 @@ print("\n--- Scenario 2: Severe Hurricane Season ---")
 
 severe = MonteCarloSimulator(trials=200000).simulate_aggregate_loss(
     expected_frequency=7.0,
-    expected_severity_mu=18.4,    # ln($100M) ≈ 18.4
+    expected_severity_mu=18.4,    # log of the median loss: e^18.4 ≈ $98M (mean ≈ $200M at sigma=1.2)
     severity_sigma=1.2
 )
 
