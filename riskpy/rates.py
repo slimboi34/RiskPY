@@ -926,12 +926,6 @@ def cir_curve(
 # ---------------------------------------------------------------------------
 
 
-def _numpy():
-    from .mc import _numpy as _np
-
-    return _np()
-
-
 def _check_simulation(T: float, steps: int, trials: int) -> Tuple[float, int, int]:
     T = _check_positive("T", T)
     if isinstance(steps, bool) or not isinstance(steps, numbers.Integral) or steps < 1:
