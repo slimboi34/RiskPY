@@ -156,4 +156,4 @@ pip install .
 | Publish fails with 403 Trusted Publishing | Re-check publisher owner/repo/workflow/environment names |
 | `FileNotFoundError: cmake` on import | Editable auto-rebuild is off; re-run `pip install -e .` after C++ edits |
 | GUI import error headless | Expected — use C++ APIs; Tk is lazy-loaded |
-| Wheel test fails on `test_app_batch` | Publish workflow ignores GUI batch test; core tests still run |
+| `test_app_batch` is skipped | Expected without Tkinter or the `[gui]` extra. The publish workflow runs no pytest — wheels get an import smoke test only |
