@@ -20,7 +20,7 @@ except ImportError as exc:  # pragma: no cover
         "Install with: pip install 'open-riskpy[gui]'"
     ) from exc
 
-from .cpp_underwriter import RiskEngine, ExcelExporter, Field, FactorModel, ActuarialMath, MonteCarloSimulator
+from .cpp_underwriter import RiskEngine, ExcelExporter, Field, FactorModel, MonteCarloSimulator
 
 class UnderwritingApp:
     def __init__(self, title="Actuarial Underwriter", excel_template="corporate_layout.xlsx"):

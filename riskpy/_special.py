@@ -16,7 +16,7 @@ points is one vectorised pass rather than a Python loop.
 from __future__ import annotations
 
 import math
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, List, Sequence, Tuple
 
 __all__ = [
     "norm_cdf",
