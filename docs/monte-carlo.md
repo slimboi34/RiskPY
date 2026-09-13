@@ -241,9 +241,10 @@ for name, correlation in result.sensitivity():
 ```
 
 ```
-severity                 +1.00
+severity                 +0.99
+inflation                +0.23
+reinsurance_recovery     -0.07
 claim_count              +0.06
-inflation                +0.03
 ```
 
 Spearman **rank** correlation by default — the relationship between an input
