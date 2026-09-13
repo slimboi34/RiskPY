@@ -42,9 +42,10 @@ from __future__ import annotations
 import math
 import numbers
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 from . import _special
+from .mc import _numpy
 from .quant import black_scholes
 
 __all__ = [
