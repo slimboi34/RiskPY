@@ -53,11 +53,16 @@ jobs:
       - name: Cache pip + ccache
         uses: actions/cache@v4
         with:
+          # ccache 4.x (Ubuntu ships 4.9) writes to ~/.cache/ccache; the legacy
+          # ~/.ccache is only used if it already exists, which it never does here.
           path: |
             ~/.cache/pip
-            ~/.ccache
+            ~/.cache/ccache
             ~/Library/Caches/ccache
-          key: ${{ runner.os }}-py${{ matrix.python-version }}-pip-${{ hashFiles('pyproject.toml', 'CMakeLists.txt') }}
+          # src/** is in the key because an exact-key hit never re-saves: without
+          # it the compiler cache froze at the first build after a pyproject or
+          # CMakeLists change, however much the C++ moved on afterwards.
+          key: ${{ runner.os }}-py${{ matrix.python-version }}-pip-${{ hashFiles('pyproject.toml', 'CMakeLists.txt', 'src/**') }}
           restore-keys: |
             ${{ runner.os }}-py${{ matrix.python-version }}-pip-
 
