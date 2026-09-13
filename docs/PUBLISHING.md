@@ -104,7 +104,7 @@ Wheels mean end users usually **do not need a C++ compiler**. Source installs st
 make install   # pip install -e ".[dev]"
 make test      # pytest
 make smoke     # import + tiny FactorModel check
-make check     # install + test + smoke
+make check     # install + test + verify + smoke
 make build     # python -m build → dist/
 make clean
 ```
