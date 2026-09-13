@@ -67,7 +67,9 @@ the property.
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence
+
+from .mc import _numpy  # single source of the "install NumPy" error message
 
 __all__ = [
     "theme",
