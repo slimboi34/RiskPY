@@ -121,7 +121,7 @@ The two key assumptions for aggregate loss modelling:
 ```python
 results = MonteCarloSimulator(trials=200000).simulate_aggregate_loss(
     expected_frequency=5.0, # Average 5 hurricane landfalls per year
-    expected_severity_mu=17.7, # ln($50M average loss) ≈ 17.7
+    expected_severity_mu=17.7, # log scale: median e^17.7 ≈ $49M; mean e^(μ+σ²/2) ≈ $100M
     severity_sigma=1.2     # High volatility in loss amounts
 )
 ```
