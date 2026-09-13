@@ -133,7 +133,9 @@ twine upload dist/*
 
 ```bash
 pip install open-riskpy              # core C++ APIs (no heavy deps)
-pip install "open-riskpy[gui]"       # + matplotlib/numpy for GUI charts
+pip install "open-riskpy[sim]"       # + NumPy: riskpy.mc and the numeric layers
+pip install "open-riskpy[viz]"       # + Matplotlib: the riskpy.viz charts
+pip install "open-riskpy[gui]"       # + matplotlib/numpy for the UnderwritingApp GUI
 pip install -U open-riskpy           # upgrade
 ```
 
