@@ -7,10 +7,11 @@ MonteCarloSimulator for life insurance and annuity calculations.
 Covers:
 - Present Value of annuity payments
 - Future Value of premium accumulation
-- Mortality rate lookups
+- Illustrative mortality rate lookups (a banded step table, not a published one)
 - Stochastic mortality simulation for a portfolio
 
-Run this file:
+Run this file (the summary statistics need NumPy):
+    pip install "open-riskpy[sim]"
     python life_annuity_pricing.py
 """
 from riskpy import ActuarialMath, MonteCarloSimulator
