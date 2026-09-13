@@ -74,6 +74,7 @@ app.add_field("vehicle_type", "Vehicle Type", "C",
               choices=["Sedan", "SUV", "Sports Car", "Pickup Truck", "Electric Vehicle"])
 app.add_field("claims_history", "Claims History", "D", 
               choices=["Clean", "1 Claim", "2+ Claims"])
+app.set_premium_column("E", "Premium")  # without this the Excel export has no premium
 
 app.set_factor_model(model)
 
