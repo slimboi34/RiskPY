@@ -105,7 +105,7 @@ quant.heston_price(S=100, K=100, T=1, r=0.03, v0=0.04, kappa=2, theta=0.04, xi=0
 ## Verification
 
 ```bash
-riskpy-verify              # 125 checks, ~1 second
+riskpy-verify              # 111 checks (125 with SciPy), ~1 second
 riskpy-verify --bench      # plus timings
 ```
 
