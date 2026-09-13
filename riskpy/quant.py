@@ -381,16 +381,6 @@ def expected_shortfall(returns: Sequence[float], level: float = 0.99) -> float:
     return float(-tail.mean())
 
 
-def _normal_quantile(p: float) -> float:
-    """Inverse standard normal CDF — :func:`riskpy._special.norm_ppf`.
-
-    Kept under its old name because other modules import it. It used to be
-    Acklam's rational approximation on its own (relative error 1e-9); it is now
-    that approximation plus one Halley refinement, exact to double precision.
-    """
-    return _special.norm_ppf(p)
-
-
 # ---------------------------------------------------------------------------
 # Transform pricing
 # ---------------------------------------------------------------------------
