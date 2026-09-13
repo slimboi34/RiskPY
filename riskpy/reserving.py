@@ -530,7 +530,7 @@ def _development_factors(tri: Triangle, average: str, n_periods: Optional[int], 
     return factors, volume
 
 
-def _complete_square(C, obs, factors, np):
+def _complete_square(C, obs, factors):
     """Fill the future cells column by column: ``C[i, k] = C[i, k-1] · f[k-1]``."""
     full = C.copy()
     for k in range(1, C.shape[1]):
@@ -871,7 +871,7 @@ def chain_ladder(
 
     factors, _ = _development_factors(tri, average, n_periods, np)
     cdf = cdf_from_factors(factors, tail)
-    full = _complete_square(tri._values, tri._observed, factors, np)
+    full = _complete_square(tri._values, tri._observed, factors)
     latest = tri.latest_diagonal
     ultimate = full[:, -1] * tail
     return ChainLadderResult(
@@ -951,7 +951,7 @@ def mack_chain_ladder(
 
     base = chain_ladder(tri, tail=tail, average="volume")
     C, obs = tri._values, tri._observed
-    n_origin, n_dev = tri.n_origin, tri.n_dev
+    n_dev = tri.n_dev
     f = base.factors
     n_steps = n_dev - 1
 
@@ -1092,7 +1092,7 @@ def _per_origin(name: str, value: Any, n: int, np, non_negative: bool = True):
     return arr
 
 
-def _elr_result(tri: Triangle, cdf, expected_ultimate, method: str, extra: Dict[str, Any], np):
+def _elr_result(tri: Triangle, cdf, expected_ultimate, method: str, extra: Dict[str, Any]):
     """Ultimate = latest + expected ultimate × (share still to come)."""
     unreported = 1.0 - 1.0 / cdf[tri._latest_index]
     latest = tri.latest_diagonal
@@ -1142,7 +1142,7 @@ def bornhuetter_ferguson(
     cdf = _resolve_cdf(tri, factors, tail, np)
     return _elr_result(
         tri, cdf, premium * elr, "Bornhuetter–Ferguson",
-        {"expected_loss_ratio": elr, "premium": premium}, np,
+        {"expected_loss_ratio": elr, "premium": premium},
     )
 
 
@@ -1197,7 +1197,7 @@ def cape_cod(
     elr = (weights @ latest) / denominators
     return _elr_result(
         tri, cdf, premium * elr, "Cape Cod",
-        {"expected_loss_ratio": elr, "premium": premium, "decay": float(decay)}, np,
+        {"expected_loss_ratio": elr, "premium": premium, "decay": float(decay)},
     )
 
 
@@ -1222,7 +1222,7 @@ def expected_claims(
     tail = _check_tail(tail)
     prior = _per_origin("ultimates_prior", ultimates_prior, tri.n_origin, np)
     cdf = _resolve_cdf(tri, factors, tail, np)
-    return _elr_result(tri, cdf, prior, "expected claims", {"ultimates_prior": prior}, np)
+    return _elr_result(tri, cdf, prior, "expected claims", {"ultimates_prior": prior})
 
 
 # ---------------------------------------------------------------------------
