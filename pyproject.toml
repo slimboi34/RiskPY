@@ -81,6 +81,9 @@ dev = [
     "numpy>=1.20.0",
     "matplotlib>=3.5.0",
     "scipy>=1.10.0",
+    # Only the to_frame() tests use it, and they skip without it — so without
+    # this line CI silently never exercised them.
+    "pandas>=1.5.0",
 ]
 gui = [
     "matplotlib>=3.5.0",
