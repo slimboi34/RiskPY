@@ -35,7 +35,7 @@ Some of what is checked, by module:
 | module | examples |
 |---|---|
 | `core` | `FactorModel` against hand arithmetic; the hand-checked chain ladder; the compound Poisson FFT with unit severity is `Poisson(λ)`; the C++ aggregate-loss mean is `λ·E[X]` |
-| `special` | `Φ(0) = ½`; `Φ⁻¹(Φ(x)) = x`; `P(1, x) = 1 − e⁻ˣ`; `I_x(a, b) + I_{1−x}(b, a) = 1`; the t with one degree of freedom is Cauchy; `ψ(1) = −γ`; `ψ₁(1) = π²/6`; and, when SciPy is installed, agreement with it to 1e-13 |
+| `special` | `Φ(0) = ½`; `Φ⁻¹(Φ(x)) = x`; `P(1, x) = 1 − e⁻ˣ`; `I_x(a, b) + I_{1−x}(b, a) = 1`; the t with one degree of freedom is Cauchy; `ψ(1) = −γ`; `ψ₁(1) = π²/6`; and, when SciPy is installed, agreement with it to 1e-13 (1e-8 for the Student-t quantile) |
 | `mc` | `cdf(ppf(q)) = q` for every family; sample means within four standard errors of the analytic mean; Latin hypercube within one; Iman–Conover recovers the target Spearman and leaves the marginals untouched; a truncated density integrates to one |
 | `quant` | the canonical Black–Scholes value; put–call parity; delta as a central difference; implied vol round trip; Heston → Black–Scholes as vol-of-vol → 0; Heston put–call parity; the GBM terminal mean |
 | `life` | the SULT's `l_100`, `ä_40` and `A_40` against AMLCR Appendix D; `A_x = 1 − d·ä_x`; `A_{x:n} = A¹_{x:n} + ₙE_x`; Makeham's closed form against numerical integration; `M_x / D_x = A_x`; `ä_xy + ä_x̄ȳ = ä_x + ä_y` |
@@ -43,6 +43,9 @@ Some of what is checked, by module:
 | `rates` | par at par; `ytm(price(y)) = y`; the bootstrap round trip; Nelson–Siegel limits; both short-rate bonds at `σ = 0`; Vasicek against Monte Carlo |
 | `credit` | `equity + debt = assets`; equity as a Black–Scholes call; the ASRF at `ρ = 0`; the credit triangle; the Basel correlation limits; the BCBS risk-weight table |
 | `viz` | every palette colour clears 3:1 contrast on its surface; the sequential ramps are monotone in lightness; eight categorical slots and no more |
+
+Without SciPy the suite runs 111 checks; with it, the 14 oracle checks bring it
+to 125. NumPy is required for the `mc`, `quant` and `reserving` checks.
 
 ## Where it runs
 
@@ -55,7 +58,9 @@ Some of what is checked, by module:
 
 ## Adding a check
 
-A module contributes checks through a private hook:
+`life`, `reserving`, `rates` and `credit` contribute checks through a private
+hook in their own module. Checks for the core, `special`, `mc`, `quant` and
+`viz` are written directly in `riskpy/verify.py`.
 
 ```python
 def _verification_checks():
