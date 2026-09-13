@@ -243,6 +243,9 @@ def test_heston_collapses_to_black_scholes_as_vol_of_vol_vanishes():
     assert heston == pytest.approx(bs, abs=1e-3)
 
 
+# These parameters violate Feller on purpose; the warning itself is asserted by
+# test_heston_warns_when_feller_is_violated, so here it is only noise.
+@pytest.mark.filterwarnings("ignore:Feller condition violated:RuntimeWarning")
 @pytest.mark.parametrize("strike", [80.0, 100.0, 125.0])
 def test_heston_respects_put_call_parity(strike):
     params = dict(S=100.0, K=strike, T=0.9, r=0.025,
