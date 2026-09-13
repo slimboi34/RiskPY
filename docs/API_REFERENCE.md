@@ -240,7 +240,9 @@ print(f"Loss ratio: {lr:.1%}")  # 75.0%
 ---
 
 #### `lookup_mortality_rate(age)`
-Looks up the mortality rate (qx) for a given age using a built-in CSO 2001 table.
+Returns an illustrative mortality rate (qx) from a coarse banded step table loosely
+shaped like CSO 2001 — it is not the published table. For real life tables use
+[`riskpy.life`](life.md).
 
 ```python
 qx = ActuarialMath.lookup_mortality_rate(age=65)
