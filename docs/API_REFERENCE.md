@@ -517,7 +517,7 @@ Writes calculation results to binary `.xlsx` files using the C++ OpenXLSX librar
 ```python
 from riskpy import ExcelExporter
 
-exporter = ExcelExporter(template="my_template.xlsx")
+exporter = ExcelExporter(template="my_template.xlsx")  # template is accepted but currently ignored
 exporter.map_column("A", "state", "State")
 exporter.map_column("B", "age", "Driver Age")
 ```
