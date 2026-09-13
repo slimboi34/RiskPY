@@ -343,8 +343,36 @@ print(f"${premium:,.2f}")
 
 ---
 
+#### `set_premium_column(excel_col, label="Final Premium")`
+Maps the calculated premium to an Excel column. Without it, exports contain the input columns but no premium.
+
+```python
+app.set_premium_column("E", "Premium")
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `excel_col` | `str` | Excel column letter for the premium |
+| `label` | `str` | Header text. Default: `"Final Premium"` |
+
+---
+
+#### `export_excel_headless(filename="policy_quote.xlsx")`
+Writes the most recent `calculate_headless` inputs and premium to an Excel file, without the GUI.
+
+```python
+app.calculate_headless({"state": "CA", "age": 22.0})
+app.export_excel_headless("quote.xlsx")
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `filename` | `str` | Output path. Default: `"policy_quote.xlsx"` |
+
+---
+
 #### `calculate_batch(csv_filepath, output_filename)`
-Processes an entire CSV file of policy inputs and exports results to Excel.
+Processes an entire CSV file of policy inputs and exports the mapped columns — the inputs, and the premium if `set_premium_column` was called — to Excel.
 
 ```python
 total, count = app.calculate_batch("policies.csv", "results.xlsx")
