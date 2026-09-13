@@ -790,7 +790,7 @@ class MackResult(ChainLadderResult):
             )
         sigma_sq = math.log(1.0 + (se / mean) ** 2)
         mu = math.log(mean) - 0.5 * sigma_sq
-        return math.exp(mu + math.sqrt(sigma_sq) * _normal_quantile(level))
+        return math.exp(mu + math.sqrt(sigma_sq) * _special.norm_ppf(level))
 
     def _columns(self):
         cols = super()._columns()
