@@ -409,8 +409,6 @@ class LifeTable:
         if steps % 2:
             raise ValueError(f"steps must be even (Simpson's rule pairs intervals), got {steps}")
 
-        h = 1.0 / steps
-
         def force(s: float) -> float:
             value = _check_finite(f"mu({s:g})", mu(s))
             if value < 0.0:
@@ -419,10 +417,8 @@ class LifeTable:
 
         rates = []
         for x in range(start_age, max_age):
-            total = force(float(x)) + force(float(x + 1))
-            for j in range(1, steps):
-                total += (4.0 if j % 2 else 2.0) * force(x + j * h)
-            rates.append(1.0 - math.exp(-total * h / 3.0))
+            integral = _special.simpson(force, float(x), float(x + 1), steps)
+            rates.append(1.0 - math.exp(-integral))
         rates = _close_generated(rates, start_age, max_age)
         return cls(rates, start_age=start_age, radix=radix)
 
