@@ -217,6 +217,7 @@ def test_wrong_shape_from_a_formula_is_caught():
         simulate(lambda x: 0.0, trials=100, seed=SEED, x=Normal(0.0, 1.0))
 
 
+@pytest.mark.filterwarnings("ignore:divide by zero:RuntimeWarning")
 def test_non_finite_output_is_caught():
     with pytest.raises(ValueError, match="NaN or infinity"):
         simulate(lambda x: 1.0 / x, trials=1_000, seed=SEED, x=Constant(0.0))
