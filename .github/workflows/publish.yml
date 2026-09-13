@@ -48,10 +48,13 @@ jobs:
   guard:
     name: Check tag matches version
     runs-on: ubuntu-latest
+    # Timeouts in this file are several times the v0.3.0 run (Windows wheels: 10 min),
+    # so they only ever stop a hung job, never a slow release.
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: v
         name: Compare tag to pyproject version
@@ -82,10 +85,11 @@ jobs:
     name: Build sdist
     needs: guard
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -109,7 +113,7 @@ jobs:
       - name: twine check
         run: twine check --strict dist/*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-sdist
           path: dist/*.tar.gz
@@ -121,6 +125,7 @@ jobs:
     name: Wheels ${{ matrix.label }}
     needs: guard
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -130,14 +135,14 @@ jobs:
           - { os: windows-latest, arch: AMD64,  label: "windows/AMD64" }
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v4.1.1
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-wheels-${{ matrix.arch }}-${{ matrix.os }}
           path: wheelhouse/*.whl
@@ -152,6 +157,7 @@ jobs:
     name: Wheels ${{ matrix.label }} (best effort)
     needs: guard
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -161,14 +167,14 @@ jobs:
           - { os: macos-latest,     arch: x86_64,  label: "macos/x86_64 (cross)" }
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v4.1.1
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-wheels-${{ matrix.arch }}-${{ matrix.os }}
           path: wheelhouse/*.whl
@@ -178,19 +184,20 @@ jobs:
     name: Upload to PyPI
     needs: [guard, build-sdist, build-wheels]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       id-token: write # Trusted Publishing (OIDC) — no API token secret
       contents: read
     steps:
       # Collects dist-sdist + every dist-wheels-* that succeeded, including
       # best-effort ones, into a single flat directory.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           path: staging
           merge-multiple: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -232,12 +239,13 @@ jobs:
     needs: [guard, publish]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           path: staging

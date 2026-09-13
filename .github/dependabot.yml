@@ -17,3 +17,8 @@ updates:
       actions:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+      # Majors also arrive as one PR. They still need a changelog read (runner
+      # minimums, artifact path rules), just not five separate ones.
+      actions-major:
+        patterns: ["*"]
+        update-types: ["major"]
