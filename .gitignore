@@ -23,11 +23,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Generated test files
-bulk_quotes.csv
-test_policy_quote.xlsx
-test_batch_input.csv
-test_batch_quotes.xlsx
 # Default output of UnderwritingApp.calculate_batch() — regenerated on every run,
 # was previously committed and shipped inside the sdist.
 batch_policy_quotes.xlsx
