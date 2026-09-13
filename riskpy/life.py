@@ -50,6 +50,8 @@ import numbers
 import warnings
 from typing import Callable, List, Optional, Sequence, Tuple
 
+from . import _special
+
 __all__ = [
     "LifeTable",
     # interest
