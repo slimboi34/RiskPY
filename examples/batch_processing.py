@@ -64,6 +64,7 @@ app.add_field("state", "State", "A", choices=states)
 app.add_field("driver_age", "Driver Age", "B")
 app.add_field("vehicle_type", "Vehicle Type", "C", choices=vehicles)
 app.add_field("claims_history", "Claims History", "D", choices=claims)
+app.set_premium_column("E", "Premium")  # without this the workbook has no premium column
 app.set_factor_model(model)
 
 # =============================================
