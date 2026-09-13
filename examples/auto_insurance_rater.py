@@ -10,7 +10,8 @@ The model applies multiplicative factors for:
 - Vehicle Type (class rating)
 - Claims History (experience modification)
 
-Run this file:
+Run this file (the GUI needs the [gui] extra and a Python build with Tkinter):
+    pip install "open-riskpy[gui]"
     python auto_insurance_rater.py
 """
 from riskpy import UnderwritingApp, FactorModel
