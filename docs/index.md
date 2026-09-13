@@ -151,7 +151,8 @@ model.add_multiplier("state", "FL", 3.0)
 model.add_numeric_band_multiplier("age", 16, 25, 2.0)
 model.calculate({"state": "FL", "age": 19.0})            # 6000.0
 
-pmf = FourierTransform.compound_poisson_pmf(severity_pmf, expected_frequency=2.0, grid_size=64)
+# Severity always 1 → aggregate is Poisson(λ), with no sampling error at all
+pmf = FourierTransform.compound_poisson_pmf([0.0, 1.0], expected_frequency=2.0, grid_size=64)
 
 sim = MonteCarloSimulator(trials=200_000, seed=7)
 losses = sim.simulate_aggregate_loss(5.0, 8.0, 0.5)
