@@ -110,8 +110,8 @@ Feller condition `2κθ > σ²` fails, because then the simulation misbehaves
 even though the closed-form price is fine.
 
 Both closed forms are checked against Monte Carlo averages of
-`exp(−∫r dt)` in the verification suite, and both collapse to the
-deterministic `exp(−∫r dt)` as `σ → 0`. That second check is more delicate
+`exp(−∫r dt)` — Vasicek in the verification suite, CIR in the tests — and
+both collapse to the deterministic `exp(−∫r dt)` as `σ → 0`. That second check is more delicate
 than it sounds: the CIR formula has a `1/σ²` exponent, and the textbook
 arrangement loses every digit below about `σ = 10⁻⁶`. The implementation uses
 a `log1p` form that does not.
