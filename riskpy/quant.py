@@ -23,8 +23,9 @@ import cmath
 import math
 
 from . import _special
+from .mc import _numpy
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence
+from typing import Optional, Sequence
 
 __all__ = [
     "black_scholes",
