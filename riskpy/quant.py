@@ -254,12 +254,6 @@ def implied_vol(
 # ---------------------------------------------------------------------------
 
 
-def _numpy():
-    from .mc import _numpy as _np
-
-    return _np()
-
-
 def gbm_paths(
     S0: float,
     mu: float,
