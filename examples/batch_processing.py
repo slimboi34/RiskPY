@@ -4,7 +4,9 @@ RiskPY Example: Batch CSV Processing
 This example shows how to process thousands of policy 
 submissions from a CSV file and export results to Excel.
 
-Run this file:
+Run this file (UnderwritingApp needs the [gui] extra and Tkinter, even though
+no window opens here):
+    pip install "open-riskpy[gui]"
     python batch_processing.py
 """
 import csv
