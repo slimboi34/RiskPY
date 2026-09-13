@@ -153,12 +153,6 @@ def _check_count(value: object, name: str = "n") -> int:
     return n
 
 
-def _numpy():
-    from .mc import _numpy as _mc_numpy
-
-    return _mc_numpy()
-
-
 # ---------------------------------------------------------------------------
 # One exposure
 # ---------------------------------------------------------------------------
