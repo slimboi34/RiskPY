@@ -255,7 +255,7 @@ variance. Plot it with `result.plot("tornado")`.
 ## Exporting
 
 ```python
-result.to_frame()      # pandas DataFrame: every input column plus the output
+result.to_frame()      # pandas DataFrame (needs pandas): every input column plus the output
 result.histogram(60)   # (edges, counts)
 result.exceedance_curve()
 ```
