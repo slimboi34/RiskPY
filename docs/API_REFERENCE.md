@@ -272,7 +272,7 @@ app = UnderwritingApp(title="My Pricing Tool", excel_template="template.xlsx")
 | Parameter | Type | Description |
 |---|---|---|
 | `title` | `str` | Window title for the GUI. Default: `"Actuarial Underwriter"` |
-| `excel_template` | `str` | Path to Excel template file. Default: `"corporate_layout.xlsx"` |
+| `excel_template` | `str` | Accepted but currently ignored: every export creates a new workbook rather than filling a template. Default: `"corporate_layout.xlsx"` |
 
 ### Methods
 
