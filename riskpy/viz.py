@@ -150,12 +150,6 @@ def _plt():
     return plt
 
 
-def _numpy():
-    from .mc import _numpy as _np  # single source of the error message
-
-    return _np()
-
-
 def _colours() -> Dict[str, Any]:
     return PALETTE[_MODE]
 
