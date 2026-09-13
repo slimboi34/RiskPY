@@ -26,11 +26,11 @@ model.add_numeric_band_multiplier("driver_age", 26, 99, 1.0)
 ```python
 from riskpy import MonteCarloSimulator
 
-# Runs 1,000,000 simulations instantly in C++ using true Hardware Randomness
-# Returns a Python array of the aggregated losses for plotting
+# Runs 1,000,000 simulations in C++ (Mersenne Twister; pass seed= for a reproducible run)
+# Returns a Python list of the aggregated losses for plotting
 results = MonteCarloSimulator(trials=1000000).simulate_aggregate_loss(
-    expected_frequency=5.0, 
-    expected_severity_mu=10.0, 
+    expected_frequency=5.0,
+    expected_severity_mu=15.0,  # log scale: median e^15 ≈ $3.3M, mean e^(μ+σ²/2) ≈ $10M
     severity_sigma=1.5
 )
 ```
@@ -45,6 +45,8 @@ from riskpy import ActuarialMath
 # $50k yearly payment for 20 years at 5% discount rate
 pv = ActuarialMath.present_value(rate=0.05, periods=20, payment=50000)
 
-# Pull CSO mortality rate for an 85 year old
+# An illustrative banded mortality rate for an 85 year old — not a published table
 q_x = ActuarialMath.lookup_mortality_rate(age=85)
 ```
+
+For real mortality tables, annuities and reserves, use [`riskpy.life`](life.md).
