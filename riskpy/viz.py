@@ -331,7 +331,6 @@ def _kde(values, grid_size: int = 512, bandwidth: Optional[float] = None):
 
 
 def _finish(ax, title, xlabel=None, ylabel=None):
-    c = _colours()
     if title:
         ax.set_title(title)
     if xlabel:
