@@ -101,9 +101,10 @@ life.endowment_insurance(sult, 40, 20, 0.05)  # the sum of the two
 life.mthly_annuity_due(sult, 40, 0.05, 12)    # 17.999423
 ```
 
-The identities you would check by hand are checked in the verification suite:
-`A_x = 1 − d·ä_x`, `A_{x:n} = A¹_{x:n} + ₙE_x`, `ä_{x:n} = ä_x − ₙE_x·ä_{x+n}`,
-`a_x = ä_x − 1`, and the recursion `A_x = v·q_x + v·p_x·A_{x+1}`.
+The identities you would check by hand are checked: `A_x = 1 − d·ä_x` and
+`A_{x:n} = A¹_{x:n} + ₙE_x` in the verification suite, and
+`ä_{x:n} = ä_x − ₙE_x·ä_{x+n}`, `a_x = ä_x − 1` and the recursion
+`A_x = v·q_x + v·p_x·A_{x+1}` in the tests.
 
 ### Joint lives
 
