@@ -49,7 +49,7 @@ build:
 	$(PYTHON) -m build
 
 clean:
-	rm -rf build dist *.egg-info _skbuild .pytest_cache
+	rm -rf build dist wheelhouse site docs/assets *.egg-info _skbuild .pytest_cache
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 check: install test verify smoke
