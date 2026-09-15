@@ -1,3 +1,90 @@
+# RiskPY v0.3.1 — Release Notes
+
+**Release date:** 2026-09-15  
+**Type:** Patch release — one pricing fix, a leaner sdist, internal cleanup  
+**Install:** `pip install -U open-riskpy`  
+**Documentation:** <https://slimboi34.github.io/RiskPY/>
+
+---
+
+## TL;DR
+
+`ExposureRating.layer_premium` now prices ground-up layers; an attachment of 0
+used to raise. The rest comes from the 2026-09-13 audit: duplicate helpers
+merged, dead code removed, about twenty statements in the docs brought back in
+line with the code, and an sdist that no longer ships the CI config. No result
+changes except the fix below.
+
+---
+
+## Fixed
+
+### `ExposureRating.layer_premium` raised at attachment 0
+
+`layer_premium(p, attachment=0, limit)` raised `ValueError: Target limit must
+be strictly positive`, although the method's own guard accepts
+`attachment >= 0` and a ground-up layer is the commonest one to price. The
+power-curve ILF is only defined for limits above zero, but the limited expected
+value at zero is zero for any severity curve, so a layer from 0 now uses
+ILF = 0:
+
+```text
+layer_premium(p, 0, L) = p · ILF(L) / ILF(base)
+```
+
+That is the limit as the attachment tends to 0, and layers stack:
+[0, 100k] + [100k, 250k] = [0, 250k]. `increased_limits_factor(0)` itself
+still raises.
+
+### Smaller fixes
+
+- The `UnderwritingApp` import error names what is actually missing (Tkinter,
+  or Matplotlib/NumPy from the `[gui]` extra) instead of always blaming Tkinter.
+- `viz.triangle` no longer calls Matplotlib's deprecated `Colormap.set_bad`.
+- About twenty statements in the docs had drifted from the code. Among them:
+  snippets that raised `NameError`, the lognormal μ, the Greeks and `summary()`
+  output, the batch example's premium column, and the architecture pages.
+
+---
+
+## Changed
+
+- The sdist leaves out `.github/` and `validate_riskpy.ipynb`. Neither is a
+  build input; nothing else in the sdist changed.
+- `rates` and `credit` import their identical validators from a new private
+  module, `riskpy._validate`. `rates._check_finite` and the rest still resolve,
+  and every message is unchanged.
+- `LifeTable.from_force` integrates with `_special.simpson`. Its rates and
+  errors are bitwise identical to 0.3.0 across 62 cases.
+- The private `quant._normal_quantile` is gone. It had only wrapped
+  `riskpy._special.norm_ppf` since 0.3.0, so call that instead.
+- The Python < 3.8 `importlib_metadata` fallback is removed; the package
+  requires 3.10.
+- The `[dev]` extra adds pandas, so the `to_frame()` tests run in CI instead of
+  skipping.
+- CI: actions move to their current majors, every workflow gets least-privilege
+  permissions and job timeouts, and Dependabot groups major action bumps into
+  one PR.
+
+---
+
+## Testing
+
+410 tests pass with none skipped, and all 125 verification checks pass.
+A new regression test covers the ground-up layer: the closed form, stacking,
+continuity at an attachment of 1e-9, the linear b = 0 curve, and that a
+negative attachment still raises. The batch-app coverage the
+root-level scripts used to give now lives in `tests/test_app_batch.py`.
+
+---
+
+## Upgrading
+
+No public API changed. Code written against 0.3.0 runs unchanged; the one
+different result is that ground-up layers return a premium instead of raising.
+
+---
+
 # RiskPY v0.3.0 — Release Notes
 
 **Release date:** 2026-09-12  

@@ -40,11 +40,11 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **v0.3.0** — four new fields of risk (life, reserving, rates, credit), a
-> rewritten Monte Carlo engine with an analytic layer on every distribution,
-> Latin hypercube sampling and rank correlation, twenty-two charts, a
-> dependency-free special-function layer, and the verification suite. Also
-> fixes a Heston mispricing that had been there since 0.2.8. See
+> **v0.3.1** — `ExposureRating.layer_premium` prices ground-up layers
+> (attachment 0 used to raise), the sdist ships build inputs only, and the
+> internals and docs are tidied. It builds on v0.3.0: four new fields of risk
+> (life, reserving, rates, credit), a rewritten Monte Carlo engine,
+> twenty-two charts and the verification suite. See
 > [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ---
