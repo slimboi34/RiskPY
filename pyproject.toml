@@ -109,6 +109,9 @@ docs = [
 
 [tool.scikit-build]
 wheel.packages = ["riskpy"]
+# The sdist is what pip compiles from when no wheel matches, so ship build inputs
+# only: the CI config and the exploratory notebook stay in the repository.
+sdist.exclude = [".github", "validate_riskpy.ipynb"]
 cmake.version = ">=3.15"
 cmake.build-type = "Release"
 # Policy floor for older dep CMakeLists (OpenXLSX).
