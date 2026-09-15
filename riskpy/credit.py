@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple, Union
 
 from . import _special
+from ._validate import _check_finite, _check_non_negative, _check_positive
 from .mc import _numpy
 from .quant import black_scholes
 
@@ -82,30 +83,6 @@ _SUPERVISORY_LEVEL = 0.999  # Basel's confidence level, fixed by the Accord.
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
-
-
-def _check_finite(name: str, value: float) -> float:
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"{name} must be a number, got {value!r}") from None
-    if not math.isfinite(value):
-        raise ValueError(f"{name} must be finite, got {value!r}")
-    return value
-
-
-def _check_positive(name: str, value: float) -> float:
-    value = _check_finite(name, value)
-    if not value > 0.0:
-        raise ValueError(f"{name} must be > 0, got {value!r}")
-    return value
-
-
-def _check_non_negative(name: str, value: float) -> float:
-    value = _check_finite(name, value)
-    if not value >= 0.0:
-        raise ValueError(f"{name} must be >= 0, got {value!r}")
-    return value
 
 
 def _check_probability(name: str, value: float) -> float:
