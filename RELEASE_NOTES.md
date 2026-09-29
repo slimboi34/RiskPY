@@ -1,3 +1,50 @@
+# RiskPY v0.3.2 — Release Notes
+
+**Release date:** 2026-09-29  
+**Type:** Patch release — the verification suite on a lean install  
+**Install:** `pip install -U open-riskpy`  
+**Documentation:** <https://slimboi34.github.io/RiskPY/>
+
+---
+
+## TL;DR
+
+`riskpy-verify` now passes on a bare `pip install open-riskpy`. A module whose
+optional dependency is not installed — `mc`, `quant` and `reserving` without
+NumPy, `viz` without Matplotlib — is reported as **skipped**, together with the
+extra that would enable it, instead of being counted as a failed check. No
+numerical result changes.
+
+---
+
+## Fixed
+
+### A lean install reported three failures that were not failures
+
+The core wheel deliberately has no Python dependencies, and the README says so.
+But running `riskpy-verify` on exactly that install printed
+`65/68 checks pass`, listed three `FAILED` entries reading
+`import failed: riskpy.mc needs NumPy`, and exited 1 — which told a new user
+the mathematics was wrong when only an extra was missing.
+
+The suite now separates the two questions. `verify.collect()` returns the
+checks it could compute *and* the modules it could not import; `Report.skipped`
+carries them as `(module, reason)`; the text summary prints a `SKIPPED` section
+with `pip install "open-riskpy[sim]"` (or `[viz]`) next to it; `--json` gains a
+`skipped` list and `--markdown` a line above the table. `Report.ok` is
+unchanged — no failed checks and at least one check — so a skipped module never
+turns a red run green, and asking for a module that cannot run
+(`riskpy-verify -m mc` without NumPy) still fails.
+
+### API
+
+- New: `riskpy.verify.collect(modules, oracle)` → `(checks, skipped)`.
+- New: `Report.skipped: list[tuple[str, str]]`, and `"skipped"` in `to_dict()`.
+- Unchanged: `verify.checks()`, `verify.run()`, `Report.ok`, the CLI flags and
+  exit codes for runs that have failures.
+
+---
+
 # RiskPY v0.3.1 — Release Notes
 
 **Release date:** 2026-09-15  

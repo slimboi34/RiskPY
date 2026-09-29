@@ -92,3 +92,41 @@ def test_benchmark_returns_timings():
     timings = verify.benchmark(repeat=1)
     assert len(timings) >= 10
     assert all(t >= 0.0 for t in timings.values())
+
+
+def test_missing_optional_dependency_is_skipped_not_failed(monkeypatch):
+    """A module whose extra is not installed is a fact about the environment,
+    not a wrong number: the run still passes and says what to install."""
+
+    def no_numpy():
+        raise ImportError("riskpy.mc needs NumPy, which is not installed.")
+
+    monkeypatch.setitem(verify._SOURCES, "mc", no_numpy)
+    report = verify.run(["mc", "core"], oracle=False)
+    assert report.ok
+    assert report.skipped == [("mc", "riskpy.mc needs NumPy, which is not installed.")]
+    assert report.checks and all(c.module == "core" for c in report.checks)
+    assert not report.failed
+    text = report.summary()
+    assert "1 module skipped" in text
+    assert "SKIPPED" in text and 'pip install "open-riskpy[sim]"' in text
+    assert report.to_dict()["skipped"] == [
+        {"module": "mc", "reason": "riskpy.mc needs NumPy, which is not installed."}
+    ]
+    assert "Skipped (optional dependency missing): `mc`" in report.to_markdown()
+    assert verify.checks(["mc", "core"], oracle=False) == report.checks
+
+
+def test_only_skipped_modules_is_still_not_a_pass(monkeypatch):
+    """Asking for a module that cannot run at all must not verify green."""
+    monkeypatch.setitem(verify._SOURCES, "viz", lambda: (_ for _ in ()).throw(ImportError("no matplotlib")))
+    report = verify.run(["viz"], oracle=False)
+    assert not report.ok and not report.checks and report.skipped == [("viz", "no matplotlib")]
+
+
+def test_cli_passes_when_only_optional_modules_are_missing(monkeypatch, capsys):
+    monkeypatch.setitem(verify._SOURCES, "viz", lambda: (_ for _ in ()).throw(ImportError("no matplotlib")))
+    assert verify.main(["-m", "viz", "-m", "core", "--no-oracle"]) == 0
+    out = capsys.readouterr().out
+    assert "SKIPPED" in out and 'pip install "open-riskpy[viz]"' in out
+    assert verify.main(["-m", "viz", "--no-oracle", "-q"]) == 1

@@ -45,7 +45,12 @@ Some of what is checked, by module:
 | `viz` | every palette colour clears 3:1 contrast on its surface; the sequential ramps are monotone in lightness; eight categorical slots and no more |
 
 Without SciPy the suite runs 111 checks; with it, the 14 oracle checks bring it
-to 125. NumPy is required for the `mc`, `quant` and `reserving` checks.
+to 125. NumPy is required for the `mc`, `quant` and `reserving` checks and
+Matplotlib for `viz`. On an install without them those modules are reported as
+**skipped**, with the extra that enables them (`pip install "open-riskpy[sim]"`),
+and the run still passes: a missing extra is a fact about the environment, not a
+wrong number. Asking for such a module explicitly (`riskpy-verify -m mc`) fails,
+because nothing you asked for could run.
 
 ## Where it runs
 

@@ -40,11 +40,13 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **v0.3.1** — `ExposureRating.layer_premium` prices ground-up layers
-> (attachment 0 used to raise), the sdist ships build inputs only, and the
-> internals and docs are tidied. It builds on v0.3.0: four new fields of risk
-> (life, reserving, rates, credit), a rewritten Monte Carlo engine,
-> twenty-two charts and the verification suite. See
+> **v0.3.2** — `riskpy-verify` passes on a bare `pip install open-riskpy`:
+> a module whose optional dependency is missing (`mc` without NumPy, `viz`
+> without Matplotlib) is now reported as *skipped*, with the extra that
+> enables it, instead of counted as three failed checks. No result changes.
+> It builds on v0.3.1 (ground-up layers in `ExposureRating`) and v0.3.0: four
+> fields of risk (life, reserving, rates, credit), a rewritten Monte Carlo
+> engine, twenty-two charts and the verification suite. See
 > [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ---
@@ -107,6 +109,7 @@ quant.heston_price(S=100, K=100, T=1, r=0.03, v0=0.04, kappa=2, theta=0.04, xi=0
 ```bash
 riskpy-verify              # 111 checks (125 with SciPy), ~1 second
 riskpy-verify --bench      # plus timings
+riskpy-verify -m life      # one module; a module whose extra is missing is skipped, not failed
 ```
 
 A test suite says the code does what it did yesterday. The verification suite

@@ -33,6 +33,12 @@ own for the compiled core, the special functions, the simulation engine, the
 pricing layer, and the chart palette. SciPy is never required, but if it is
 installed the special functions are also checked against it as an independent
 oracle.
+
+A module whose optional dependency is missing — ``mc`` without NumPy, ``viz``
+without Matplotlib — is reported as **skipped**, not failed: the report names
+it and the extra that would enable it, and the run still passes. A bare
+``pip install open-riskpy`` therefore verifies clean, and ``riskpy-verify -m mc``
+on that install fails, because a module you asked for could not run at all.
 """
 
 from __future__ import annotations
@@ -47,7 +53,7 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-__all__ = ["Check", "Report", "run", "checks", "benchmark", "MODULES", "main"]
+__all__ = ["Check", "Report", "run", "checks", "collect", "benchmark", "MODULES", "main"]
 
 # The order the report lists them in.
 MODULES: Tuple[str, ...] = (
@@ -113,6 +119,9 @@ class Report:
     version: str
     benchmarks: Dict[str, float] = field(default_factory=dict)
     oracle: bool = False
+    #: ``(module, reason)`` for each module that could not run because an
+    #: optional dependency is missing. Not failures: see :func:`collect`.
+    skipped: List[Tuple[str, str]] = field(default_factory=list)
 
     @property
     def passed(self) -> List[Check]:
@@ -140,7 +149,8 @@ class Report:
         every check listed if ``verbose``."""
         lines = [
             f"RiskPY {self.version} verification — {len(self.passed)}/{len(self.checks)} checks pass "
-            f"in {self.seconds:.2f}s" + ("  (SciPy oracle on)" if self.oracle else ""),
+            f"in {self.seconds:.2f}s" + ("  (SciPy oracle on)" if self.oracle else "")
+            + (f"  ({len(self.skipped)} module{'s' if len(self.skipped) != 1 else ''} skipped)" if self.skipped else ""),
             "",
             f"  {'module':<10} {'pass':>5} {'fail':>5}   worst margin",
         ]
@@ -159,6 +169,11 @@ class Report:
                     f"      value {c.value!r}  reference {c.reference!r}  "
                     f"error {c.error:.3g} > tolerance {c.tolerance:.3g}"
                 )
+        if self.skipped:
+            lines += ["", "SKIPPED (optional dependency missing — not a failure):"]
+            for module, reason in self.skipped:
+                lines.append(f"  [{module}] {reason.strip().splitlines()[0]}")
+            lines.append(f"  to run them too:  {_install_hint([m for m, _ in self.skipped])}")
         if verbose:
             lines += ["", "ALL CHECKS:"]
             for c in self.checks:
@@ -178,6 +193,7 @@ class Report:
             "passed": len(self.passed),
             "failed": len(self.failed),
             "oracle": self.oracle,
+            "skipped": [{"module": m, "reason": r} for m, r in self.skipped],
             "checks": [c.to_dict() for c in self.checks],
             "benchmarks": self.benchmarks,
         }
@@ -194,6 +210,12 @@ class Report:
         rows = [
             f"**RiskPY {self.version}** — {len(self.passed)} of {len(self.checks)} checks pass "
             f"({self.seconds:.1f}s)" + (", SciPy oracle on" if self.oracle else ""),
+        ]
+        if self.skipped:
+            names = ", ".join(f"`{m}`" for m, _ in self.skipped)
+            rows += ["", f"_Skipped (optional dependency missing): {names} — "
+                         f"`{_install_hint([m for m, _ in self.skipped])}`_"]
+        rows += [
             "",
             "| module | check | value | reference | error | tolerance | |",
             "|---|---|---:|---:|---:|---:|:-:|",
@@ -482,30 +504,53 @@ _SOURCES: Dict[str, Callable[[], List[Raw]]] = {
 }
 
 
-def checks(modules: Optional[Iterable[str]] = None, oracle: bool = True) -> List[Check]:
-    """Compute every check without judging it — the raw material of a report."""
+def collect(modules: Optional[Iterable[str]] = None, oracle: bool = True) -> Tuple[List[Check], List[Tuple[str, str]]]:
+    """Compute every check without judging it, and list the modules that could not run.
+
+    Returns ``(checks, skipped)``. A module lands in ``skipped`` — as
+    ``(module, reason)`` — when importing it raises :class:`ImportError`,
+    which means an optional dependency such as NumPy or Matplotlib is not
+    installed. That is a fact about the environment, not about the
+    mathematics, so it is reported rather than counted as a failed check.
+    """
     wanted = list(MODULES) if modules is None else list(modules)
     unknown = [m for m in wanted if m not in _SOURCES]
     if unknown:
         raise ValueError(f"unknown module(s) {unknown}; choose from {list(_SOURCES)}")
 
     collected: List[Check] = []
+    skipped: List[Tuple[str, str]] = []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         for module in wanted:
             try:
                 raw = _SOURCES[module]()
             except ImportError as exc:
-                # An optional dependency is missing: record it as a single
-                # failed check so the report says so, rather than vanishing.
-                collected.append(Check(module, f"import failed: {exc}", math.nan, 0.0, 0.0))
+                skipped.append((module, str(exc)))
                 continue
             for name, value, reference, tolerance in raw:
                 collected.append(Check(module, name, _as_float(value), _as_float(reference), float(tolerance)))
         if oracle and "special" in wanted:
             for name, value, reference, tolerance in _oracle_checks():
                 collected.append(Check("special", name, _as_float(value), _as_float(reference), float(tolerance)))
-    return collected
+    return collected, skipped
+
+
+def checks(modules: Optional[Iterable[str]] = None, oracle: bool = True) -> List[Check]:
+    """The checks alone — :func:`collect` without the skipped list."""
+    return collect(modules, oracle=oracle)[0]
+
+
+# Which extra enables which module, for the hint printed next to a skip.
+_EXTRA_FOR_MODULE: Dict[str, str] = {
+    "core": "sim", "special": "sim", "mc": "sim", "quant": "sim", "life": "sim",
+    "reserving": "sim", "rates": "sim", "credit": "sim", "viz": "viz",
+}
+
+
+def _install_hint(modules: Iterable[str]) -> str:
+    extras = sorted({_EXTRA_FOR_MODULE.get(m, "sim") for m in modules})
+    return f'pip install "open-riskpy[{",".join(extras)}]"'
 
 
 def _as_float(x: Any) -> float:
@@ -524,10 +569,10 @@ def run(modules: Optional[Iterable[str]] = None, bench: bool = False, oracle: bo
     from . import __version__
 
     started = time.perf_counter()
-    collected = checks(modules, oracle=oracle)
+    collected, skipped = collect(modules, oracle=oracle)
     has_oracle = oracle and any(c.name.startswith("oracle:") for c in collected)
     timings = benchmark() if bench else {}
-    return Report(collected, time.perf_counter() - started, __version__, timings, has_oracle)
+    return Report(collected, time.perf_counter() - started, __version__, timings, has_oracle, skipped)
 
 
 # ---------------------------------------------------------------------------
