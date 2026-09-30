@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 import sys
 import threading
@@ -179,8 +180,9 @@ class _Stdio:
 
 def test_mcp_server_lists_and_calls_the_tools_over_stdio():
     pytest.importorskip("mcp")
+    # utf-8 explicitly: the descriptions carry en dashes, and Windows' locale codec is not utf-8
     proc = subprocess.Popen([sys.executable, "-m", "riskpy.mcp_server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, bufsize=1)
+                            stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
     try:
         io = _Stdio(proc)
         init = io.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -191,7 +193,7 @@ def test_mcp_server_lists_and_calls_the_tools_over_stdio():
         names = {t["name"] for t in listed["result"]["tools"]}
         assert {"black_scholes", "basel_irb_capital", "life_annuity_due", "aggregate_loss", "verify"} <= names
         bs = next(t for t in listed["result"]["tools"] if t["name"] == "black_scholes")
-        assert bs["description"].startswith("Black–Scholes–Merton price")
+        assert bs["description"].startswith("Black") and "Merton price of a European option" in bs["description"]
         assert "sigma" in bs["inputSchema"]["properties"]
         called = io.request("tools/call", {"name": "black_scholes", "arguments": BS})
         assert called["result"].get("isError") is not True, called
@@ -207,4 +209,5 @@ def test_mcp_client_config_points_at_the_command():
     from riskpy import mcp_server
 
     cfg = mcp_server.client_config()
-    assert cfg["mcpServers"]["riskpy"]["command"].endswith("riskpy-mcp")
+    command = cfg["mcpServers"]["riskpy"]["command"]
+    assert os.path.basename(command).lower().startswith("riskpy-mcp")   # riskpy-mcp, or riskpy-mcp.EXE on Windows
