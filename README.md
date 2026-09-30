@@ -40,13 +40,14 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **v0.3.2** — `riskpy-verify` passes on a bare `pip install open-riskpy`:
-> a module whose optional dependency is missing (`mc` without NumPy, `viz`
-> without Matplotlib) is now reported as *skipped*, with the extra that
-> enables it, instead of counted as three failed checks. No result changes.
-> It builds on v0.3.1 (ground-up layers in `ExposureRating`) and v0.3.0: four
-> fields of risk (life, reserving, rates, credit), a rewritten Monte Carlo
-> engine, twenty-two charts and the verification suite. See
+> **v0.4.0** — for AI agents: sixteen verified calculators as tools with JSON
+> schemas (`riskpy-tools`, `riskpy.tools.call`), an MCP server
+> (`riskpy-mcp`, `pip install "open-riskpy[mcp]"`) so Claude Code and friends
+> can price, reserve and simulate with numbers the verification suite stands
+> behind, and `riskpy-context`, a description of the library generated from
+> the installed package for the model about to use it. It builds on v0.3.x:
+> four fields of risk (life, reserving, rates, credit), a rewritten Monte
+> Carlo engine, twenty-two charts and the verification suite. See
 > [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ---
@@ -103,6 +104,22 @@ quant.heston_price(S=100, K=100, T=1, r=0.03, v0=0.04, kappa=2, theta=0.04, xi=0
 ```
 
 ---
+
+## For AI agents
+
+```bash
+riskpy-tools                         # sixteen verified calculators as tools, with JSON schemas
+riskpy-tools call black_scholes '{"S": 100, "K": 100, "T": 1, "r": 0.05, "sigma": 0.2}'   # 10.4506
+riskpy-mcp                           # the same tools over MCP  (pip install "open-riskpy[mcp]")
+riskpy-context                       # the library described for the model about to use it
+```
+
+`from riskpy import tools; tools.manifest()` is the list as data and `tools.call(name, {...})`
+runs one; every tool wraps a public function the verification suite checks, takes plain
+numbers (rates as decimals, times in years) and returns JSON. `riskpy-mcp --config` prints
+the client configuration for Claude Code, Claude Desktop or Cursor. `riskpy-context`
+generates the conventions that bite, every module's public signatures and the tool list
+from the installed package, so it cannot go stale. See [the docs](https://slimboi34.github.io/RiskPY/agents/).
 
 ## Verification
 

@@ -8,7 +8,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "open-riskpy"
-version = "0.3.2"
+version = "0.4.0"
 description = "Risk and actuarial engine with a C++ core: Monte Carlo with correlation and Latin hypercube, life contingencies, claims reserving (chain ladder, Mack, bootstrap), yield curves and short-rate models, credit risk, option pricing, twenty-two charts, and a verification suite that checks every identity."
 readme = "README.md"
 # PEP 639 SPDX expression (metadata 2.4) — replaces the deprecated table form.
@@ -73,6 +73,9 @@ Changelog = "https://github.com/slimboi34/RiskPY/blob/main/RELEASE_NOTES.md"
 
 [project.scripts]
 riskpy-verify = "riskpy.verify:main"
+riskpy-tools = "riskpy.tools:main"
+riskpy-context = "riskpy.context:main"
+riskpy-mcp = "riskpy.mcp_server:main"
 
 [project.optional-dependencies]
 dev = [
@@ -84,6 +87,12 @@ dev = [
     # Only the to_frame() tests use it, and they skip without it — so without
     # this line CI silently never exercised them.
     "pandas>=1.5.0",
+    # The MCP server test needs the SDK; it skips when the SDK is absent.
+    "mcp>=2; python_version >= '3.10'",
+]
+# riskpy-mcp — the tools over the Model Context Protocol, for Claude Code and friends.
+mcp = [
+    "mcp>=2",
 ]
 gui = [
     "matplotlib>=3.5.0",

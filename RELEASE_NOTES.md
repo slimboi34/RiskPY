@@ -1,3 +1,69 @@
+# RiskPY v0.4.0 — Release Notes
+
+**Release date:** 2026-09-30  
+**Type:** Minor release — the library for AI agents  
+**Install:** `pip install -U open-riskpy` (`"open-riskpy[mcp]"` for the MCP server)  
+**Documentation:** <https://slimboi34.github.io/RiskPY/agents/>
+
+---
+
+## TL;DR
+
+An agent that can call functions needs a list of what it may call, a schema for
+each call, and results it can pass on as data. 0.4.0 provides all three,
+generated from the calculators' own signatures and docstrings, plus an MCP
+server and a description of the library written for the model about to use
+it. No numerical result changes; nothing new is required on a lean install.
+
+---
+
+## Added
+
+### `riskpy.tools` and `riskpy-tools`
+
+Sixteen tools, each a thin wrapper over a public function the verification
+suite checks: `black_scholes`, `option_greeks`, `implied_vol`, `bond_analytics`,
+`basel_irb_capital`, `expected_loss`, `merton`, `cds_par_spread`,
+`annuity_certain`, `life_annuity_due`, `life_insurance`, `net_premium_reserve`,
+`aggregate_loss`, `chain_ladder`, `mack_chain_ladder` and `verify`. Arguments are
+plain numbers, strings and lists (rates as decimals, times in years); results
+are JSON. `tools.manifest()` lists them with a JSON Schema per tool derived from
+the type hints, with parameter descriptions from the docstrings; `tools.call(name,
+arguments)` runs one. `aggregate_loss` takes a severity mean and standard
+deviation on the money scale and converts to the lognormal parameters itself,
+so the commonest severity mistake cannot be made through it. The two triangle
+tools need NumPy and are reported as `available: false` with the `pip install`
+line until it is present; calling one raises `ToolUnavailable` saying the same.
+
+`riskpy-tools` lists them; `--json` prints the manifest; `call NAME '{...}'`
+runs one; `schema NAME` prints its schema.
+
+### `riskpy-mcp`
+
+The tools over the Model Context Protocol on stdio, for Claude Code, Claude
+Desktop, Cursor and any other client: `pip install "open-riskpy[mcp]"`, then
+`riskpy-mcp`. `riskpy-mcp --config` prints the client configuration and the
+`claude mcp add riskpy -- riskpy-mcp` line. Every available tool is exposed under
+its own name with its schema and description.
+
+### `riskpy-context`
+
+A Markdown description of the library for the coding agent (or person) about
+to use it: install lines per extra, the conventions that bite (rates are
+decimals, `i` is effective annual while `r` is continuous, `LogNormal(mu,
+sigma)` takes the underlying normal's parameters, seeds), the compiled core's
+classes, every module's public functions with their signatures and first
+docstring line, the tool table, and how to verify. Generated from the installed
+package. `--json` gives it as data, `-o FILE` writes it.
+
+### API
+
+- New modules: `riskpy.tools`, `riskpy.context`, `riskpy.mcp_server`.
+- New console scripts: `riskpy-tools`, `riskpy-context`, `riskpy-mcp`.
+- New extra: `open-riskpy[mcp]` (the MCP SDK, `mcp>=2`).
+
+---
+
 # RiskPY v0.3.2 — Release Notes
 
 **Release date:** 2026-09-29  

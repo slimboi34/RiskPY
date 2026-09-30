@@ -58,6 +58,7 @@ nav:
       - Interest rates: rates.md
       - Credit risk: credit.md
   - Verification: verification.md
+  - For AI agents: agents.md
   - The compiled core:
       - How it works: HOW_IT_WORKS.md
       - Tutorials: TUTORIALS.md

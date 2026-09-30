@@ -87,6 +87,8 @@ __all__ = [
     "rates",
     "credit",
     "verify",
+    "tools",
+    "context",
     "__version__",
 ]
 
@@ -103,6 +105,8 @@ _LAZY_SUBMODULES = {
     "rates",
     "credit",
     "verify",
+    "tools",
+    "context",
 }
 
 
