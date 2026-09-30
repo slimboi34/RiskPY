@@ -190,7 +190,9 @@ Details in [docs/PUBLISHING.md](docs/PUBLISHING.md).
 
 ## License
 
-MIT — free for personal and commercial use.
+RiskPY is Copyright © 2026 Joshua Harty and is released under the **MIT License** — see
+[LICENSE](LICENSE). Free for personal and commercial use, modification and redistribution;
+keep the copyright and permission notice with any copy.
 
 - **GitHub:** [github.com/slimboi34/RiskPY](https://github.com/slimboi34/RiskPY)
 - **PyPI:** [pypi.org/project/open-riskpy](https://pypi.org/project/open-riskpy)
