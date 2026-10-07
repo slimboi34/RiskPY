@@ -12,6 +12,10 @@ name: Publish to PyPI
 #   5. publish      — twine check --strict, then PyPI via Trusted Publishing + attestations
 #   6. github-release — publishes the GitHub Release with all artifacts attached
 #
+# Every action is pinned to a full commit SHA (the tag is in the trailing comment);
+# Dependabot proposes the bumps. Trusted Publishing is bound to this file's name,
+# so do not rename it.
+#
 # The wheel matrix itself lives in pyproject.toml [tool.cibuildwheel] so that
 # `pipx run cibuildwheel` locally reproduces CI exactly.
 #
@@ -54,7 +58,9 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - id: v
         name: Compare tag to pyproject version
@@ -64,7 +70,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "pyproject version: $version"
 
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             tag="${GITHUB_REF_NAME#v}"
             echo "git tag:           ${GITHUB_REF_NAME}"
             if [ "$tag" != "$version" ]; then
@@ -87,9 +93,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -113,7 +121,7 @@ jobs:
       - name: twine check
         run: twine check --strict dist/*
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-sdist
           path: dist/*.tar.gz
@@ -135,14 +143,16 @@ jobs:
           - { os: windows-latest, arch: AMD64,  label: "windows/AMD64" }
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v4.1.1
+        uses: pypa/cibuildwheel@adba99c781d3746d38b3a09b1cf797965bcb7fe6 # v4.3.0
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-wheels-${{ matrix.arch }}-${{ matrix.os }}
           path: wheelhouse/*.whl
@@ -167,14 +177,16 @@ jobs:
           - { os: macos-latest,     arch: x86_64,  label: "macos/x86_64 (cross)" }
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v4.1.1
+        uses: pypa/cibuildwheel@adba99c781d3746d38b3a09b1cf797965bcb7fe6 # v4.3.0
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-wheels-${{ matrix.arch }}-${{ matrix.os }}
           path: wheelhouse/*.whl
@@ -191,17 +203,19 @@ jobs:
     steps:
       # Collects dist-sdist + every dist-wheels-* that succeeded, including
       # best-effort ones, into a single flat directory.
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           path: staging
           merge-multiple: true
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Collect and verify artifacts
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -213,12 +227,12 @@ jobs:
           test "$(find dist -name '*.whl' | wc -l)" -ge 1 || { echo "::error::no wheels"; exit 1; }
           python -m pip install --upgrade twine
           twine check --strict dist/*
-          echo "### Artifacts for ${{ needs.guard.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Artifacts for ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
           (cd dist && ls -1) | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish to TestPyPI
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_testpypi }}
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
@@ -227,7 +241,7 @@ jobs:
       - name: Publish to PyPI
         # Tag pushes always publish; manual runs must opt in.
         if: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish_pypi) }}
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true
           attestations: true
@@ -241,11 +255,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: write # create the release and upload its assets
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           path: staging
@@ -254,6 +266,7 @@ jobs:
       - name: Publish release with artifacts
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }} # no checkout here, so tell gh which repo
           VERSION: ${{ needs.guard.outputs.version }}
         run: |
           set -euo pipefail

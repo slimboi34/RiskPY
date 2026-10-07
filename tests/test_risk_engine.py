@@ -74,3 +74,23 @@ def test_export_batch_to_excel(tmp_path):
     out = str(tmp_path / "batch.xlsx")
     engine.export_batch_to_excel(out, batch_inputs, batch_prem)
     assert os.path.exists(out)
+
+
+def test_attached_exporter_lives_as_long_as_the_engine():
+    # The engine holds a raw pointer to its exporter. Before 0.4.1 a temporary exporter was
+    # freed while still attached, and export_to_excel then read freed memory.
+    import gc
+    import weakref
+
+    import riskpy
+
+    version = tuple(int(p) for p in riskpy.__version__.split("+")[0].split(".")[:3] if p.isdigit())
+    if version < (0, 4, 1):
+        pytest.skip("compiled core older than 0.4.1")
+    engine = RiskEngine()
+    exporter = ExcelExporter("t")
+    ref = weakref.ref(exporter)
+    engine.attach_exporter(exporter)
+    del exporter
+    gc.collect()
+    assert ref() is not None

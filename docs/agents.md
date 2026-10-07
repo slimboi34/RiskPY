@@ -46,6 +46,16 @@ severity mistake there is. A tool whose extra is not installed is reported as
 `available: false` with the `pip install` line, and calling it raises `ToolUnavailable`
 saying the same.
 
+Arguments are checked before anything runs, on every path (`tools.call`, the CLI, MCP, a
+direct Python call): numbers must be finite numbers (no `NaN`, `Infinity`, `true` or `"100"`),
+whole numbers whole, and the work one call can ask for is bounded — `aggregate_loss` takes at
+most 1,000,000 trials and 10⁸ simulated claims (trials × expected frequency),
+`bond_analytics` and `cds_par_spread` at most 100,000 payment periods (maturity × frequency),
+the triangle tools at most 300 × 300. The limits are in `riskpy.tools.LIMITS`; a call over one
+fails at once with a message naming it. Results never contain `NaN` or `Infinity` (they become
+`null`), so they are strict JSON. Over MCP a refused argument comes back as a tool error whose
+text says what to fix.
+
 The manifest's `input_schema` is JSON Schema, so the same list drives Anthropic tool use,
 OpenAI function calling, or any framework that takes schemas.
 

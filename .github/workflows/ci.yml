@@ -33,10 +33,12 @@ jobs:
           - { os: ubuntu-latest, python-version: "3.12" }
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -57,7 +59,7 @@ jobs:
         run: python -m pip install ninja
 
       - name: Cache pip + ccache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # ccache 4.x (Ubuntu ships 4.9) writes to ~/.cache/ccache; the legacy
           # ~/.ccache is only used if it already exists, which it never does here.
@@ -75,8 +77,9 @@ jobs:
       - name: Install package (editable + dev)
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: "4"
-          # ccache is not on the Windows image; an empty launcher is a no-op.
-          CMAKE_CXX_COMPILER_LAUNCHER: ${{ runner.os == 'Windows' && '' || 'ccache' }}
+          # ccache is not on the Windows image; an empty launcher is a no-op. (Written this
+          # way round because `cond && '' || x` always yields x: '' is falsy.)
+          CMAKE_CXX_COMPILER_LAUNCHER: ${{ runner.os != 'Windows' && 'ccache' || '' }}
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
@@ -99,8 +102,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install tools

@@ -1,24 +1,33 @@
 version: 2
 
-# The release pipeline is only as current as its actions. cibuildwheel had drifted
-# from 2.22 to 4.1.1 (roughly two years) before anyone noticed, which is exactly the
-# kind of silent staleness this catches.
+# Weekly, one grouped PR per ecosystem. The workflows pin every action to a commit SHA
+# with the tag in a trailing comment; Dependabot updates both. A short cooldown means a
+# release has been public for a few days (time for a bad one to be pulled) before it is
+# proposed here.
 updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: monthly
-    open-pull-requests-limit: 5
+      interval: weekly
+    cooldown:
+      default-days: 7
     labels: ["ci"]
     commit-message:
       prefix: "ci"
     groups:
-      # One PR for routine action bumps instead of five.
       actions:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
-      # Majors also arrive as one PR. They still need a changelog read (runner
-      # minimums, artifact path rules), just not five separate ones.
-      actions-major:
+
+  # pyproject.toml: build requirements (scikit-build-core, pybind11) and the extras.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "deps"
+    groups:
+      python:
         patterns: ["*"]
-        update-types: ["major"]

@@ -11,10 +11,11 @@ The numbers an agent gets back are the ones ``riskpy-verify`` checks.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import shutil
 import sys
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
 
 __all__ = ["build_server", "client_config", "main"]
 
@@ -40,8 +41,29 @@ def build_server():
     server = MCPServer("riskpy", instructions=INSTRUCTIONS, version=__version__)
     for t in TOOLS.values():
         if t.available:
-            server.add_tool(t.fn, name=t.name, description=t.description)
+            server.add_tool(_reporting(t.fn), name=t.name, description=t.description)
     return server
+
+
+def _reporting(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Pass a refused argument's message on to the agent so it can correct the call.
+
+    The SDK hides the text of any exception that is not a ``ToolError`` (it treats it as a
+    crash). Bad input is not a crash: these messages name the argument and the limit, and
+    carry nothing from the environment, so the agent should see them.
+    """
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from .tools import ToolUnavailable
+
+    @functools.wraps(fn)
+    def run(**kwargs: Any) -> Any:
+        try:
+            return fn(**kwargs)
+        except (ValueError, TypeError, ArithmeticError, ToolUnavailable) as exc:
+            raise ToolError(str(exc)) from exc
+
+    return run
 
 
 def client_config() -> dict:

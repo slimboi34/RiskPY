@@ -23,16 +23,18 @@ from __future__ import annotations
 import argparse
 import collections.abc
 import dataclasses
+import functools
 import inspect
 import json
 import math
+import numbers
 import re
 import sys
 import types
 import typing
 from typing import Any, Callable, Dict, List, Optional
 
-__all__ = ["Tool", "TOOLS", "ToolUnavailable", "tool", "schema", "manifest", "call", "main"]
+__all__ = ["Tool", "TOOLS", "ToolUnavailable", "tool", "schema", "manifest", "call", "main", "LIMITS"]
 
 _EXTRA_MODULE = {"sim": "numpy", "viz": "matplotlib"}
 _EXTRA_NAME = {"sim": "NumPy", "viz": "Matplotlib"}
@@ -73,16 +75,103 @@ class Tool:
 
 TOOLS: Dict[str, Tool] = {}
 
+# How much work one tool call may ask for. The arguments come from an agent, which may be
+# wrong or may be relaying someone else's input, so every size that drives a loop or an
+# allocation is bounded: a call either answers in seconds or says which limit it hit.
+# These bound the *tools* only; the library functions underneath take whatever you give them.
+LIMITS: Dict[str, int] = {
+    "trials": 1_000_000,              # aggregate_loss: simulated years
+    "simulated_claims": 100_000_000,  # aggregate_loss: trials × expected_frequency (a few seconds)
+    "periods": 100_000,               # bond_analytics, cds_par_spread: maturity × frequency
+    "triangle": 300,                  # chain_ladder, mack_chain_ladder: origin and development periods
+    "list": 1_000,                    # any other list argument
+    "string": 200,                    # any string argument, in characters
+    "integer": 2**31 - 1,             # any integer argument, in absolute value
+}
+
+
+def _show(value: Any) -> str:
+    """A repr short enough to put in an error message, whatever the agent sent."""
+    text = repr(value)
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
+def _check_arg(name: str, hint: Any, value: Any) -> None:
+    """Refuse a value that does not fit the parameter's type hint, before any arithmetic runs.
+
+    JSON from an agent can carry ``NaN``/``Infinity`` (Python's parser accepts them), booleans
+    where numbers belong, and lists of any length; none of those should reach the calculators.
+    """
+    origin, args = typing.get_origin(hint), typing.get_args(hint)
+    if origin in (typing.Union, types.UnionType):
+        if value is None and type(None) in args:
+            return
+        members = [a for a in args if a is not type(None)]
+        if len(members) == 1:
+            _check_arg(name, members[0], value)
+        return
+    if hint is bool:
+        if not isinstance(value, bool):
+            raise TypeError(f"{name} must be true or false, got {_show(value)}")
+    elif hint in (float, int):
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            raise TypeError(f"{name} must be a number, got {_show(value)}")
+        try:
+            as_float = float(value)
+        except OverflowError:
+            raise ValueError(f"{name} is too large to be a floating-point number") from None
+        if not math.isfinite(as_float):
+            raise ValueError(f"{name} must be finite, got {value!r}")
+        if hint is int:
+            if not as_float.is_integer():
+                raise ValueError(f"{name} must be a whole number, got {value!r}")
+            if abs(as_float) > LIMITS["integer"]:
+                raise ValueError(f"{name} is too large: |{name}| must be at most {LIMITS['integer']}")
+    elif hint is str:
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be a string, got {_show(value)}")
+        if len(value) > LIMITS["string"]:
+            raise ValueError(f"{name} is longer than {LIMITS['string']} characters")
+    elif origin in (list, tuple, collections.abc.Sequence):
+        if not isinstance(value, (list, tuple)):
+            raise TypeError(f"{name} must be a list, got {_show(value)}")
+        if len(value) > LIMITS["list"]:
+            raise ValueError(f"{name} has {len(value)} items; at most {LIMITS['list']} are accepted")
+        for k, item in enumerate(value):
+            _check_arg(f"{name}[{k}]", args[0] if args else Any, item)
+
+
+def _checked(fn: Callable) -> Callable:
+    """Wrap a tool so every argument it is given is checked against its type hint first."""
+    hints = typing.get_type_hints(fn)
+    signature = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def run(*args: Any, **kwargs: Any) -> Any:
+        bound = signature.bind(*args, **kwargs)
+        for name, value in bound.arguments.items():
+            if name in hints:
+                _check_arg(name, hints[name], value)
+        return fn(*bound.args, **bound.kwargs)
+
+    return run
+
 
 def tool(name: Optional[str] = None, *, requires: str = ""):
-    """Register a function as a tool. The first docstring paragraph is its description."""
+    """Register a function as a tool. The first docstring paragraph is its description.
+
+    The registered (and returned) function checks its arguments against its type hints
+    before running, so the tool behaves the same whether it is reached through
+    :func:`call`, the CLI, the MCP server or a direct Python call.
+    """
 
     def register(fn):
         doc = inspect.getdoc(fn) or ""
         description = " ".join(doc.split("\n\n")[0].split())
-        t = Tool(name or fn.__name__, fn, description, requires)
+        checked = _checked(fn)
+        t = Tool(name or fn.__name__, checked, description, requires)
         TOOLS[t.name] = t
-        return fn
+        return checked
 
     return register
 
@@ -151,7 +240,8 @@ def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
-        return None if math.isnan(value) else value
+        # JSON has no NaN or Infinity; json.dumps would emit tokens strict parsers reject.
+        return value if math.isfinite(value) else None
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {f.name: _jsonable(getattr(value, f.name)) for f in dataclasses.fields(value)}
     if isinstance(value, dict):
@@ -251,6 +341,12 @@ def implied_vol(price: float, S: float, K: float, T: float, r: float, q: float =
     return float(quant.implied_vol(price, S, K, T, r, q=q, kind=kind))
 
 
+def _check_periods(maturity: float, frequency: int) -> None:
+    if maturity > 0 and frequency > 0 and maturity * frequency > LIMITS["periods"]:
+        raise ValueError(f"maturity × frequency = {maturity * frequency:g} payment periods; "
+                         f"the tool accepts at most {LIMITS['periods']}")
+
+
 @tool()
 def bond_analytics(face: float, coupon: float, maturity: float, ytm: float, frequency: int = 2) -> dict:
     """Price, durations, convexity and DV01 of a fixed-coupon bond at a given yield.
@@ -263,6 +359,7 @@ def bond_analytics(face: float, coupon: float, maturity: float, ytm: float, freq
     """
     from . import rates
 
+    _check_periods(maturity, frequency)
     bond = rates.Bond(face=face, coupon=coupon, maturity=maturity, frequency=frequency)
     return {
         "price": bond.price(ytm), "macaulay_duration": bond.macaulay_duration(ytm),
@@ -328,6 +425,7 @@ def cds_par_spread(hazard: float, recovery: float, r: float, maturity: float, fr
     """
     from . import credit
 
+    _check_periods(maturity, frequency)
     return float(credit.cds_par_spread(hazard, recovery, r, maturity, frequency=frequency))
 
 
@@ -404,12 +502,21 @@ def aggregate_loss(expected_frequency: float, severity_mean: float, severity_sd:
     severity_mean: mean claim size on the money scale
     severity_sd: standard deviation of claim size on the money scale
     trials: simulated years; each draws a claim count and sums that many severities
-    seed: random seed, so the answer is reproducible
+    seed: random seed; the same non-zero seed gives the same answer, 0 draws a fresh seed each call
     """
     from . import MonteCarloSimulator
 
-    if severity_mean <= 0 or severity_sd < 0:
-        raise ValueError("severity_mean must be positive and severity_sd non-negative")
+    if severity_mean <= 0 or severity_sd <= 0:
+        raise ValueError("severity_mean and severity_sd must be positive")
+    if expected_frequency < 0:
+        raise ValueError(f"expected_frequency must be >= 0, got {expected_frequency!r}")
+    if not 1 <= trials <= LIMITS["trials"]:
+        raise ValueError(f"trials must be between 1 and {LIMITS['trials']}, got {trials!r}")
+    if seed < 0:
+        raise ValueError(f"seed must be >= 0, got {seed!r}")
+    if expected_frequency * trials > LIMITS["simulated_claims"]:
+        raise ValueError(f"expected_frequency × trials = {expected_frequency * trials:g} simulated claims; the tool "
+                         f"accepts at most {LIMITS['simulated_claims']:g} — lower trials")
     sigma_sq = math.log(1.0 + (severity_sd / severity_mean) ** 2)     # the same conversion as LogNormal.from_moments
     mu, sigma = math.log(severity_mean) - 0.5 * sigma_sq, math.sqrt(sigma_sq)
     losses = sorted(MonteCarloSimulator(trials=trials, seed=seed).simulate_aggregate_loss(expected_frequency, mu, sigma))
@@ -428,6 +535,9 @@ def aggregate_loss(expected_frequency: float, severity_mean: float, severity_sd:
 def _triangle(data: List[List[Optional[float]]]):
     from . import reserving
 
+    if len(data) > LIMITS["triangle"] or any(len(row) > LIMITS["triangle"] for row in data):
+        raise ValueError(f"the triangle may have at most {LIMITS['triangle']} origin and {LIMITS['triangle']} "
+                         "development periods")
     return reserving.Triangle(data)
 
 
@@ -503,7 +613,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         if args.command == "call":
-            print(json.dumps(call(args.name, json.loads(args.arguments)), indent=2))
+            print(json.dumps(call(args.name, json.loads(args.arguments)), indent=2, allow_nan=False))
         elif args.command == "schema":
             print(json.dumps(TOOLS[args.name].schema(), indent=2))
         elif args.json:
@@ -515,7 +625,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"{t.name:<{width}}  {t.description}{flag}")
             print(f"\n{len(TOOLS)} tools. riskpy-tools --json for the schemas; riskpy-tools call NAME '{{...}}' to run one.")
         return 0
-    except (KeyError, TypeError, ValueError, ToolUnavailable) as exc:
+    except (KeyError, TypeError, ValueError, ArithmeticError, ToolUnavailable) as exc:
         print(f"riskpy-tools: {exc}", file=sys.stderr)
         return 1
 

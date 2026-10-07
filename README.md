@@ -40,6 +40,11 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+> **v0.4.1** — a security and hardening release: the agent tools check every
+> argument and bound the work one call can ask for, two crashes in the compiled
+> core are fixed, and the GitHub workflows are pinned and locked down. No
+> numerical result changes. See [RELEASE_NOTES.md](RELEASE_NOTES.md).
+>
 > **v0.4.0** — for AI agents: sixteen verified calculators as tools with JSON
 > schemas (`riskpy-tools`, `riskpy.tools.call`), an MCP server
 > (`riskpy-mcp`, `pip install "open-riskpy[mcp]"`) so Claude Code and friends

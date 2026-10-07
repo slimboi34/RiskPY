@@ -8,8 +8,12 @@ MonteCarloSimulator::MonteCarloSimulator(int trials, unsigned int seed) : trials
 }
 
 std::vector<double> MonteCarloSimulator::simulate_aggregate_loss(double expected_frequency, double expected_severity_mu, double severity_sigma) const {
-    if (expected_frequency < 0.0) throw std::invalid_argument("Expected frequency cannot be negative");
-    if (severity_sigma <= 0.0) throw std::invalid_argument("Severity sigma must be strictly positive");
+    // Written as !(x >= 0) so NaN is refused too: a NaN Poisson mean never terminates.
+    if (!(expected_frequency >= 0.0)) throw std::invalid_argument("Expected frequency cannot be negative");
+    // Past this the Poisson count no longer fits in an int.
+    if (expected_frequency > 1e9) throw std::invalid_argument("Expected frequency must be at most 1e9");
+    if (!std::isfinite(expected_severity_mu)) throw std::invalid_argument("Severity mu must be finite");
+    if (!(severity_sigma > 0.0) || !std::isfinite(severity_sigma)) throw std::invalid_argument("Severity sigma must be strictly positive");
 
     std::vector<double> results(trials, 0.0);
     
@@ -33,9 +37,9 @@ std::vector<double> MonteCarloSimulator::simulate_aggregate_loss(double expected
 
 std::vector<double> MonteCarloSimulator::simulate_life_portfolio(int policy_count, double base_mortality_rate, double shock_volatility, double death_benefit) const {
     if (policy_count < 0) throw std::invalid_argument("Policy count cannot be negative");
-    if (base_mortality_rate < 0.0 || base_mortality_rate > 1.0) throw std::invalid_argument("Mortality probability must be between 0 and 1");
-    if (shock_volatility < 0.0) throw std::invalid_argument("Shock volatility cannot be negative");
-    if (death_benefit < 0.0) throw std::invalid_argument("Death benefit cannot be negative");
+    if (!(base_mortality_rate >= 0.0 && base_mortality_rate <= 1.0)) throw std::invalid_argument("Mortality probability must be between 0 and 1");
+    if (!(shock_volatility >= 0.0) || !std::isfinite(shock_volatility)) throw std::invalid_argument("Shock volatility cannot be negative");
+    if (!(death_benefit >= 0.0)) throw std::invalid_argument("Death benefit cannot be negative");
 
     std::vector<double> results(trials, 0.0);
     
@@ -61,8 +65,8 @@ std::vector<double> MonteCarloSimulator::simulate_life_portfolio(int policy_coun
 }
 
 std::vector<double> MonteCarloSimulator::simulate_economic_path(double initial_price, double drift, double volatility, int time_steps) const {
-    if (initial_price <= 0.0) throw std::invalid_argument("Initial price must be strictly positive");
-    if (volatility < 0.0) throw std::invalid_argument("Volatility cannot be negative");
+    if (!(initial_price > 0.0)) throw std::invalid_argument("Initial price must be strictly positive");
+    if (!(volatility >= 0.0) || !std::isfinite(volatility)) throw std::invalid_argument("Volatility cannot be negative");
     if (time_steps <= 0) throw std::invalid_argument("Time steps must be strictly positive");
 
     std::vector<double> results(trials, 0.0);
@@ -84,9 +88,11 @@ std::vector<double> MonteCarloSimulator::simulate_economic_path(double initial_p
 }
 
 std::vector<double> MonteCarloSimulator::simulate_health_claims(double expected_frequency, double dispersion, double severity_shape, double severity_scale) const {
-    if (expected_frequency < 0.0) throw std::invalid_argument("Frequency cannot be negative");
-    if (dispersion <= 0.0) throw std::invalid_argument("Dispersion must be strictly positive");
-    if (severity_shape <= 0.0 || severity_scale <= 0.0) throw std::invalid_argument("Gamma parameters must be strictly positive");
+    if (!(expected_frequency >= 0.0)) throw std::invalid_argument("Frequency cannot be negative");
+    if (expected_frequency > 1e9) throw std::invalid_argument("Frequency must be at most 1e9");
+    if (!(dispersion > 0.0) || !std::isfinite(dispersion)) throw std::invalid_argument("Dispersion must be strictly positive");
+    if (!(severity_shape > 0.0 && severity_scale > 0.0) || !std::isfinite(severity_shape) || !std::isfinite(severity_scale))
+        throw std::invalid_argument("Gamma parameters must be strictly positive");
 
     std::vector<double> results(trials, 0.0);
     std::mt19937 gen(seed == 0 ? std::random_device{}() : seed);
@@ -113,9 +119,9 @@ std::vector<double> MonteCarloSimulator::simulate_health_claims(double expected_
 }
 
 std::vector<double> MonteCarloSimulator::simulate_catastrophe_loss(double probability_of_event, double pareto_xm, double pareto_alpha) const {
-    if (probability_of_event < 0.0 || probability_of_event > 1.0) throw std::invalid_argument("Probability must be [0, 1]");
-    if (pareto_xm <= 0.0) throw std::invalid_argument("Pareto xm must be strictly positive");
-    if (pareto_alpha <= 0.0) throw std::invalid_argument("Pareto alpha must be strictly positive");
+    if (!(probability_of_event >= 0.0 && probability_of_event <= 1.0)) throw std::invalid_argument("Probability must be [0, 1]");
+    if (!(pareto_xm > 0.0)) throw std::invalid_argument("Pareto xm must be strictly positive");
+    if (!(pareto_alpha > 0.0)) throw std::invalid_argument("Pareto alpha must be strictly positive");
 
     std::vector<double> results(trials, 0.0);
     std::mt19937 gen(seed == 0 ? std::random_device{}() : seed);

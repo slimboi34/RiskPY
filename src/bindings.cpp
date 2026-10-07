@@ -35,7 +35,9 @@ PYBIND11_MODULE(cpp_underwriter, m) {
       .def("add_field", &RiskEngine::add_field)
       .def("get_fields", &RiskEngine::get_fields)
       .def("set_math_logic", &RiskEngine::set_math_logic)
-      .def("attach_exporter", &RiskEngine::attach_exporter)
+      // The engine keeps a raw pointer to the exporter: keep the Python object alive as long
+      // as the engine, or a temporary exporter is freed and export_* reads freed memory.
+      .def("attach_exporter", &RiskEngine::attach_exporter, py::keep_alive<1, 2>())
       .def("execute", &RiskEngine::execute)
       .def("export_to_excel", &RiskEngine::export_to_excel)
       .def("export_batch_to_excel", &RiskEngine::export_batch_to_excel);

@@ -1,3 +1,99 @@
+# RiskPY v0.4.1 — Release Notes
+
+**Release date:** 2026-10-07  
+**Type:** Patch release — security and hardening  
+**Install:** `pip install -U open-riskpy`
+
+---
+
+## TL;DR
+
+A proactive audit of 0.4.0, which put RiskPY's calculators in front of AI agents.
+An agent's arguments are untrusted input, and several could hang the process, exhaust
+memory or reach undefined behaviour in the compiled core. The tools now check every
+argument and bound the work one call can ask for; two crashes in the compiled core are
+fixed; the release workflows are pinned to commit SHAs and run with least privilege.
+No numerical result changes. No known exploitation; no CVE.
+
+---
+
+## Fixed
+
+### Agent tools (`riskpy.tools`, `riskpy-tools`, `riskpy-mcp`)
+
+- **A `NaN` frequency hung `aggregate_loss` forever.** Python's JSON parser accepts
+  `NaN` and `Infinity`, and a Poisson draw with a `NaN` mean never returns. Every numeric
+  argument of every tool must now be a finite number; booleans and numeric strings are
+  refused rather than coerced, whole-number parameters must be whole, strings and lists
+  have length limits.
+- **Unbounded work.** `aggregate_loss` accepted any number of trials (memory) and any
+  expected frequency (time); `bond_analytics` and `cds_par_spread` looped over
+  `maturity × frequency` periods (`maturity = 1e300` never finished). Limits, in
+  `riskpy.tools.LIMITS`: 1,000,000 trials and 10⁸ simulated claims per `aggregate_loss`
+  call, 100,000 payment periods, 300 × 300 triangles. A call over a limit fails at once
+  with a message that names it. The library functions underneath are unchanged and
+  unbounded — the limits apply to the agent surface only.
+- **The checks run on every path.** `@tool()` now registers a wrapper that checks the
+  arguments against the type hints, so `tools.call`, the CLI, the MCP server and a
+  direct `tools.black_scholes(...)` call behave the same. Schemas are unchanged.
+- **Results are strict JSON.** `Infinity` in a result now becomes `null`, as `NaN`
+  already did; `riskpy-tools call` refuses to print non-standard JSON.
+- **Errors reach the agent.** Over MCP, the SDK hides the text of any exception that is
+  not a `ToolError`, so an agent that sent a bad argument saw only "Error executing
+  tool". Argument errors are now passed on as tool errors the agent can act on.
+  `riskpy-tools` reports overflow as a one-line error instead of a traceback.
+- `aggregate_loss` documented `seed` as making the answer reproducible; `seed = 0` (the
+  default) draws a fresh seed each call. The description now says so; the default is
+  unchanged. A negative seed is now refused with a clear message instead of a pybind11
+  type error.
+
+### Compiled core
+
+- **`MonteCarloSimulator` accepted `NaN` parameters** (the checks were written `x < 0`,
+  which `NaN` passes): a `NaN` expected frequency looped forever, other `NaN`s reached the
+  standard-library distributions, whose behaviour is then undefined. Every `simulate_*`
+  method now refuses non-finite parameters, and an expected frequency above 10⁹ (where the
+  Poisson / negative-binomial count overflows an `int`) raises `ValueError`.
+- **`RiskEngine.attach_exporter` kept a dangling pointer.** The engine stored a raw
+  pointer to the exporter without keeping the Python object alive, so
+  `engine.attach_exporter(ExcelExporter(...))` with a temporary freed the exporter while
+  it was still attached, and a later `export_to_excel` read freed memory. The binding now
+  ties the exporter's lifetime to the engine's (`py::keep_alive`).
+
+## CI and release
+
+- Every action pinned to a full commit SHA with the version in a trailing comment, at the
+  current releases (checkout v7.0.1, setup-python v7.0.0, cache v6.1.0, upload-artifact
+  v7.0.2, download-artifact v8.0.2, upload-pages-artifact v5.0.0, deploy-pages v5.0.1,
+  cibuildwheel v4.3.0, pypi-publish v1.14.2).
+- `persist-credentials: false` on every checkout; no job pushes with git.
+- Docs: only the deploy job holds `pages: write` / `id-token: write` (the build, which runs
+  the project's code, has `contents: read`); the unused `configure-pages` step is gone.
+- Publish: no `${{ }}` expansions inside shell scripts; the GitHub Release job no longer
+  checks out the repository while holding `contents: write`. File name, trigger,
+  Trusted Publishing and the per-tag concurrency group are unchanged.
+- CI: the ccache launcher expression meant to be empty on Windows never was
+  (`cond && '' || x` always yields `x`); fixed.
+- Nightly verification gets a concurrency group. `zizmor` (auditor persona) reports no
+  findings.
+- Dependabot: weekly, one grouped PR per ecosystem (GitHub Actions and pip), with a
+  seven-day cooldown on new releases.
+- `SECURITY.md`: how to report a vulnerability privately.
+
+## Audit results
+
+`bandit -r riskpy`: no issues. `pip-audit` over the runtime and test dependencies: no
+known vulnerabilities. No `eval`, `exec`, `pickle`, YAML or `subprocess` in the library;
+the only file writes are to paths the user names on the command line.
+
+## Upgrading
+
+`pip install -U open-riskpy`. Code that passed valid arguments sees no change. Code that
+relied on a tool accepting `true` for a number, `"100"` for a number, or `NaN`, now gets
+a `TypeError` / `ValueError`.
+
+---
+
 # RiskPY v0.4.0 — Release Notes
 
 **Release date:** 2026-09-30  

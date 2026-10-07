@@ -109,6 +109,55 @@ def test_unknown_tool_and_unexpected_argument_are_clear_errors():
         tools.call("expected_loss", {"pd": 0.01, "lgd": 0.4, "ead": 1, "foo": 1})
 
 
+@pytest.mark.parametrize("name, args, error, match", [
+    # NaN and Infinity: Python's JSON parser accepts them, the calculators must not see them
+    ("black_scholes", {**BS, "S": float("nan")}, ValueError, "S must be finite"),
+    ("black_scholes", {**BS, "sigma": float("inf")}, ValueError, "sigma must be finite"),
+    ("aggregate_loss", {"expected_frequency": float("nan"), "severity_mean": 1, "severity_sd": 1}, ValueError,
+     "expected_frequency must be finite"),
+    ("chain_ladder", {"triangle": [[1.0, float("nan")], [1.0]]}, ValueError, r"triangle\[0\]\[1\] must be finite"),
+    # wrong types are refused, not coerced
+    ("black_scholes", {**BS, "S": "100"}, TypeError, "S must be a number"),
+    ("black_scholes", {**BS, "S": True}, TypeError, "S must be a number"),
+    ("annuity_certain", {"i": 0.05, "n": 10, "due": 1}, TypeError, "due must be true or false"),
+    ("annuity_certain", {"i": 0.05, "n": 2.5}, ValueError, "n must be a whole number"),
+    ("black_scholes", {**BS, "kind": "x" * 10_000}, ValueError, "longer than"),
+    ("chain_ladder", {"triangle": "abc"}, TypeError, "triangle must be a list"),
+    # sizes that would run for hours or exhaust memory
+    ("annuity_certain", {"i": 0.05, "n": 10**400}, ValueError, "too large"),
+    ("aggregate_loss", {"expected_frequency": 1, "severity_mean": 1, "severity_sd": 1, "trials": 10**8}, ValueError,
+     "trials must be between"),
+    ("aggregate_loss", {"expected_frequency": 1e9, "severity_mean": 1, "severity_sd": 1}, ValueError, "simulated claims"),
+    ("aggregate_loss", {"expected_frequency": 1, "severity_mean": 1, "severity_sd": 1, "seed": -1}, ValueError, "seed"),
+    ("bond_analytics", {"face": 100, "coupon": 0.05, "maturity": 1e300, "ytm": 0.05}, ValueError, "payment periods"),
+    ("cds_par_spread", {"hazard": 0.02, "recovery": 0.4, "r": 0.03, "maturity": 1e9}, ValueError, "payment periods"),
+    ("chain_ladder", {"triangle": [[1.0]] * 301}, ValueError, "at most 300"),
+    ("verify", {"modules": ["life"] * 5000}, ValueError, "at most 1000"),
+])
+def test_tool_arguments_are_checked_before_anything_runs(name, args, error, match):
+    t0 = time.perf_counter()
+    with pytest.raises(error, match=match):
+        tools.call(name, args)
+    assert time.perf_counter() - t0 < 5          # refused up front, not after the work
+
+
+def test_checks_apply_on_every_path_and_keep_valid_calls_unchanged():
+    with pytest.raises(ValueError, match="finite"):
+        tools.black_scholes(float("nan"), 100, 1, 0.05, 0.2)             # direct Python call, positional
+    with pytest.raises(ValueError, match="finite"):
+        tools.TOOLS["black_scholes"].fn(**{**BS, "S": float("inf")})      # what the MCP server registers
+    assert tools.black_scholes(100, 100, 1, 0.05, 0.2) == tools.call("black_scholes", BS)
+    assert tools.call("annuity_certain", {"i": 0.05, "n": 10.0}) == tools.call("annuity_certain", {"i": 0.05, "n": 10})
+    assert tools.call("net_premium_reserve", {"x": 40, "t": 10, "i": 0.05, "n": None}) >= 0
+    # the schema an agent sees still comes from the original signature and docstring
+    assert tools.schema(tools.TOOLS["black_scholes"].fn)["required"] == ["S", "K", "T", "r", "sigma"]
+
+
+def test_results_are_strict_json():
+    assert tools._jsonable({"a": float("inf"), "b": [float("-inf"), float("nan"), 1.5]}) == {"a": None, "b": [None, None, 1.5]}
+    json.dumps(tools._jsonable(float("inf")), allow_nan=False)
+
+
 def test_cli(capsys):
     assert tools.main([]) == 0
     text = capsys.readouterr().out
@@ -121,6 +170,10 @@ def test_cli(capsys):
     assert json.loads(capsys.readouterr().out)["required"] == ["i", "n"]
     assert tools.main(["call", "astrology", "{}"]) == 1
     assert "unknown tool" in capsys.readouterr().err
+    assert tools.main(["call", "annuity_certain", '{"i": 0.05, "n": NaN}']) == 1
+    assert "n must be finite" in capsys.readouterr().err
+    assert tools.main(["call", "annuity_certain", '{"i": -0.5, "n": 100000}']) == 1     # overflow: a message, not a traceback
+    assert "riskpy-tools:" in capsys.readouterr().err
 
 
 def test_context_pack_is_the_rules_then_the_map(capsys):
@@ -199,6 +252,11 @@ def test_mcp_server_lists_and_calls_the_tools_over_stdio():
         assert called["result"].get("isError") is not True, called
         text = " ".join(c.get("text", "") for c in called["result"]["content"])
         assert "10.45" in text
+        # a refused argument comes back as a tool error the agent can read and correct
+        refused = io.request("tools/call", {"name": "aggregate_loss", "arguments": {
+            "expected_frequency": 1, "severity_mean": 1, "severity_sd": 1, "trials": 10**8}})
+        assert refused["result"].get("isError") is True, refused
+        assert "trials must be between" in " ".join(c.get("text", "") for c in refused["result"]["content"])
     finally:
         proc.kill()
         proc.wait(timeout=10)
