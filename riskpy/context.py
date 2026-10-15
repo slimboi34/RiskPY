@@ -28,6 +28,7 @@ MODULES = (
     ("credit", "Merton, CDS, Basel IRB, portfolio simulation, transitions (pure Python; simulation needs NumPy)", ""),
     ("viz", "twenty-two charts on one theme", "viz"),
     ("verify", "the verification suite: every identity the library claims, checked", ""),
+    ("errors", "the error catalogue: stable codes, the parameter at fault, the fix", ""),
 )
 
 CORE_CLASSES = ("MonteCarloSimulator", "LossTriangle", "FactorModel", "ActuarialMath", "ExperienceRating",
@@ -55,6 +56,24 @@ CONVENTIONS = [
     "missing are reported as skipped, not failed.",
     "**Every tool is a wrapper over a verified public function.** If a calculation is not a tool, the module "
     "functions below are one import away and take the same conventions.",
+    "**Errors carry a stable code, the parameter and the fix.** Every deliberate error is a `RiskPyError` "
+    "(still the `ValueError`/`TypeError`/`KeyError` it always was) with `.code` (`RP105`), `.param` (`sigma`), "
+    "`.hint` and `.to_dict()`. `tools.call(name, args, errors=\"return\")`, `riskpy-tools call` and the MCP server "
+    "return `{\"error\": {code, message, param, hint}}` instead of a traceback. Fix the named parameter as the hint "
+    "says; `riskpy-explain CODE` says more. The tools refuse percentages where decimals belong (`r=5` is RP104, "
+    "`sigma=20` is RP105) because the library would happily compute a wrong answer.",
+]
+
+ERROR_FAMILIES = [
+    ("RP1xx", "input domain — a value outside what the parameter accepts (negative vol RP105, percentage rate RP104, "
+              "probability > 1 RP103, time ≤ 0 RP106, mismatched lengths RP109)"),
+    ("RP2xx", "missing optional dependency — the hint is the exact pip line (NumPy RP201, Matplotlib RP202, MCP RP204)"),
+    ("RP3xx", "numerical — no solution exists (option price below intrinsic RP301, above the ceiling RP302, "
+              "root not bracketed RP303)"),
+    ("RP4xx", "tool call — unknown tool RP401, unexpected argument RP402, missing argument RP403, wrong JSON type "
+              "RP404, over a limit RP405"),
+    ("RP5xx", "malformed data — life table RP501, claims triangle RP502, term structure RP503, transition matrix RP504"),
+    ("RP9xx", "unexpected internal error — a bug; run riskpy-doctor and report it"),
 ]
 
 
@@ -120,7 +139,11 @@ def describe() -> dict:
             "riskpy-tools": "list the agent tools; `riskpy-tools call NAME '{...}'` runs one; --json for schemas",
             "riskpy-mcp": "serve the tools over MCP on stdio",
             "riskpy-context": "this document; --json for data, -o FILE to write it",
+            "riskpy-doctor": "check the installation (core, extras, self-check, MCP); --json; exit 1 on a failure",
+            "riskpy-explain": "explain an error code: `riskpy-explain RP105`; `--list [--json]` for the catalogue",
+            "riskpy-tools trace": "recent tool calls with durations and error codes (RISKPY_TRACE_FILE keeps them)",
         },
+        "errors": [{"family": f, "meaning": m} for f, m in ERROR_FAMILIES],
         "conventions": CONVENTIONS,
         "core": core,
         "modules": modules,
@@ -153,7 +176,19 @@ def build() -> str:
         "",
         *[f"- {c}" for c in d["conventions"]],
         "",
-        f"## Tools for agents ({len(d['tools'])})",
+        "## When a call fails",
+        "",
+        "Every error has a stable code, names the parameter and says how to fix it. Over `tools.call(..., "
+        "errors=\"return\")`, `riskpy-tools call` and MCP it arrives as JSON: "
+        "`{\"error\": {\"code\": \"RP105\", \"message\": \"sigma must be >= 0, got -0.2\", \"param\": \"sigma\", "
+        "\"hint\": \"...\"}}`. Correct the named parameter and call again; `riskpy-explain CODE` (or the "
+        "`riskpy_explain` tool) explains a code, `riskpy-doctor` (or `riskpy_doctor`) checks the installation, and "
+        "`riskpy-tools trace` (or `riskpy_status`) shows the recent calls.",
+        "",
+        *[f"- `{e['family']}` {e['meaning']}" for e in d["errors"]],
+        "",
+        f"## Tools for agents ({sum(t['kind'] == 'calculator' for t in d['tools'])} calculators, "
+        f"{sum(t['kind'] != 'calculator' for t in d['tools'])} introspection)",
         "",
         "`from riskpy import tools; tools.call(name, {...})`, `riskpy-tools call NAME '{...}'`, or over MCP with "
         "`riskpy-mcp`. Arguments are plain numbers and strings (rates as decimals, times in years); results are JSON.",

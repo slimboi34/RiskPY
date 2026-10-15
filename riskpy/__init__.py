@@ -57,11 +57,13 @@ try:
         RiskEngine,
     )
 except ImportError as exc:  # pragma: no cover
-    raise ImportError(
+    from .errors import MissingDependencyError
+
+    raise MissingDependencyError(
         "RiskPY C++ extension 'cpp_underwriter' is not available. "
         "Install/build the package first, e.g.:\n"
         "  pip install -e .\n"
-        "Requires a C++17 compiler, CMake ≥ 3.15, and pybind11."
+        "Requires a C++17 compiler, CMake ≥ 3.15, and pybind11.", code="RP205"
     ) from exc
 
 __all__ = [
@@ -89,6 +91,9 @@ __all__ = [
     "verify",
     "tools",
     "context",
+    "errors",
+    "diagnostics",
+    "doctor",
     "__version__",
 ]
 
@@ -107,7 +112,20 @@ _LAZY_SUBMODULES = {
     "verify",
     "tools",
     "context",
+    "errors",
+    "diagnostics",
 }
+
+
+def doctor() -> dict:
+    """Check this installation: Python, the compiled core, the optional extras, a numerical
+    self-check and the MCP server. ``{"ok": bool, "checks": [{id, status, message, hint}, ...]}``.
+
+    The same as ``riskpy-doctor --json``; see :mod:`riskpy.diagnostics`.
+    """
+    from .diagnostics import doctor as _doctor
+
+    return _doctor()
 
 
 def __getattr__(name: str) -> Any:
@@ -121,10 +139,12 @@ def __getattr__(name: str) -> Any:
         except ImportError as exc:
             # app.py says which piece is missing — Tkinter, or Matplotlib/NumPy
             # from the [gui] extra — so pass that on instead of blaming Tkinter.
-            raise ImportError(
+            from .errors import MissingDependencyError
+
+            raise MissingDependencyError(
                 f"UnderwritingApp is unavailable: {exc} The headless C++ APIs "
                 "(FactorModel, MonteCarloSimulator, FourierTransform, etc.) "
-                "work without it."
+                "work without it.", code=getattr(exc, "code", "RP206")
             ) from exc
         return _UnderwritingApp
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

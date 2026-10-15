@@ -1,6 +1,161 @@
+# RiskPY v0.5.0 — Release Notes
+
+**Release date:** unreleased (prepared 2026-10-15)  
+**Type:** Minor release — diagnostics, error codes, more tools  
+**Install:** `pip install -U open-riskpy`
+
+---
+
+## TL;DR
+
+RiskPY now says exactly what went wrong, to a person or to an agent. Every deliberate error
+has a **stable code**, names the **parameter** and carries a **hint**; the tools, the CLI and the
+MCP server return `{"error": {code, message, param, hint}}` instead of tracebacks, and refuse
+percentages where decimals belong instead of computing a confident wrong answer.
+`riskpy-doctor` checks an installation end to end, a **call trace** shows what an agent has
+been doing, and **eleven more verified calculators** are tools (27 in all). Measured on a
+scripted set of 19 agent mistakes (`benchmarks/diagnostics/`): **3/76 → 76/76** points for
+code, parameter, hint and structured JSON (0.4.0 → 0.5.0).
+
+**This release includes 0.4.1**, the security and hardening release committed on 2026-10-07
+but never tagged or published to PyPI: if you are on 0.4.0, its fixes (below) reach you here.
+
+No numerical result of any existing function changes. Exception types are unchanged — a bad
+volatility is still a `ValueError` — and messages are unchanged apart from added detail.
+
+---
+
+## New
+
+### Error codes (`riskpy.errors`, `riskpy-explain`)
+
+- `RiskPyError` with `.code`, `.param`, `.hint`, `.to_dict()`; subclasses that are also the
+  built-in type each site always raised: `InputError` (`ValueError`), `ArgumentTypeError`
+  (`TypeError`), `UnknownNameError` (`KeyError`), `ConvergenceError` (`ValueError`),
+  `MissingDependencyError` (`ImportError`). `tools.ToolUnavailable` is one too (RP201/RP202).
+- Codes by family: **RP1xx** input domain, **RP2xx** missing dependency, **RP3xx** numerical,
+  **RP4xx** tool call, **RP5xx** malformed data, **RP9xx** internal. 38 codes; the catalogue is
+  in `riskpy/errors.py` and on the new [error codes](https://slimboi34.github.io/RiskPY/errors/)
+  page. A test checks every code in the source is in the catalogue and on that page.
+- About 280 raise sites across `quant`, `rates`, `credit`, `life`, `reserving`, `mc`, `viz` and
+  the tools now carry a code and the parameter; the important ones carry a specific hint
+  (`implied_vol` says what the no-arbitrage floor or ceiling is for the quote it was given).
+- `riskpy-explain RP105`, `riskpy-explain --list [--json]`.
+
+### Structured tool errors
+
+- `tools.call(name, args, errors="return")` never raises for a failed call; it returns
+  `{"error": {"code", "message", "param", "hint", "docs"}}`. The default `errors="raise"`
+  raises as before.
+- `riskpy-tools call` prints that object on stdout (exit 1) and a one-line summary with the
+  hint on stderr. Invalid JSON arguments are RP406.
+- **MCP calls now run through `tools.call`.** Errors come back as that JSON in a tool error.
+  The SDK's own validation used to coerce `"100"` to `100.0` before RiskPY's checks ran; now a
+  string where a number belongs is refused (RP404) on every path. The advertised input schemas
+  are RiskPY's own, so every parameter has a description, and tools are annotated read-only.
+- Unknown arguments get a suggestion (`vol` → `sigma`, `strike` → `K`), a misspelt tool a
+  "did you mean", a missing argument its description.
+- **Plausibility guards** (`tools.PLAUSIBLE`): the tools refuse a rate, yield, coupon,
+  dividend yield or spread above 100% in absolute value (RP104), a volatility above 500% or
+  below 0 (RP105) and an LGD outside [0, 1] (RP103). `r=5` used to price an option at a 500%
+  rate. The library functions underneath still accept them.
+- The triangle tools refuse a triangle whose newer origin has more observed periods than an
+  older one (RP502); the chain ladder used to reserve it silently.
+
+### `riskpy-doctor` and `riskpy.doctor()`
+
+Checks the Python version; the installed distribution and whether the `riskpy` being imported
+is that installation (a source checkout shadowing it is reported); that the compiled core
+imports from the same place, computes a known answer, and is a 0.4.1+ build; NumPy, SciPy,
+pandas, Matplotlib, the MCP SDK and Tkinter, each with the exact `pip` line; a 68-identity
+subset of `riskpy-verify`; the tools; that the MCP server builds and where `riskpy-mcp` is; the
+platform. Each check is `{id, status: ok|warn|fail, message, hint}`; `--json`; exit 1 on a fail.
+
+### The call trace
+
+- `tools.trace()` — the last 200 tool calls in the process: tool, abbreviated arguments,
+  milliseconds, ok or error code and parameter, and whether it came from Python, the CLI or MCP.
+  `tools.status()` adds version, tool availability, limits and counts by error code.
+- `riskpy-tools trace [--json] [--limit N] [--file PATH]`; `RISKPY_TRACE_FILE` appends every
+  call to a JSON-lines file so separate processes share one trace.
+- Introspection tools, in the manifest and over MCP: `riskpy_status` (the above),
+  `riskpy_doctor`, and `riskpy_explain`, which takes an error code or a tool name and returns
+  the tool's formula and conventions.
+- `black_scholes` and `bond_analytics` take `explain: true` and add the working: for
+  Black–Scholes `d1`, `d2`, `N(d1)`, `N(d2)`, the discounted spot and strike, and the
+  continuous-compounding convention. Without it the result is unchanged.
+
+### Eleven new tools
+
+Thin wrappers over functions the verification suite checks, each pinned in the tests to
+numbers computed independently (closed forms, the SULT's Makeham law written out by hand, the
+chain-ladder definition on the raw GenIns data, `statistics.NormalDist`):
+
+`life_premium` (net premium by the equivalence principle, with the two APVs), `term_insurance`,
+`endowment_insurance`, `temporary_annuity_due`, `convert_rate`, `bootstrap_yield_curve`,
+`short_rate_zero_bond` (Vasicek / CIR), `hazard_from_spread`, `vasicek_loss_quantile`,
+`value_at_risk` (historical or parametric, with expected shortfall; NumPy) and
+`bornhuetter_ferguson` (NumPy).
+
+### Measured: `benchmarks/diagnostics/`
+
+`run.py` sends 19 realistic agent mistakes over MCP and the CLI to any installed version and
+scores each reply for a code, the parameter, a hint and structured JSON:
+
+| version | detected | code | param | hint | JSON | score |
+|---|---|---|---|---|---|---|
+| 0.4.0 (PyPI) | 13/19 | 0/19 | 3/19 | 0/19 | 0/19 | 3/76 (4%) |
+| 0.4.1 (unpublished) | 13/19 | 0/19 | 10/19 | 3/19 | 0/19 | 13/76 (17%) |
+| 0.5.0 | 19/19 | 19/19 | 19/19 | 19/19 | 19/19 | 76/76 (100%) |
+
+Six mistakes — a volatility, rate, coupon or LGD given as a percentage, a number sent as a
+string over MCP, an upside-down triangle — returned a number before 0.5.0. The suite was
+written alongside these changes; `RESULTS.md` has the replies the agent actually saw and the
+caveats.
+
+## Changed
+
+- `riskpy-context` adds a "When a call fails" section (the code families and what to do) and
+  the new commands; the tool table counts calculators and introspection tools separately.
+- `tools.manifest()` entries carry `kind` ("calculator" or "introspection").
+- The `basel_irb_capital` tool's description listed asset classes `"mortgage"`, `"revolving"`
+  and `"retail"`, which the function never accepted; it now lists the real ones
+  (`retail_mortgage`, `retail_revolving`, `retail_other`).
+- The CLIs replace characters the console cannot encode instead of crashing (Windows code pages).
+- `riskpy-mcp --config` falls back to the `riskpy-mcp` beside the interpreter when it is not on
+  `PATH`.
+- `quant._check_option` refuses a non-string `kind` with RP108 instead of an `AttributeError`.
+- Docs: new [Diagnostics](https://slimboi34.github.io/RiskPY/diagnostics/) and
+  [Error codes](https://slimboi34.github.io/RiskPY/errors/) pages; "For AI agents" updated.
+
+## From 0.4.1 (never published to PyPI)
+
+0.4.1 was committed on 2026-10-07 and passed CI, but was never tagged, so it never reached
+PyPI. Everything in it ships in 0.5.0; the full notes are in the 0.4.1 section below. In short:
+
+- The agent tools check every argument against its type on every path (no `NaN`, `Infinity`,
+  booleans or numeric strings where numbers belong) and bound the work one call can ask for
+  (`tools.LIMITS`: trials, simulated claims, payment periods, triangle size, list and string
+  lengths). A `NaN` frequency used to hang `aggregate_loss` forever.
+- Over MCP, argument errors reach the agent instead of "Error executing tool".
+- Compiled core: every `MonteCarloSimulator.simulate_*` refuses non-finite parameters and
+  frequencies above 10⁹; `RiskEngine.attach_exporter` keeps the exporter alive (it used to
+  read freed memory with a temporary exporter).
+- CI and release: actions pinned to commit SHAs, least-privilege permissions, `zizmor` clean,
+  grouped weekly Dependabot; `SECURITY.md`.
+
+## Upgrading
+
+Nothing to change for code that worked on 0.4.0. If you matched error messages, they are the
+same text (some gained detail after the original). If you call the tools with percentages —
+`r=5` for 5% — you now get RP104 instead of a number, which was wrong. If an MCP client sent
+numbers as strings, send numbers.
+
+---
+
 # RiskPY v0.4.1 — Release Notes
 
-**Release date:** 2026-10-07  
+**Release date:** 2026-10-07 — committed, never tagged or published to PyPI; ships in 0.5.0  
 **Type:** Patch release — security and hardening  
 **Install:** `pip install -U open-riskpy`
 

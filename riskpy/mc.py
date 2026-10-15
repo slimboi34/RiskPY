@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from . import _special
+from .errors import ArgumentTypeError, InputError, MissingDependencyError
 
 __all__ = [
     "Model",
@@ -80,13 +81,13 @@ def _numpy():
     try:
         import numpy  # noqa: WPS433
     except ImportError as exc:  # pragma: no cover - environment dependent
-        raise ImportError(
+        raise MissingDependencyError(
             "riskpy.mc needs NumPy, which is not installed. The C++ core is "
             "deliberately dependency-free, so the simulation layer ships as an "
             "extra:\n"
             "    pip install open-riskpy[sim]\n"
             "or just:\n"
-            "    pip install numpy"
+            "    pip install numpy", code="RP201", hint='pip install "open-riskpy[sim]"'
         ) from exc
     return numpy
 
@@ -193,19 +194,19 @@ class Distribution:
 
 def _check_positive(name: str, value: float) -> float:
     if not (value > 0) or not math.isfinite(value):
-        raise ValueError(f"{name} must be a finite number > 0, got {value!r}")
+        raise InputError(f"{name} must be a finite number > 0, got {value!r}", code="RP102", param=name)
     return float(value)
 
 
 def _check_non_negative(name: str, value: float) -> float:
     if not (value >= 0) or not math.isfinite(value):
-        raise ValueError(f"{name} must be a finite number >= 0, got {value!r}")
+        raise InputError(f"{name} must be a finite number >= 0, got {value!r}", code="RP102", param=name)
     return float(value)
 
 
 def _check_finite(name: str, value: float) -> float:
     if not math.isfinite(value):
-        raise ValueError(f"{name} must be finite, got {value!r}")
+        raise InputError(f"{name} must be finite, got {value!r}", code="RP101", param=name)
     return float(value)
 
 
@@ -217,7 +218,7 @@ def _check_q(q):
     np = _numpy()
     q = np.asarray(q, dtype=float)
     if np.any((q < 0.0) | (q > 1.0)):
-        raise ValueError("quantile levels must be in [0, 1]")
+        raise InputError("quantile levels must be in [0, 1]", code="RP110", param="q")
     return q
 
 
@@ -321,7 +322,7 @@ class Constant(Distribution):
 class Uniform(Distribution):
     def __init__(self, low: float, high: float):
         if not (high > low):
-            raise ValueError(f"high must exceed low, got low={low!r} high={high!r}")
+            raise InputError(f"high must exceed low, got low={low!r} high={high!r}", code="RP113", param="high")
         self.low, self.high = _check_finite("low", low), _check_finite("high", high)
 
     def sample(self, n, rng):
@@ -457,9 +458,9 @@ class Triangular(Distribution):
 
     def __init__(self, low: float, mode: float, high: float):
         if not (low <= mode <= high):
-            raise ValueError(f"need low <= mode <= high, got {low!r}, {mode!r}, {high!r}")
+            raise InputError(f"need low <= mode <= high, got {low!r}, {mode!r}, {high!r}", code="RP113", param="mode")
         if low == high:
-            raise ValueError("low and high must differ")
+            raise InputError("low and high must differ", code="RP113", param="high")
         self.low, self.mode, self.high = float(low), float(mode), float(high)
 
     def sample(self, n, rng):
@@ -508,9 +509,9 @@ class PERT(Distribution):
 
     def __init__(self, low: float, mode: float, high: float, lam: float = 4.0):
         if not (low <= mode <= high):
-            raise ValueError(f"need low <= mode <= high, got {low!r}, {mode!r}, {high!r}")
+            raise InputError(f"need low <= mode <= high, got {low!r}, {mode!r}, {high!r}", code="RP113", param="mode")
         if low == high:
-            raise ValueError("low and high must differ")
+            raise InputError("low and high must differ", code="RP113", param="high")
         self.low, self.mode, self.high = float(low), float(mode), float(high)
         self.lam = _check_non_negative("lam", lam)
 
@@ -1067,7 +1068,7 @@ class NegativeBinomial(_Discrete):
     def __init__(self, n_success: float, p: float):
         self.n_success = _check_positive("n_success", n_success)
         if not (0.0 < p <= 1.0):
-            raise ValueError(f"p must be in (0, 1], got {p!r}")
+            raise InputError(f"p must be in (0, 1], got {p!r}", code="RP103", param="p")
         self.p = float(p)
 
     @classmethod
@@ -1075,7 +1076,7 @@ class NegativeBinomial(_Discrete):
         """Parameterise by mean and variance-to-mean ratio (must exceed 1)."""
         mean = _check_positive("mean", mean)
         if not (dispersion > 1.0):
-            raise ValueError(f"dispersion must be > 1 (else use Poisson), got {dispersion!r}")
+            raise InputError(f"dispersion must be > 1 (else use Poisson), got {dispersion!r}", code="RP100", param="dispersion")
         p = 1.0 / dispersion
         return cls(n_success=mean * p / (1.0 - p), p=p)
 
@@ -1101,7 +1102,7 @@ class NegativeBinomial(_Discrete):
 class Bernoulli(_Discrete):
     def __init__(self, p: float):
         if not (0.0 <= p <= 1.0):
-            raise ValueError(f"p must be in [0, 1], got {p!r}")
+            raise InputError(f"p must be in [0, 1], got {p!r}", code="RP103", param="p")
         self.p = float(p)
 
     def sample(self, n, rng):
@@ -1125,9 +1126,9 @@ class Bernoulli(_Discrete):
 class Binomial(_Discrete):
     def __init__(self, trials: int, p: float):
         if trials < 0:
-            raise ValueError(f"trials must be >= 0, got {trials!r}")
+            raise InputError(f"trials must be >= 0, got {trials!r}", code="RP107", param="trials")
         if not (0.0 <= p <= 1.0):
-            raise ValueError(f"p must be in [0, 1], got {p!r}")
+            raise InputError(f"p must be in [0, 1], got {p!r}", code="RP103", param="p")
         self.trials, self.p = int(trials), float(p)
 
     def sample(self, n, rng):
@@ -1172,9 +1173,9 @@ class Empirical(Distribution):
         np = _numpy()
         values = np.asarray(list(data), dtype=float)
         if values.size == 0:
-            raise ValueError("Empirical needs at least one observation")
+            raise InputError("Empirical needs at least one observation", code="RP111", param="data")
         if not np.all(np.isfinite(values)):
-            raise ValueError("Empirical data must be finite")
+            raise InputError("Empirical data must be finite", code="RP101", param="data")
         self.data = values
         self._sorted = np.sort(values)
 
@@ -1212,18 +1213,18 @@ class Categorical(Distribution):
         np = _numpy()
         v = np.asarray(list(values), dtype=float)
         if v.size == 0:
-            raise ValueError("Categorical needs at least one value")
+            raise InputError("Categorical needs at least one value", code="RP111", param="values")
         if probs is None:
             p = np.full(v.size, 1.0 / v.size)
         else:
             p = np.asarray(list(probs), dtype=float)
             if p.shape != v.shape:
-                raise ValueError("probs must have one entry per value")
+                raise InputError("probs must have one entry per value", code="RP109", param="probs")
             if np.any(p < 0.0) or not np.all(np.isfinite(p)):
-                raise ValueError("probs must be finite and >= 0")
+                raise InputError("probs must be finite and >= 0", code="RP103", param="probs")
             total = p.sum()
             if total <= 0.0:
-                raise ValueError("probs must have positive total mass")
+                raise InputError("probs must have positive total mass", code="RP103", param="probs")
             p = p / total
         order = np.argsort(v, kind="mergesort")
         self.values = v[order]
@@ -1278,18 +1279,18 @@ class Mixture(Distribution):
         np = _numpy()
         comps = list(components)
         if not comps:
-            raise ValueError("Mixture needs at least one component")
+            raise InputError("Mixture needs at least one component", code="RP111", param="components")
         for c in comps:
             if not isinstance(c, Distribution):
-                raise TypeError(f"components must be Distributions, got {type(c).__name__}")
+                raise ArgumentTypeError(f"components must be Distributions, got {type(c).__name__}", code="RP404", param="components")
         if weights is None:
             w = np.full(len(comps), 1.0 / len(comps))
         else:
             w = np.asarray(list(weights), dtype=float)
             if w.size != len(comps):
-                raise ValueError("one weight per component")
+                raise InputError("one weight per component", code="RP109", param="weights")
             if np.any(w < 0.0) or not np.all(np.isfinite(w)) or w.sum() <= 0.0:
-                raise ValueError("weights must be finite, >= 0 and not all zero")
+                raise InputError("weights must be finite, >= 0 and not all zero", code="RP103", param="weights")
             w = w / w.sum()
         self.components = comps
         self.weights = w
@@ -1341,15 +1342,15 @@ class Truncated(Distribution):
 
     def __init__(self, dist: Distribution, low: Optional[float] = None, high: Optional[float] = None):
         if not isinstance(dist, Distribution):
-            raise TypeError("dist must be a Distribution")
+            raise ArgumentTypeError("dist must be a Distribution", code="RP404", param="dist")
         if low is None and high is None:
-            raise ValueError("give at least one of low or high")
+            raise InputError("give at least one of low or high", code="RP113", param="low")
         s_lo, s_hi = dist.support()
         self.dist = dist
         self.low = s_lo if low is None else float(low)
         self.high = s_hi if high is None else float(high)
         if not (self.high > self.low):
-            raise ValueError("high must exceed low")
+            raise InputError("high must exceed low", code="RP113", param="high")
         self._f_low = float(dist.cdf(self.low)) if math.isfinite(self.low) else 0.0
         self._f_high = float(dist.cdf(self.high)) if math.isfinite(self.high) else 1.0
         # Left-closed: include the mass at `low` itself for discrete parents.
@@ -1357,7 +1358,7 @@ class Truncated(Distribution):
             self._f_low = float(dist.cdf(self.low - 1.0))
         self._mass = self._f_high - self._f_low
         if not (self._mass > 0.0):
-            raise ValueError("the truncation interval carries no probability mass")
+            raise InputError("the truncation interval carries no probability mass", code="RP113", param="low")
         self.discrete = dist.discrete
 
     def sample(self, n, rng):
@@ -1427,11 +1428,11 @@ def correlation_matrix(names: Sequence[str], pairs: Mapping[Tuple[str, str], flo
     for (a, b), rho in pairs.items():
         if a not in index or b not in index:
             unknown = a if a not in index else b
-            raise ValueError(f"correlation refers to unknown variable {unknown!r}; known: {list(names)}")
+            raise InputError(f"correlation refers to unknown variable {unknown!r}; known: {list(names)}", code="RP108", param="correlation")
         if a == b:
-            raise ValueError(f"cannot set a variable's correlation with itself ({a!r})")
+            raise InputError(f"cannot set a variable's correlation with itself ({a!r})", code="RP113", param="correlation")
         if not (-1.0 <= rho <= 1.0):
-            raise ValueError(f"correlation must be in [-1, 1], got {rho!r} for {(a, b)!r}")
+            raise InputError(f"correlation must be in [-1, 1], got {rho!r} for {(a, b)!r}", code="RP100", param="correlation", hint="Correlations are decimals in [-1, 1].")
         matrix[index[a], index[b]] = matrix[index[b], index[a]] = float(rho)
     _check_correlation(matrix)
     return matrix
@@ -1441,18 +1442,18 @@ def _check_correlation(matrix) -> None:
     np = _numpy()
     matrix = np.asarray(matrix, dtype=float)
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
-        raise ValueError(f"correlation must be a square matrix, got shape {matrix.shape}")
+        raise InputError(f"correlation must be a square matrix, got shape {matrix.shape}", code="RP100", param="correlation")
     if not np.allclose(matrix, matrix.T, atol=1e-12):
-        raise ValueError("correlation matrix must be symmetric")
+        raise InputError("correlation matrix must be symmetric", code="RP100", param="correlation")
     if not np.allclose(np.diag(matrix), 1.0, atol=1e-12):
-        raise ValueError("correlation matrix must have ones on the diagonal")
+        raise InputError("correlation matrix must have ones on the diagonal", code="RP100", param="correlation")
     eigen = np.linalg.eigvalsh(matrix)
     if eigen.min() <= -1e-10:
-        raise ValueError(
+        raise InputError(
             f"correlation matrix is not positive semi-definite (smallest eigenvalue "
             f"{eigen.min():.3g}). The pairwise correlations you asked for cannot all "
             f"hold at once — reduce the strongest ones, or pass the matrix through "
-            f"riskpy.capital.nearest_correlation()."
+            f"riskpy.capital.nearest_correlation().", code="RP100", param="correlation"
         )
 
 
@@ -1474,7 +1475,7 @@ def iman_conover(samples: Dict[str, Any], target, rng, spearman: bool = True) ->
     k = len(names)
     target = np.asarray(target, dtype=float)
     if target.shape != (k, k):
-        raise ValueError(f"target must be {k}x{k} for {k} variables, got {target.shape}")
+        raise InputError(f"target must be {k}x{k} for {k} variables, got {target.shape}", code="RP109", param="target")
     _check_correlation(target)
     n = len(samples[names[0]])
     if n < 2:
@@ -1586,7 +1587,7 @@ class Result:
         between order statistics, identical to NumPy's default."""
         np = _numpy()
         if not (0.0 <= q <= 100.0):
-            raise ValueError(f"q is a percentage in [0, 100], got {q!r}")
+            raise InputError(f"q is a percentage in [0, 100], got {q!r}", code="RP110", param="q", hint="percentile() takes a percentage in [0, 100]; var() and tvar() take a decimal level such as 0.995.")
         ordered = self._ordered()
         n = ordered.size
         pos = (q / 100.0) * (n - 1)
@@ -1675,12 +1676,12 @@ class Result:
         Returns ``[(name, score), …]``, strongest first.
         """
         if not self.inputs:
-            raise ValueError(
+            raise InputError(
                 "This run kept no inputs, so sensitivity cannot be computed. "
-                "Re-run with keep_inputs=True (the default)."
+                "Re-run with keep_inputs=True (the default).", code="RP113", param="keep_inputs"
             )
         if method not in ("spearman", "pearson", "contribution"):
-            raise ValueError("method must be 'spearman', 'pearson' or 'contribution'")
+            raise InputError("method must be 'spearman', 'pearson' or 'contribution'", code="RP108", param="method")
         np = _numpy()
         if method == "spearman":
             target = _rankdata(self.values, np)
@@ -1739,7 +1740,7 @@ class Result:
         try:
             import pandas  # noqa: WPS433
         except ImportError as exc:  # pragma: no cover - environment dependent
-            raise ImportError("to_frame() needs pandas: pip install pandas") from exc
+            raise MissingDependencyError("to_frame() needs pandas: pip install pandas", code="RP203") from exc
         data = dict(self.inputs)
         data[self.label] = self.values
         return pandas.DataFrame(data)
@@ -1764,7 +1765,7 @@ class Result:
             "dashboard": viz.dashboard,
         }
         if kind not in plots:
-            raise ValueError(f"kind must be one of {sorted(plots)}, got {kind!r}")
+            raise InputError(f"kind must be one of {sorted(plots)}, got {kind!r}", code="RP108", param="kind")
         return plots[kind](self, **kwargs)
 
     def __len__(self) -> int:
@@ -1779,7 +1780,7 @@ class Result:
 
 def _check_level(level: float) -> None:
     if not (0.0 < level < 1.0):
-        raise ValueError(f"level must be a probability in (0, 1), e.g. 0.995 — got {level!r}")
+        raise InputError(f"level must be a probability in (0, 1), e.g. 0.995 — got {level!r}", code="RP110", param="level")
 
 
 def _rankdata(values, np):
@@ -1806,9 +1807,9 @@ class Model:
     def __init__(self, **variables: Distribution):
         for name, dist in variables.items():
             if not isinstance(dist, Distribution):
-                raise TypeError(
+                raise ArgumentTypeError(
                     f"{name!r} must be a Distribution, got {type(dist).__name__}. "
-                    f"Wrap a fixed number in Constant({dist!r})."
+                    f"Wrap a fixed number in Constant({dist!r}).", code="RP404", param=name
                 )
         self.variables: Dict[str, Distribution] = dict(variables)
         self.correlations: Dict[Tuple[str, str], float] = {}
@@ -1823,7 +1824,7 @@ class Model:
         """Declare a Spearman rank correlation between two inputs. Chainable."""
         for name in (a, b):
             if name not in self.variables:
-                raise ValueError(f"unknown variable {name!r}; known: {list(self.variables)}")
+                raise InputError(f"unknown variable {name!r}; known: {list(self.variables)}", code="RP108", param="name")
         self.correlations[(a, b)] = float(rho)
         correlation_matrix(list(self.variables), self.correlations)  # validate now
         return self
@@ -1849,9 +1850,9 @@ class Model:
     ) -> Result:
         formula = fn or self._formula
         if formula is None:
-            raise ValueError(
+            raise InputError(
                 "No formula registered. Decorate one with @model.formula, or "
-                "pass fn= to run()."
+                "pass fn= to run().", code="RP113", param="fn"
             )
         return simulate(
             formula,
@@ -1872,13 +1873,13 @@ class Model:
         data for :func:`riskpy.viz.compare`. Same seed for every scenario, so
         the differences are the scenarios and not the noise."""
         if name not in self.variables:
-            raise ValueError(f"unknown variable {name!r}; known: {list(self.variables)}")
+            raise InputError(f"unknown variable {name!r}; known: {list(self.variables)}", code="RP108", param="name")
         results = {}
         original = self.variables[name]
         try:
             for label, dist in alternatives.items():
                 if not isinstance(dist, Distribution):
-                    raise TypeError(f"{label!r}: alternatives must be Distributions")
+                    raise ArgumentTypeError(f"{label!r}: alternatives must be Distributions", code="RP404", param=label)
                 self.variables[name] = dist
                 results[label] = self.run(trials=trials, seed=seed, label=label, **run_kwargs)
         finally:
@@ -1895,17 +1896,17 @@ def _draw(variables: Mapping[str, Distribution], trials: int, rng, sampling: str
     np = _numpy()
     names = list(variables)
     if sampling not in ("random", "lhs"):
-        raise ValueError(f"sampling must be 'random' or 'lhs', got {sampling!r}")
+        raise InputError(f"sampling must be 'random' or 'lhs', got {sampling!r}", code="RP108", param="sampling")
 
     if copula is not None:
         if correlation is not None:
-            raise ValueError("pass either correlation= or copula=, not both")
+            raise InputError("pass either correlation= or copula=, not both", code="RP113", param="copula")
         dim = getattr(copula, "dim", None)
         if dim is not None and dim != len(names):
-            raise ValueError(f"copula has dimension {dim} but there are {len(names)} variables")
+            raise InputError(f"copula has dimension {dim} but there are {len(names)} variables", code="RP109", param="copula")
         u = np.asarray(copula.uniforms(trials, rng), dtype=float)
         if u.shape != (trials, len(names)):
-            raise ValueError(f"copula.uniforms must return shape ({trials}, {len(names)}), got {u.shape}")
+            raise InputError(f"copula.uniforms must return shape ({trials}, {len(names)}), got {u.shape}", code="RP109", param="copula")
         return {name: variables[name].ppf(u[:, j]) for j, name in enumerate(names)}
 
     if sampling == "lhs":
@@ -1919,9 +1920,9 @@ def _draw(variables: Mapping[str, Distribution], trials: int, rng, sampling: str
         else:
             matrix = np.asarray(correlation, dtype=float)
             if matrix.shape != (len(names), len(names)):
-                raise ValueError(
+                raise InputError(
                     f"correlation matrix must be {len(names)}x{len(names)} in the order "
-                    f"{names}, got shape {matrix.shape}"
+                    f"{names}, got shape {matrix.shape}", code="RP109", param="correlation"
                 )
         samples = iman_conover(samples, matrix, rng)
     return samples
@@ -1956,14 +1957,14 @@ def simulate(
     np = _numpy()
 
     if trials < 1:
-        raise ValueError(f"trials must be >= 1, got {trials!r}")
+        raise InputError(f"trials must be >= 1, got {trials!r}", code="RP107", param="trials")
     if not variables:
-        raise ValueError("Nothing to simulate — pass at least one distribution.")
+        raise InputError("Nothing to simulate — pass at least one distribution.", code="RP111", param="variables")
     for name, dist in variables.items():
         if not isinstance(dist, Distribution):
-            raise TypeError(
+            raise ArgumentTypeError(
                 f"{name!r} must be a Distribution, got {type(dist).__name__}. "
-                f"Wrap a fixed number in Constant({dist!r})."
+                f"Wrap a fixed number in Constant({dist!r}).", code="RP404", param=name
             )
 
     rng = np.random.default_rng(seed)
@@ -1972,11 +1973,11 @@ def simulate(
     if vectorised:
         values = np.asarray(fn(**samples), dtype=float)
         if values.shape != (trials,):
-            raise ValueError(
+            raise InputError(
                 f"The formula returned shape {values.shape}, expected ({trials},). "
                 f"A vectorised formula must operate elementwise on its inputs — "
                 f"use np.where instead of if/else, np.minimum instead of min(), "
-                f"and so on. Or pass vectorised=False to loop instead."
+                f"and so on. Or pass vectorised=False to loop instead.", code="RP100", param="fn", hint="A vectorised formula must work elementwise: use np.where, np.minimum, np.maximum; or pass vectorised=False."
             )
     else:
         values = np.empty(trials, dtype=float)
@@ -1985,10 +1986,10 @@ def simulate(
 
     if not np.all(np.isfinite(values)):
         bad = int((~np.isfinite(values)).sum())
-        raise ValueError(
+        raise InputError(
             f"{bad:,} of {trials:,} trials produced NaN or infinity. Usually a "
             f"division by a variable that can reach zero, or a log of a variable "
-            f"that can go negative."
+            f"that can go negative.", code="RP305", param="fn", hint="Look for a division by a variable that can reach zero, or a log of one that can go negative."
         )
 
     return Result(

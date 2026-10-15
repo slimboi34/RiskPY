@@ -51,6 +51,7 @@ import warnings
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import _special
+from .errors import ArgumentTypeError, InputError
 
 __all__ = [
     "LifeTable",
@@ -106,9 +107,9 @@ def _check_finite(name: str, value: float) -> float:
     try:
         out = float(value)
     except (TypeError, ValueError):
-        raise ValueError(f"{name} must be a number, got {value!r}") from None
+        raise InputError(f"{name} must be a number, got {value!r}", code="RP101", param=name) from None
     if not math.isfinite(out):
-        raise ValueError(f"{name} must be finite, got {value!r}")
+        raise InputError(f"{name} must be finite, got {value!r}", code="RP101", param=name)
     return out
 
 
@@ -120,33 +121,33 @@ def _check_int(name: str, value: int, minimum: Optional[int] = None) -> int:
     not model, so it is refused rather than rounded.
     """
     if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer, got {value!r}")
+        raise InputError(f"{name} must be an integer, got {value!r}", code="RP107", param=name)
     if isinstance(value, numbers.Integral):
         out = int(value)
     elif isinstance(value, float) and math.isfinite(value) and value.is_integer():
         out = int(value)
     else:
-        raise ValueError(
+        raise InputError(
             f"{name} must be a whole number of years, got {value!r} — this is a "
-            f"discrete (integer-age) table"
+            f"discrete (integer-age) table", code="RP107", param=name
         )
     if minimum is not None and out < minimum:
-        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+        raise InputError(f"{name} must be >= {minimum}, got {value!r}", code="RP107", param=name)
     return out
 
 
 def _check_rate(i: float) -> float:
     i = _check_finite("i", i)
     if not (i > -1.0):
-        raise ValueError(
-            f"i must be an effective annual rate > -1, as a decimal (0.05 for 5%), got {i!r}"
+        raise InputError(
+            f"i must be an effective annual rate > -1, as a decimal (0.05 for 5%), got {i!r}", code="RP104", param="i", hint="i is an effective annual rate as a decimal: 5% is 0.05, and it must be > -1."
         )
     return i
 
 
 def _check_table(table: "LifeTable") -> "LifeTable":
     if not isinstance(table, LifeTable):
-        raise TypeError(f"table must be a LifeTable, got {type(table).__name__}")
+        raise ArgumentTypeError(f"table must be a LifeTable, got {type(table).__name__}", code="RP108", param="table", hint="Pass a riskpy.life.LifeTable, e.g. LifeTable.sult().")
     return table
 
 
@@ -218,29 +219,29 @@ class LifeTable:
         start_age = _check_int("start_age", start_age, minimum=0)
         radix = _check_finite("radix", radix)
         if not (radix > 0.0):
-            raise ValueError(f"radix must be > 0, got {radix!r}")
+            raise InputError(f"radix must be > 0, got {radix!r}", code="RP501", param="radix")
 
         rates = [_check_finite(f"q_{start_age + k}", q) for k, q in enumerate(qx)]
         if not rates:
-            raise ValueError("qx is empty — a life table needs at least one age")
+            raise InputError("qx is empty — a life table needs at least one age", code="RP501", param="qx")
         for k, q in enumerate(rates):
             if not (0.0 <= q <= 1.0):
-                raise ValueError(
-                    f"q_{start_age + k} = {q!r} is not a probability in [0, 1]"
+                raise InputError(
+                    f"q_{start_age + k} = {q!r} is not a probability in [0, 1]", code="RP501", param="qx"
                 )
         first_one = next((k for k, q in enumerate(rates) if q == 1.0), None)
         if first_one is None:
             last = start_age + len(rates) - 1
-            raise ValueError(
+            raise InputError(
                 f"the table does not close: q_{last} = {rates[-1]!r} but the last "
                 f"q_x must be 1.0 (l_omega = 0). Append 1.0 so that everyone alive "
-                f"at age {last + 1} dies within the year, or extend the table."
+                f"at age {last + 1} dies within the year, or extend the table.", code="RP501", param="qx"
             )
         if first_one != len(rates) - 1:
-            raise ValueError(
+            raise InputError(
                 f"q_{start_age + first_one} = 1.0 closes the table at age "
                 f"{start_age + first_one + 1}, but {len(rates) - first_one - 1} more "
-                f"age(s) follow it. Drop the unreachable ages, or fix the rate."
+                f"age(s) follow it. Drop the unreachable ages, or fix the rate.", code="RP501", param="qx"
             )
 
         survivors = [radix]
@@ -281,23 +282,23 @@ class LifeTable:
         start_age = _check_int("start_age", start_age, minimum=0)
         values = [_check_finite(f"l_{start_age + k}", v) for k, v in enumerate(lx)]
         if len(values) < 2:
-            raise ValueError("lx needs at least two entries (a radix and a later age)")
+            raise InputError("lx needs at least two entries (a radix and a later age)", code="RP501", param="lx")
         if not (values[0] > 0.0):
-            raise ValueError(f"l_{start_age} (the radix) must be > 0, got {values[0]!r}")
+            raise InputError(f"l_{start_age} (the radix) must be > 0, got {values[0]!r}", code="RP501", param="lx")
         for k in range(1, len(values)):
             if values[k] < 0.0:
-                raise ValueError(f"l_{start_age + k} = {values[k]!r} is negative")
+                raise InputError(f"l_{start_age + k} = {values[k]!r} is negative", code="RP501", param="lx")
             if values[k] > values[k - 1]:
-                raise ValueError(
+                raise InputError(
                     f"l_x must be non-increasing, but l_{start_age + k} = {values[k]!r} "
-                    f"> l_{start_age + k - 1} = {values[k - 1]!r}"
+                    f"> l_{start_age + k - 1} = {values[k - 1]!r}", code="RP501", param="lx"
                 )
         first_zero = next((k for k, v in enumerate(values) if v == 0.0), None)
         if first_zero is None:
             last = start_age + len(values) - 1
-            raise ValueError(
+            raise InputError(
                 f"the table does not close: l_{last} = {values[-1]!r} > 0. Append 0.0 "
-                f"(nobody survives past age {last}) or extend the table."
+                f"(nobody survives past age {last}) or extend the table.", code="RP501", param="lx"
             )
         values = values[: first_zero + 1]
 
@@ -352,13 +353,13 @@ class LifeTable:
         B = _check_finite("B", B)
         c = _check_finite("c", c)
         if A < 0.0:
-            raise ValueError(f"A must be >= 0, got {A!r}")
+            raise InputError(f"A must be >= 0, got {A!r}", code="RP102", param="A")
         if not (B > 0.0):
-            raise ValueError(f"B must be > 0, got {B!r}")
+            raise InputError(f"B must be > 0, got {B!r}", code="RP102", param="B")
         if not (c > 1.0):
-            raise ValueError(
+            raise InputError(
                 f"c must be > 1 (mortality rising with age), got {c!r}. For a "
-                f"constant force use from_force(lambda x: A)."
+                f"constant force use from_force(lambda x: A).", code="RP100", param="c"
             )
         start_age, max_age = _check_age_span(start_age, max_age)
 
@@ -403,16 +404,16 @@ class LifeTable:
         would let survivors *increase*. The table is closed by ``q_{max_age} = 1``.
         """
         if not callable(mu):
-            raise TypeError("mu must be callable, e.g. lambda x: 0.0002 + 2.7e-6 * 1.124 ** x")
+            raise ArgumentTypeError("mu must be callable, e.g. lambda x: 0.0002 + 2.7e-6 * 1.124 ** x", code="RP404", param="mu")
         start_age, max_age = _check_age_span(start_age, max_age)
         steps = _check_int("steps", steps, minimum=2)
         if steps % 2:
-            raise ValueError(f"steps must be even (Simpson's rule pairs intervals), got {steps}")
+            raise InputError(f"steps must be even (Simpson's rule pairs intervals), got {steps}", code="RP107", param="steps")
 
         def force(s: float) -> float:
             value = _check_finite(f"mu({s:g})", mu(s))
             if value < 0.0:
-                raise ValueError(f"mu({s:g}) = {value!r} is negative; a force of mortality must be >= 0")
+                raise InputError(f"mu({s:g}) = {value!r} is negative; a force of mortality must be >= 0", code="RP501", param="mu")
             return value
 
         rates = []
@@ -452,9 +453,9 @@ class LifeTable:
         x = _check_int("x", x)
         top = self._omega if allow_omega else self._omega - 1
         if not (self._start <= x <= top):
-            raise ValueError(
+            raise InputError(
                 f"age {x} is outside the table, which runs from {self._start} to "
-                f"{self._omega - 1} (omega = {self._omega})"
+                f"{self._omega - 1} (omega = {self._omega})", code="RP113", param="x", hint=f"Ages run from {self._start} to {self._omega - 1} in this table."
             )
         return x - self._start
 
@@ -540,7 +541,7 @@ def _check_age_span(start_age: int, max_age: int) -> Tuple[int, int]:
     start_age = _check_int("start_age", start_age, minimum=0)
     max_age = _check_int("max_age", max_age)
     if max_age <= start_age:
-        raise ValueError(f"max_age must exceed start_age, got start_age={start_age} max_age={max_age}")
+        raise InputError(f"max_age must exceed start_age, got start_age={start_age} max_age={max_age}", code="RP113", param="max_age")
     return start_age, max_age
 
 
@@ -582,7 +583,7 @@ def effective_from_nominal(i_m: float, m: int) -> float:
     m = _check_int("m", m, minimum=1)
     base = 1.0 + i_m / m
     if not (base > 0.0):
-        raise ValueError(f"i_m/m must exceed -1, got i_m={i_m!r} m={m}")
+        raise InputError(f"i_m/m must exceed -1, got i_m={i_m!r} m={m}", code="RP104", param="i_m")
     return base ** m - 1.0
 
 
@@ -614,7 +615,7 @@ def perpetuity(i: float, due: bool = False) -> float:
     """``a_∞ = 1/i`` (or ``ä_∞ = 1/d``). Needs ``i > 0``: at zero interest the sum diverges."""
     i = _check_rate(i)
     if not (i > 0.0):
-        raise ValueError(f"a perpetuity needs i > 0 (the sum diverges otherwise), got {i!r}")
+        raise InputError(f"a perpetuity needs i > 0 (the sum diverges otherwise), got {i!r}", code="RP102", param="i")
     return 1.0 / (i / (1.0 + i) if due else i)
 
 
@@ -965,8 +966,8 @@ def net_premium(benefit_apv: float, annuity_apv: float) -> float:
     benefit_apv = _check_finite("benefit_apv", benefit_apv)
     annuity_apv = _check_finite("annuity_apv", annuity_apv)
     if not (annuity_apv > 0.0):
-        raise ValueError(
-            f"annuity_apv must be > 0 (the value of the premium stream), got {annuity_apv!r}"
+        raise InputError(
+            f"annuity_apv must be > 0 (the value of the premium stream), got {annuity_apv!r}", code="RP102", param="annuity_apv"
         )
     return benefit_apv / annuity_apv
 
@@ -1022,7 +1023,7 @@ def gross_premium(
     i = _check_rate(i)
     benefit = _check_finite("benefit", benefit)
     if not (benefit > 0.0):
-        raise ValueError(f"benefit must be > 0, got {benefit!r}")
+        raise InputError(f"benefit must be > 0, got {benefit!r}", code="RP102", param="benefit")
     for name, value in (
         ("initial_expense", initial_expense),
         ("renewal_expense", renewal_expense),
@@ -1030,11 +1031,11 @@ def gross_premium(
         ("initial_loading", initial_loading),
     ):
         if _check_finite(name, value) < 0.0:
-            raise ValueError(f"{name} must be >= 0, got {value!r}")
+            raise InputError(f"{name} must be >= 0, got {value!r}", code="RP102", param=name)
     premium_loading = _check_finite("premium_loading", premium_loading)
     if not (0.0 <= premium_loading < 1.0):
-        raise ValueError(
-            f"premium_loading is a fraction of each premium and must be in [0, 1), got {premium_loading!r}"
+        raise InputError(
+            f"premium_loading is a fraction of each premium and must be in [0, 1), got {premium_loading!r}", code="RP103", param="premium_loading"
         )
 
     A = whole_life_insurance(table, x, i)
@@ -1042,9 +1043,9 @@ def gross_premium(
     outgo = (benefit + settlement_expense) * A + initial_expense + renewal_expense * (a - 1.0)
     income_per_unit = (1.0 - premium_loading) * a - initial_loading
     if not (income_per_unit > 0.0):
-        raise ValueError(
+        raise InputError(
             f"the loadings swallow the whole premium: (1 - premium_loading)·ä_x - "
-            f"initial_loading = {income_per_unit:.4f} <= 0"
+            f"initial_loading = {income_per_unit:.4f} <= 0", code="RP113", param="initial_loading"
         )
     return outgo / income_per_unit
 
@@ -1061,18 +1062,18 @@ def _check_contract(table: LifeTable, x: int, kind: str, n: Optional[int]) -> Tu
     _check_table(table)
     x = table._start + table._index(x)
     if kind not in _KINDS:
-        raise ValueError(f"kind must be one of {list(_KINDS)}, got {kind!r}")
+        raise InputError(f"kind must be one of {list(_KINDS)}, got {kind!r}", code="RP108", param="kind", hint="kind is 'whole_life', 'term' or 'endowment'.")
     if kind == "whole_life":
         if n is not None:
-            raise ValueError("whole_life has no term — leave n as None (use kind='term' or 'endowment' for an n-year contract)")
+            raise InputError("whole_life has no term — leave n as None (use kind='term' or 'endowment' for an n-year contract)", code="RP113", param="n")
         return x, kind, None
     if n is None:
-        raise ValueError(f"kind={kind!r} needs a term: pass n (the number of years)")
+        raise InputError(f"kind={kind!r} needs a term: pass n (the number of years)", code="RP113", param="n")
     n = _check_int("n", n, minimum=1)
     if x + n > table._omega:
-        raise ValueError(
+        raise InputError(
             f"an {n}-year contract on ({x}) runs past omega = {table._omega}; "
-            f"this table supports n <= {table._omega - x}"
+            f"this table supports n <= {table._omega - x}", code="RP113", param="n"
         )
     return x, kind, n
 
@@ -1123,12 +1124,12 @@ def net_premium_reserve(
     i = _check_rate(i)
     if kind == "whole_life":
         if x + t >= table._omega:
-            raise ValueError(
+            raise InputError(
                 f"t = {t} is past the table: ({x}) cannot be alive at age {x + t} >= omega = {table._omega}; "
-                f"t must be in 0..{table._omega - x - 1}"
+                f"t must be in 0..{table._omega - x - 1}", code="RP113", param="t"
             )
     elif t > n:
-        raise ValueError(f"t = {t} is after the {n}-year contract has expired; t must be in 0..{n}")
+        raise InputError(f"t = {t} is after the {n}-year contract has expired; t must be in 0..{n}", code="RP113", param="t")
     P = _premium_for(table, x, i, kind, n)
     return _reserve_at(table, x, t, i, kind, n, P)
 

@@ -60,6 +60,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import _special
+from .errors import ConvergenceError, InputError, MissingDependencyError
 from .mc import _numpy
 
 __all__ = [
@@ -88,17 +89,17 @@ __all__ = [
 
 def _check_level(level: float) -> float:
     if not (isinstance(level, (int, float)) and 0.0 < level < 1.0):
-        raise ValueError(
-            f"level must be a probability in (0, 1), e.g. 0.995 — got {level!r}"
+        raise InputError(
+            f"level must be a probability in (0, 1), e.g. 0.995 — got {level!r}", code="RP110", param="level"
         )
     return float(level)
 
 
 def _check_tail(tail: float) -> float:
     if not isinstance(tail, (int, float)) or not math.isfinite(tail) or tail <= 0.0:
-        raise ValueError(
+        raise InputError(
             f"tail must be a finite positive factor (1.0 means no tail), got {tail!r}. "
-            f"Use fit_tail() to estimate one from the development factors."
+            f"Use fit_tail() to estimate one from the development factors.", code="RP102", param="tail"
         )
     return float(tail)
 
@@ -170,26 +171,26 @@ def _pad_rows(data: Any, np) -> Any:
     if hasattr(data, "ndim"):  # ndarray, pandas DataFrame, …
         arr = np.asarray(data, dtype=float)
         if arr.ndim != 2:
-            raise ValueError(
-                f"data must be 2-D (origins × development periods), got {arr.ndim}-D"
+            raise InputError(
+                f"data must be 2-D (origins × development periods), got {arr.ndim}-D", code="RP502", param="data"
             )
         return arr
     try:
         rows = [list(r) for r in data]
     except TypeError as exc:
-        raise ValueError(
+        raise InputError(
             "data must be a 2-D array (NaN for future cells) or a list of rows, "
-            "one per origin, each row as long as its history"
+            "one per origin, each row as long as its history", code="RP502", param="data"
         ) from exc
     if not rows:
-        raise ValueError("data is empty — a triangle needs at least one origin")
+        raise InputError("data is empty — a triangle needs at least one origin", code="RP111", param="data")
     width = max(len(r) for r in rows)
     out = np.full((len(rows), width), np.nan)
     for i, row in enumerate(rows):
         try:
             out[i, : len(row)] = np.asarray(row, dtype=float)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"origin row {i} contains non-numeric values: {row!r}") from exc
+            raise InputError(f"origin row {i} contains non-numeric values: {row!r}", code="RP502", param="data") from exc
     return out
 
 
@@ -238,30 +239,30 @@ class Triangle:
         values = _pad_rows(data, np)
         n_origin, n_dev = values.shape
         if n_origin == 0 or n_dev == 0:
-            raise ValueError("data is empty — a triangle needs at least one origin and one column")
+            raise InputError("data is empty — a triangle needs at least one origin and one column", code="RP111", param="data")
         if np.isinf(values).any():
-            raise ValueError("triangle contains infinite values; only finite numbers or NaN are allowed")
+            raise InputError("triangle contains infinite values; only finite numbers or NaN are allowed", code="RP101", param="data")
 
         observed = ~np.isnan(values)
         counts = observed.sum(axis=1)
         for i in range(n_origin):
             if counts[i] == 0:
-                raise ValueError(
+                raise InputError(
                     f"origin row {i} has no observations at all — drop it, or give it "
-                    f"at least its first development period"
+                    f"at least its first development period", code="RP502", param="data"
                 )
             if not observed[i, : counts[i]].all():
                 first_gap = int(np.argmin(observed[i]))
-                raise ValueError(
+                raise InputError(
                     f"origin row {i} has a NaN at development period {first_gap} followed "
                     f"by data — a run-off has no holes. Fill the missing cell or drop "
-                    f"the row; NaN is only for periods that have not happened yet."
+                    f"the row; NaN is only for periods that have not happened yet.", code="RP502", param="data"
                 )
         empty_columns = np.flatnonzero(~observed.any(axis=0))
         if empty_columns.size:
-            raise ValueError(
+            raise InputError(
                 f"development period {int(empty_columns[0])} has no observations in any "
-                f"origin, so nothing can be estimated for it — drop the column"
+                f"origin, so nothing can be estimated for it — drop the column", code="RP502", param="data"
             )
 
         if not cumulative:
@@ -271,22 +272,22 @@ class Triangle:
         negatives = observed & (values < 0.0)
         if negatives.any():
             i, k = (int(x) for x in np.argwhere(negatives)[0])
-            raise ValueError(
+            raise InputError(
                 f"cumulative value at origin row {i}, development period {k} is negative "
                 f"({values[i, k]!r}); cumulative claims cannot be below zero. If these are "
-                f"incremental amounts pass cumulative=False."
+                f"incremental amounts pass cumulative=False.", code="RP502", param="data"
             )
         if not allow_decreasing:
             steps = values[:, 1:] - values[:, :-1]
             decreasing = np.isfinite(steps) & (steps < 0.0)
             if decreasing.any():
                 i, k = (int(x) for x in np.argwhere(decreasing)[0])
-                raise ValueError(
+                raise InputError(
                     f"cumulative values decrease at origin row {i} between development "
                     f"periods {k} and {k + 1} ({values[i, k]:g} -> {values[i, k + 1]:g}). "
                     f"If these are incremental amounts pass cumulative=False; if this is an "
                     f"incurred triangle with genuine downward development pass "
-                    f"allow_decreasing=True."
+                    f"allow_decreasing=True.", code="RP502", param="data"
                 )
 
         if origin is None:
@@ -294,11 +295,11 @@ class Triangle:
         else:
             labels = list(origin)
             if len(labels) != n_origin:
-                raise ValueError(
-                    f"origin has {len(labels)} labels but the triangle has {n_origin} rows"
+                raise InputError(
+                    f"origin has {len(labels)} labels but the triangle has {n_origin} rows", code="RP109", param="origin"
                 )
             if len(set(labels)) != len(labels):
-                raise ValueError("origin labels must be unique")
+                raise InputError("origin labels must be unique", code="RP502", param="origin")
 
         self._values = values
         self._observed = observed
@@ -377,7 +378,7 @@ class Triangle:
         try:
             import pandas  # noqa: WPS433
         except ImportError as exc:  # pragma: no cover - environment dependent
-            raise ImportError("to_frame() needs pandas: pip install pandas") from exc
+            raise MissingDependencyError("to_frame() needs pandas: pip install pandas", code="RP203") from exc
         frame = pandas.DataFrame(self._values, index=self._origin, columns=list(range(self.n_dev)))
         frame.index.name = "origin"
         frame.columns.name = "dev"
@@ -411,9 +412,9 @@ def cdf_from_factors(factors: Sequence[float], tail: float = 1.0):
     tail = _check_tail(tail)
     f = np.asarray(list(factors), dtype=float)
     if f.ndim != 1:
-        raise ValueError("factors must be a 1-D sequence of age-to-age factors")
+        raise InputError("factors must be a 1-D sequence of age-to-age factors", code="RP502", param="factors")
     if not np.all(np.isfinite(f)) or (f <= 0).any():
-        raise ValueError(f"factors must be finite and positive, got {f!r}")
+        raise InputError(f"factors must be finite and positive, got {f!r}", code="RP102", param="factors")
     out = np.empty(f.size + 1)
     out[-1] = tail
     for k in range(f.size - 1, -1, -1):
@@ -431,7 +432,7 @@ def development_pattern(cdf: Sequence[float]):
     np = _numpy()
     c = np.asarray(list(cdf), dtype=float)
     if c.ndim != 1 or not np.all(np.isfinite(c)) or (c <= 0).any():
-        raise ValueError(f"cdf must be a 1-D sequence of finite positive factors, got {c!r}")
+        raise InputError(f"cdf must be a 1-D sequence of finite positive factors, got {c!r}", code="RP502", param="cdf")
     return 1.0 / c
 
 
@@ -461,19 +462,19 @@ def fit_tail(
     np = _numpy()
     method = method.lower()
     if method not in ("exponential", "inverse_power"):
-        raise ValueError(f"method must be 'exponential' or 'inverse_power', got {method!r}")
+        raise InputError(f"method must be 'exponential' or 'inverse_power', got {method!r}", code="RP108", param="method")
     if not isinstance(n_extrapolate, int) or n_extrapolate < 1:
-        raise ValueError(f"n_extrapolate must be a positive integer, got {n_extrapolate!r}")
+        raise InputError(f"n_extrapolate must be a positive integer, got {n_extrapolate!r}", code="RP107", param="n_extrapolate")
     f = np.asarray(list(factors), dtype=float)
     if f.ndim != 1 or not np.all(np.isfinite(f)):
-        raise ValueError("factors must be a 1-D sequence of finite numbers")
+        raise InputError("factors must be a 1-D sequence of finite numbers", code="RP101", param="factors")
 
     ages = np.arange(1, f.size + 1, dtype=float)
     use = f > 1.0
     if use.sum() < 2:
-        raise ValueError(
+        raise InputError(
             "fit_tail needs at least two factors above 1 to see a trend; "
-            f"got {int(use.sum())}. If development is genuinely complete use tail=1.0."
+            f"got {int(use.sum())}. If development is genuinely complete use tail=1.0.", code="RP502", param="factors"
         )
     x = ages[use] if method == "exponential" else np.log(ages[use])
     y = np.log(f[use] - 1.0)
@@ -481,9 +482,9 @@ def fit_tail(
     slope = float(((x - x_mean) * (y - y_mean)).sum() / ((x - x_mean) ** 2).sum())
     intercept = float(y_mean - slope * x_mean)
     if slope >= 0.0:
-        raise ValueError(
+        raise ConvergenceError(
             f"the factors are not decaying (fitted slope {slope:+.4f}), so an extrapolated "
-            f"tail would grow without bound. Check the later factors, or set the tail by judgement."
+            f"tail would grow without bound. Check the later factors, or set the tail by judgement.", code="RP303", param="factors"
         )
     future = np.arange(f.size + 1, f.size + 1 + n_extrapolate, dtype=float)
     xf = future if method == "exponential" else np.log(future)
@@ -502,9 +503,9 @@ def _development_factors(tri: Triangle, average: str, n_periods: Optional[int], 
     for k in range(n_dev - 1):
         rows = np.flatnonzero(obs[:, k] & obs[:, k + 1])
         if rows.size == 0:
-            raise ValueError(
+            raise InputError(
                 f"no origin has both development periods {k} and {k + 1}, so factor {k} "
-                f"cannot be estimated — drop the last column or supply the factors yourself"
+                f"cannot be estimated — drop the last column or supply the factors yourself", code="RP502", param="triangle"
             )
         if n_periods is not None:
             rows = rows[-n_periods:]
@@ -512,16 +513,16 @@ def _development_factors(tri: Triangle, average: str, n_periods: Optional[int], 
         volume[k] = current.sum()
         if average == "volume":
             if volume[k] <= 0.0:
-                raise ValueError(
+                raise InputError(
                     f"development period {k} sums to zero over the origins used, so the "
-                    f"volume-weighted factor {k} is undefined"
+                    f"volume-weighted factor {k} is undefined", code="RP502", param="triangle"
                 )
             factors[k] = following.sum() / volume[k]
         else:
             if (current <= 0.0).any():
-                raise ValueError(
+                raise InputError(
                     f"development period {k} contains a zero, so the individual link ratios "
-                    f"are undefined; use average='volume', which only needs the column total"
+                    f"are undefined; use average='volume', which only needs the column total", code="RP502", param="triangle"
                 )
             if average == "simple":
                 factors[k] = (following / current).mean()
@@ -616,7 +617,7 @@ class _ReserveTable:
         try:
             import pandas  # noqa: WPS433
         except ImportError as exc:  # pragma: no cover - environment dependent
-            raise ImportError("to_frame() needs pandas: pip install pandas") from exc
+            raise MissingDependencyError("to_frame() needs pandas: pip install pandas", code="RP203") from exc
         data = {name: values for name, values, _ in self._columns()}
         frame = pandas.DataFrame(data, index=list(self.origin))
         frame.index.name = "origin"
@@ -783,9 +784,9 @@ class MackResult(ChainLadderResult):
         if se == 0.0:
             return mean
         if mean <= 0.0:
-            raise ValueError(
+            raise InputError(
                 f"the lognormal approximation needs a positive reserve; origin "
-                f"{origin!r} has reserve {mean:,.2f} with s.e. {se:,.2f}"
+                f"{origin!r} has reserve {mean:,.2f} with s.e. {se:,.2f}", code="RP113", param="origin"
             )
         sigma_sq = math.log(1.0 + (se / mean) ** 2)
         mu = math.log(mean) - 0.5 * sigma_sq
@@ -816,8 +817,8 @@ def _origin_index(labels: Sequence[Any], origin: Any) -> int:
     try:
         return list(labels).index(origin)
     except ValueError:
-        raise ValueError(
-            f"origin {origin!r} is not one of the triangle's origin labels {list(labels)!r}"
+        raise InputError(
+            f"origin {origin!r} is not one of the triangle's origin labels {list(labels)!r}", code="RP108", param="origin"
         ) from None
 
 
@@ -863,11 +864,11 @@ def chain_ladder(
     tail = _check_tail(tail)
     average = average.lower() if isinstance(average, str) else average
     if average not in ("volume", "simple", "regression"):
-        raise ValueError(
-            f"average must be 'volume', 'simple' or 'regression', got {average!r}"
+        raise InputError(
+            f"average must be 'volume', 'simple' or 'regression', got {average!r}", code="RP108", param="average"
         )
     if n_periods is not None and (not isinstance(n_periods, int) or n_periods < 1):
-        raise ValueError(f"n_periods must be a positive integer or None, got {n_periods!r}")
+        raise InputError(f"n_periods must be a positive integer or None, got {n_periods!r}", code="RP107", param="n_periods")
 
     factors, _ = _development_factors(tri, average, n_periods, np)
     cdf = cdf_from_factors(factors, tail)
@@ -943,11 +944,11 @@ def mack_chain_ladder(
     tri = _as_triangle(triangle)
     tail = _check_tail(tail)
     if tri.n_dev < 2:
-        raise ValueError("Mack's method needs at least two development periods")
+        raise InputError("Mack's method needs at least two development periods", code="RP502", param="triangle")
     if tail_sigma is not None and (not math.isfinite(tail_sigma) or tail_sigma < 0):
-        raise ValueError(f"tail_sigma must be a finite non-negative variance, got {tail_sigma!r}")
+        raise InputError(f"tail_sigma must be a finite non-negative variance, got {tail_sigma!r}", code="RP102", param="tail_sigma")
     if tail_se is not None and (not math.isfinite(tail_se) or tail_se < 0):
-        raise ValueError(f"tail_se must be a finite non-negative standard error, got {tail_se!r}")
+        raise InputError(f"tail_se must be a finite non-negative standard error, got {tail_se!r}", code="RP102", param="tail_se")
 
     base = chain_ladder(tri, tail=tail, average="volume")
     C, obs = tri._values, tri._observed
@@ -974,10 +975,10 @@ def mack_chain_ladder(
             elif k >= 1 and np.isfinite(sigma_sq[k - 1]):
                 sigma_sq[k] = sigma_sq[k - 1]
             else:
-                raise ValueError(
+                raise InputError(
                     f"σ² for development step {k} cannot be estimated: only one origin has "
                     f"both periods and there is no earlier step to extrapolate from. Mack's "
-                    f"method needs at least two origins on the first step."
+                    f"method needs at least two origins on the first step.", code="RP502", param="triangle"
                 )
     se_f_sq = sigma_sq / volume  # (s.e. of f_k)², Mack's σ_k² / Σ_i C[i,k]
 
@@ -986,17 +987,17 @@ def mack_chain_ladder(
         if tail_sigma is None:
             sd = _loglinear_extrapolate(np.sqrt(sigma_sq), float(n_steps), np)
             if math.isnan(sd):
-                raise ValueError(
+                raise InputError(
                     "cannot extrapolate σ for the tail (fewer than two positive σ_k); "
-                    "pass tail_sigma explicitly"
+                    "pass tail_sigma explicitly", code="RP502", param="tail_sigma"
                 )
             tail_sigma = sd * sd
         if tail_se is None:
             tail_se = _loglinear_extrapolate(np.sqrt(se_f_sq), float(n_steps), np)
             if math.isnan(tail_se):
-                raise ValueError(
+                raise InputError(
                     "cannot extrapolate the tail factor's standard error (fewer than two "
-                    "positive s.e.(f_k)); pass tail_se explicitly"
+                    "positive s.e.(f_k)); pass tail_se explicitly", code="RP502", param="tail_se"
                 )
         f_ext = np.append(f, tail)
         sigma_ext = np.append(sigma_sq, tail_sigma)
@@ -1064,13 +1065,13 @@ def _resolve_cdf(tri: Triangle, factors: Optional[Sequence[float]], tail: float,
             if cdf.ndim == 1 and cdf.size == tri.n_dev - 1
             else ""
         )
-        raise ValueError(
+        raise InputError(
             f"factors must be the {tri.n_dev} cumulative-to-ultimate factors "
             f"(a ChainLadderResult.cdf), one per development period; got "
-            f"{cdf.size if cdf.ndim == 1 else cdf.shape}{hint}"
+            f"{cdf.size if cdf.ndim == 1 else cdf.shape}{hint}", code="RP109", param="factors"
         )
     if not np.all(np.isfinite(cdf)) or (cdf <= 0).any():
-        raise ValueError(f"factors must be finite and positive, got {cdf!r}")
+        raise InputError(f"factors must be finite and positive, got {cdf!r}", code="RP102", param="factors")
     return cdf
 
 
@@ -1081,14 +1082,14 @@ def _per_origin(name: str, value: Any, n: int, np, non_negative: bool = True):
     else:
         arr = np.asarray(list(value), dtype=float)
         if arr.ndim != 1 or arr.size != n:
-            raise ValueError(
+            raise InputError(
                 f"{name} must be a scalar or one value per origin ({n}), got "
-                f"{arr.size if arr.ndim == 1 else arr.shape}"
+                f"{arr.size if arr.ndim == 1 else arr.shape}", code="RP109", param=name
             )
     if not np.all(np.isfinite(arr)):
-        raise ValueError(f"{name} must be finite, got {arr!r}")
+        raise InputError(f"{name} must be finite, got {arr!r}", code="RP101", param=name)
     if non_negative and (arr < 0).any():
-        raise ValueError(f"{name} must be non-negative, got {arr!r}")
+        raise InputError(f"{name} must be non-negative, got {arr!r}", code="RP102", param=name)
     return arr
 
 
@@ -1180,7 +1181,7 @@ def cape_cod(
     tri = _as_triangle(triangle)
     tail = _check_tail(tail)
     if not isinstance(decay, (int, float)) or not (0.0 < decay <= 1.0):
-        raise ValueError(f"decay must be in (0, 1] (1 = classic Cape Cod), got {decay!r}")
+        raise InputError(f"decay must be in (0, 1] (1 = classic Cape Cod), got {decay!r}", code="RP100", param="decay")
     premium = _per_origin("premiums", premiums, tri.n_origin, np)
     cdf = _resolve_cdf(tri, factors, tail, np)
 
@@ -1190,9 +1191,9 @@ def cape_cod(
     weights = float(decay) ** np.abs(idx[:, None] - idx[None, :])
     denominators = weights @ used_up
     if (denominators <= 0.0).any():
-        raise ValueError(
+        raise InputError(
             "Cape Cod needs positive used-up premium (premium × percent developed) "
-            "in the origins it pools; at least one weighted total is zero"
+            "in the origins it pools; at least one weighted total is zero", code="RP502", param="premiums"
         )
     elr = (weights @ latest) / denominators
     return _elr_result(
@@ -1318,7 +1319,7 @@ class BootstrapResult:
         try:
             import pandas  # noqa: WPS433
         except ImportError as exc:  # pragma: no cover - environment dependent
-            raise ImportError("to_frame() needs pandas: pip install pandas") from exc
+            raise MissingDependencyError("to_frame() needs pandas: pip install pandas", code="RP203") from exc
         frame = pandas.DataFrame(
             {"latest": self.latest, "cl_reserve": self.cl_reserve, "mean": self.mean,
              "se": self.se, "cv": self.cv},
@@ -1383,10 +1384,10 @@ def bootstrap_chain_ladder(
     tri = _as_triangle(triangle)
     tail = _check_tail(tail)
     if not isinstance(n, int) or n < 2:
-        raise ValueError(f"n must be an integer >= 2 (1000 is a sensible default), got {n!r}")
+        raise InputError(f"n must be an integer >= 2 (1000 is a sensible default), got {n!r}", code="RP107", param="n")
     process = process.lower() if isinstance(process, str) else process
     if process not in ("odp", "gamma", "none"):
-        raise ValueError(f"process must be 'odp', 'gamma' or 'none', got {process!r}")
+        raise InputError(f"process must be 'odp', 'gamma' or 'none', got {process!r}", code="RP108", param="process")
 
     base = chain_ladder(tri, tail=tail)
     C, obs = tri._values, tri._observed
@@ -1404,10 +1405,10 @@ def bootstrap_chain_ladder(
     m = fitted.copy()
     m[:, 1:] = fitted[:, 1:] - fitted[:, :-1]
     if (m[obs] <= 0.0).any():
-        raise ValueError(
+        raise InputError(
             "the fitted incremental triangle has a non-positive cell (a development "
             "factor below 1, or a zero column). The ODP bootstrap needs positive fitted "
-            "incrementals; this triangle is not an ODP triangle."
+            "incrementals; this triangle is not an ODP triangle.", code="RP502", param="triangle"
         )
 
     # -- 2. residuals, scale, degrees of freedom ------------------------------------------
@@ -1416,9 +1417,9 @@ def bootstrap_chain_ladder(
     p = n_origin + n_dev - 1
     dof = n_obs - p
     if dof <= 0:
-        raise ValueError(
+        raise InputError(
             f"the triangle has {n_obs} observed cells but the chain ladder fits {p} "
-            f"parameters; the bootstrap needs more cells than parameters"
+            f"parameters; the bootstrap needs more cells than parameters", code="RP502", param="triangle"
         )
     m_obs, q_obs = m[obs], q[obs]
     residuals = (q_obs - m_obs) / np.sqrt(m_obs)
@@ -1429,7 +1430,7 @@ def bootstrap_chain_ladder(
     structural_zero = (single_row | single_col)[obs]
     pool = adjusted[~structural_zero]
     if pool.size < 2:
-        raise ValueError("too few non-degenerate residuals to resample from")
+        raise InputError("too few non-degenerate residuals to resample from", code="RP502", param="triangle")
 
     # -- 3. resample, refit, project ------------------------------------------------------
     rng = np.random.default_rng(seed)
@@ -1444,10 +1445,10 @@ def bootstrap_chain_ladder(
         both = obs[:, k] & obs[:, k + 1]
         f_star[:, k] = pseudo[:, both, k + 1].sum(axis=1) / pseudo[:, both, k].sum(axis=1)
     if not np.all(np.isfinite(f_star)) or (f_star <= 0.0).any():
-        raise ValueError(
+        raise ConvergenceError(
             "a resampled triangle produced a non-positive column total, so its chain "
             "ladder is undefined. The cells are too small relative to their noise for "
-            "the ODP bootstrap; use mack_chain_ladder for this triangle."
+            "the ODP bootstrap; use mack_chain_ladder for this triangle.", code="RP305", param="triangle"
         )
 
     projected = np.full((n, n_origin, n_dev), np.nan)

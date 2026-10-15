@@ -23,6 +23,7 @@ import cmath
 import math
 
 from . import _special
+from .errors import ConvergenceError, InputError
 from .mc import _numpy
 from dataclasses import dataclass
 from typing import Optional, Sequence
@@ -56,9 +57,13 @@ def norm_pdf(x: float) -> float:
 
 
 def _check_option(kind: str) -> str:
+    if not isinstance(kind, str):
+        raise InputError(f"kind must be 'call' or 'put', got {kind!r}", code="RP108", param="kind",
+                         hint='kind is "call" or "put" (case-insensitive).')
     kind = kind.lower()
     if kind not in ("call", "put"):
-        raise ValueError(f"kind must be 'call' or 'put', got {kind!r}")
+        raise InputError(f"kind must be 'call' or 'put', got {kind!r}", code="RP108", param="kind",
+                         hint='kind is "call" or "put" (case-insensitive).')
     return kind
 
 
@@ -93,11 +98,15 @@ def black_scholes(
     """
     kind = _check_option(kind)
     if S <= 0 or K <= 0:
-        raise ValueError(f"S and K must be positive, got S={S!r} K={K!r}")
+        raise InputError(f"S and K must be positive, got S={S!r} K={K!r}", code="RP102",
+                         param="S" if not S > 0 else "K",
+                         hint="Spot S and strike K are prices in money and must be > 0.")
     if T < 0:
-        raise ValueError(f"T must be >= 0, got {T!r}")
+        raise InputError(f"T must be >= 0, got {T!r}", code="RP106", param="T",
+                         hint="T is the time to expiry in years (3 months is 0.25); 0 means at expiry.")
     if sigma < 0:
-        raise ValueError(f"sigma must be >= 0, got {sigma!r}")
+        raise InputError(f"sigma must be >= 0, got {sigma!r}", code="RP105", param="sigma",
+                         hint="sigma is the annual volatility as a decimal (0.2 means 20%) and cannot be negative.")
 
     # No time left, or no uncertainty: the forward is known, so the option is
     # worth its discounted intrinsic value and nothing more.
@@ -216,13 +225,17 @@ def implied_vol(
     """
     kind = _check_option(kind)
     if T <= 0:
-        raise ValueError("implied vol is undefined at or after expiry")
+        raise InputError(f"implied vol is undefined at or after expiry: T must be > 0, got {T!r}", code="RP106",
+                         param="T", hint="At expiry an option is worth its intrinsic value whatever the volatility, "
+                         "so there is nothing to invert. Pass the time to expiry in years (> 0).")
 
     lower_bound = black_scholes(S, K, T, r, 0.0, q, kind)
     if price < lower_bound - 1e-12:
-        raise ValueError(
+        raise ConvergenceError(
             f"price {price!r} is below intrinsic ({lower_bound:.6f}) — no volatility "
-            f"can produce it, so the quote violates no-arbitrage."
+            f"can produce it, so the quote violates no-arbitrage.", code="RP301", param="price",
+            hint=f"The {kind}'s floor here is {lower_bound:.6f} (its discounted intrinsic value). Check the price, "
+                 f"and that kind={kind!r} matches the quote.",
         )
 
     low, high = 1e-9, 5.0
@@ -232,9 +245,12 @@ def implied_vol(
             break
         high *= 2.0
     else:
-        raise ValueError(
+        ceiling = S * math.exp(-q * T) if kind == "call" else K * math.exp(-r * T)
+        raise ConvergenceError(
             f"price {price!r} exceeds what even {high:.0f}00% volatility produces — "
-            f"check the inputs."
+            f"check the inputs.", code="RP302", param="price",
+            hint=f"No volatility gives more than {ceiling:.6f} for this {kind} "
+                 f"({'S·e^(−qT)' if kind == 'call' else 'K·e^(−rT)'}). Check the price is per unit, and S and K.",
         )
 
     for _ in range(max_iterations):
@@ -273,7 +289,7 @@ def gbm_paths(
     """
     np = _numpy()
     if steps < 1 or trials < 1:
-        raise ValueError("steps and trials must both be >= 1")
+        raise InputError("steps and trials must both be >= 1", code="RP107", param="steps" if steps < 1 else "trials")
 
     dt = T / steps
     rng = np.random.default_rng(seed)
@@ -335,10 +351,10 @@ def historical_var(returns: Sequence[float], level: float = 0.99) -> float:
     """
     np = _numpy()
     if not (0.0 < level < 1.0):
-        raise ValueError(f"level must be in (0, 1), got {level!r}")
+        raise InputError(f"level must be in (0, 1), got {level!r}", code="RP110", param="level")
     data = np.asarray(list(returns), dtype=float)
     if data.size == 0:
-        raise ValueError("returns is empty")
+        raise InputError("returns is empty", code="RP111", param="returns")
     return float(-np.percentile(data, (1.0 - level) * 100.0))
 
 
@@ -357,12 +373,12 @@ def parametric_var(
     """
     np = _numpy()
     if not (0.0 < level < 1.0):
-        raise ValueError(f"level must be in (0, 1), got {level!r}")
+        raise InputError(f"level must be in (0, 1), got {level!r}", code="RP110", param="level")
 
     if mean is None or sd is None:
         data = np.asarray(list(returns), dtype=float)
         if data.size < 2:
-            raise ValueError("need at least two returns, or explicit mean and sd")
+            raise InputError("need at least two returns, or explicit mean and sd", code="RP111", param="returns")
         mean = float(data.mean()) if mean is None else mean
         sd = float(data.std(ddof=1)) if sd is None else sd
 

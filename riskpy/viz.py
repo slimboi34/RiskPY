@@ -69,6 +69,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from .errors import ArgumentTypeError, InputError, MissingDependencyError
 from .mc import _numpy  # single source of the "install NumPy" error message
 
 __all__ = [
@@ -141,11 +142,11 @@ def _plt():
     try:
         import matplotlib.pyplot as plt  # noqa: WPS433
     except ImportError as exc:  # pragma: no cover - environment dependent
-        raise ImportError(
+        raise MissingDependencyError(
             "riskpy.viz needs Matplotlib, which is not installed:\n"
             "    pip install open-riskpy[viz]\n"
             "or just:\n"
-            "    pip install matplotlib"
+            "    pip install matplotlib", code="RP202"
         ) from exc
     return plt
 
@@ -164,7 +165,7 @@ def theme(mode: str = "dark") -> None:
     """
     global _MODE, _themed
     if mode not in PALETTE:
-        raise ValueError(f"mode must be 'dark' or 'light', got {mode!r}")
+        raise InputError(f"mode must be 'dark' or 'light', got {mode!r}", code="RP108", param="mode")
     _MODE = mode
     _themed = True
 
@@ -304,7 +305,7 @@ def _kde(values, grid_size: int = 512, bandwidth: Optional[float] = None):
     values = np.asarray(values, dtype=float)
     n = values.size
     if n < 2:
-        raise ValueError("a density estimate needs at least two observations")
+        raise InputError("a density estimate needs at least two observations", code="RP111", param="values")
 
     sd = float(values.std(ddof=1))
     iqr = float(np.percentile(values, 75) - np.percentile(values, 25))
@@ -549,7 +550,7 @@ def _draw_tornado(ax, result, top=12, method="spearman", title=None):
     c = _colours()
     scores = result.sensitivity(method=method)[:top]
     if not scores:
-        raise ValueError("No inputs to rank.")
+        raise InputError("No inputs to rank.", code="RP111", param="result")
 
     names = [name for name, _ in scores][::-1]
     values = [value for _, value in scores][::-1]
@@ -605,14 +606,14 @@ def qq(result, dist=None, title: Optional[str] = None, figsize=(6.5, 6.5)):
     values = np.sort(_values(result))
     n = values.size
     if n < 2:
-        raise ValueError("a Q–Q plot needs at least two observations")
+        raise InputError("a Q–Q plot needs at least two observations", code="RP111", param="values")
 
     if dist is None:
         from .mc import Normal
 
         dist = Normal(float(values.mean()), float(values.std(ddof=1)))
     if not hasattr(dist, "ppf"):
-        raise TypeError(f"dist must have a ppf method, got {type(dist).__name__}")
+        raise ArgumentTypeError(f"dist must have a ppf method, got {type(dist).__name__}", code="RP404", param="dist")
 
     # Hazen plotting positions: (i - 0.5) / n is unbiased for the median of the
     # order statistic and, unlike i/n, does not ask for the infinite quantile.
@@ -681,12 +682,12 @@ def compare(results: Mapping[str, Any], bins: int = 60, title: str = "Scenario c
     """
     c = _colours()
     if not results:
-        raise ValueError("Nothing to compare.")
+        raise InputError("Nothing to compare.", code="RP111", param="results")
     if len(results) > len(c["series"]):
-        raise ValueError(
+        raise InputError(
             f"{len(results)} scenarios exceeds the {len(c['series'])}-colour palette. "
             f"Beyond that the colours stop being distinguishable — use viz.spread() "
-            f"for many scenarios, or facet into separate charts."
+            f"for many scenarios, or facet into separate charts.", code="RP100", param="results"
         )
 
     fig, ax = _figure(figsize)
@@ -715,7 +716,7 @@ def spread(results: Mapping[str, Any], levels: Sequence[float] = (0.5, 0.9, 0.99
     np = _numpy()
     c = _colours()
     if not results:
-        raise ValueError("Nothing to compare.")
+        raise InputError("Nothing to compare.", code="RP111", param="results")
     levels = sorted(levels)
 
     fig, ax = _figure(figsize)
@@ -755,12 +756,12 @@ def fan(paths, levels: Sequence[float] = (0.5, 0.8, 0.95), title: str = "Simulat
     c = _colours()
     paths = np.asarray(paths, dtype=float)
     if paths.ndim != 2:
-        raise ValueError(f"paths must be 2-D (trials, steps), got shape {paths.shape}")
+        raise InputError(f"paths must be 2-D (trials, steps), got shape {paths.shape}", code="RP100", param="paths")
 
     fig, ax = _figure(figsize)
     steps = np.arange(paths.shape[1]) if times is None else np.asarray(times, dtype=float)
     if steps.size != paths.shape[1]:
-        raise ValueError(f"times has {steps.size} entries but paths have {paths.shape[1]} steps")
+        raise InputError(f"times has {steps.size} entries but paths have {paths.shape[1]} steps", code="RP109", param="times")
 
     # Widest band first so the narrower, darker ones sit on top.
     for i, level in enumerate(sorted(levels, reverse=True)):
@@ -801,12 +802,12 @@ def correlation(data, names: Optional[Sequence[str]] = None, method: str = "spea
     else:
         matrix = np.asarray(data, dtype=float)
         if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
-            raise ValueError(f"expected a square matrix, a mapping or a Result, got shape {matrix.shape}")
+            raise InputError(f"expected a square matrix, a mapping or a Result, got shape {matrix.shape}", code="RP100", param="matrix")
         columns = None
 
     if columns is not None:
         if len(columns) < 2:
-            raise ValueError("a correlation matrix needs at least two variables")
+            raise InputError("a correlation matrix needs at least two variables", code="RP111", param="matrix")
         names = list(columns) if names is None else list(names)
         stacked = np.vstack([np.asarray(columns[n], dtype=float) for n in names])
         if method == "spearman":
@@ -814,7 +815,7 @@ def correlation(data, names: Optional[Sequence[str]] = None, method: str = "spea
 
             stacked = np.vstack([_rankdata(row, np) for row in stacked])
         elif method != "pearson":
-            raise ValueError(f"method must be 'spearman' or 'pearson', got {method!r}")
+            raise InputError(f"method must be 'spearman' or 'pearson', got {method!r}", code="RP108", param="method")
         matrix = np.corrcoef(stacked)
     elif names is None:
         names = [str(i) for i in range(matrix.shape[0])]
@@ -854,10 +855,10 @@ def scatter(result, x: str, y: str, sample: int = 5000, title: Optional[str] = N
     c = _colours()
     inputs = getattr(result, "inputs", None)
     if not inputs:
-        raise ValueError("this run kept no inputs; re-run with keep_inputs=True")
+        raise InputError("this run kept no inputs; re-run with keep_inputs=True", code="RP113", param="result")
     for name in (x, y):
         if name not in inputs:
-            raise ValueError(f"unknown variable {name!r}; known: {list(inputs)}")
+            raise InputError(f"unknown variable {name!r}; known: {list(inputs)}", code="RP108", param="name")
 
     xs = np.asarray(inputs[x], dtype=float)
     ys = np.asarray(inputs[y], dtype=float)
@@ -907,7 +908,7 @@ def triangle(tri, kind: str = "link", title: Optional[str] = None, figsize=(10, 
         fmt = "{:,.0f}"
         caption = "incremental paid"
     else:
-        raise ValueError(f"kind must be 'link', 'cumulative' or 'incremental', got {kind!r}")
+        raise InputError(f"kind must be 'link', 'cumulative' or 'incremental', got {kind!r}", code="RP108", param="kind")
 
     fig, ax = _figure(figsize)
     masked = np.ma.masked_invalid(matrix)
@@ -997,8 +998,8 @@ def reserve_range(result, level: float = 0.95, title: Optional[str] = None, figs
     np = _numpy()
     c = _colours()
     if not hasattr(result, "origin") or not (hasattr(result, "se") or hasattr(result, "reserves")):
-        raise TypeError(
-            f"expected a MackResult or a BootstrapResult from riskpy.reserving, got {type(result).__name__}"
+        raise ArgumentTypeError(
+            f"expected a MackResult or a BootstrapResult from riskpy.reserving, got {type(result).__name__}", code="RP404", param="result"
         )
 
     origins = [str(o) for o in result.origin]
@@ -1013,7 +1014,7 @@ def reserve_range(result, level: float = 0.95, title: Optional[str] = None, figs
         errors = np.vstack([reserves - lo, hi - reserves])
         band = f"{level:.0%} bootstrap interval"
     else:
-        raise TypeError("expected a MackResult or a BootstrapResult")
+        raise ArgumentTypeError("expected a MackResult or a BootstrapResult", code="RP404", param="result")
 
     y = np.arange(len(origins))
     fig, ax = _figure(figsize)
@@ -1164,7 +1165,7 @@ def allocation(shares: Mapping[str, float], total: Optional[float] = None,
     np = _numpy()
     c = _colours()
     if not shares:
-        raise ValueError("nothing to allocate")
+        raise InputError("nothing to allocate", code="RP111")
 
     names = list(shares)
     values = np.array([float(shares[n]) for n in names], dtype=float)
@@ -1203,7 +1204,7 @@ def waterfall(items: Mapping[str, float], start: float = 0.0, title: str = "Cont
     np = _numpy()
     c = _colours()
     if not items:
-        raise ValueError("nothing to chart")
+        raise InputError("nothing to chart", code="RP111")
 
     names = list(items) + ["total"]
     deltas = np.array([float(items[n]) for n in items], dtype=float)

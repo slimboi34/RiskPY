@@ -40,10 +40,18 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **v0.4.1** — a security and hardening release: the agent tools check every
-> argument and bound the work one call can ask for, two crashes in the compiled
-> core are fixed, and the GitHub workflows are pinned and locked down. No
-> numerical result changes. See [RELEASE_NOTES.md](RELEASE_NOTES.md).
+> **v0.5.0** — RiskPY tells you (and your agent) exactly what went wrong.
+> Every error has a stable code, names the parameter and says how to fix it
+> (`riskpy-explain RP105`); the tools and the MCP server return
+> `{"error": {code, message, param, hint}}` instead of tracebacks and refuse
+> percentages where decimals belong (`r=5`, `sigma=20`) rather than compute a
+> confident wrong answer. `riskpy-doctor` checks an installation end to end, a
+> call trace shows what an agent has been doing (`riskpy-tools trace`,
+> `riskpy_status`), and eleven more verified calculators are tools (27 in all).
+> On a scripted set of 19 agent mistakes the share of failures that come back
+> with a code, the parameter, a fix and structured JSON goes from 4% (0.4.0) to
+> 100%. Ships the unpublished 0.4.1 security fixes. No numerical result changes.
+> See [RELEASE_NOTES.md](RELEASE_NOTES.md).
 >
 > **v0.4.0** — for AI agents: sixteen verified calculators as tools with JSON
 > schemas (`riskpy-tools`, `riskpy.tools.call`), an MCP server
@@ -113,10 +121,22 @@ quant.heston_price(S=100, K=100, T=1, r=0.03, v0=0.04, kappa=2, theta=0.04, xi=0
 ## For AI agents
 
 ```bash
-riskpy-tools                         # sixteen verified calculators as tools, with JSON schemas
+riskpy-tools                         # 27 verified calculators as tools, with JSON schemas
 riskpy-tools call black_scholes '{"S": 100, "K": 100, "T": 1, "r": 0.05, "sigma": 0.2}'   # 10.4506
 riskpy-mcp                           # the same tools over MCP  (pip install "open-riskpy[mcp]")
 riskpy-context                       # the library described for the model about to use it
+riskpy-doctor                        # is this installation healthy? (--json; exit 1 on a failure)
+riskpy-explain RP104                 # what an error code means and how to fix the call
+riskpy-tools trace                   # the recent tool calls, with durations and error codes
+```
+
+A call that goes wrong comes back as data an agent can act on, never a traceback:
+
+```bash
+$ riskpy-tools call black_scholes '{"S": 100, "K": 100, "T": 1, "r": 5, "sigma": 0.2}'
+{"error": {"code": "RP104", "param": "r",
+           "message": "r = 5 looks like a percentage: rates are decimals, so |r| must be at most 1",
+           "hint": "Divide by 100 — 5% is 0.05.", "docs": "https://slimboi34.github.io/RiskPY/errors/#rp104"}}
 ```
 
 `from riskpy import tools; tools.manifest()` is the list as data and `tools.call(name, {...})`
@@ -124,7 +144,11 @@ runs one; every tool wraps a public function the verification suite checks, take
 numbers (rates as decimals, times in years) and returns JSON. `riskpy-mcp --config` prints
 the client configuration for Claude Code, Claude Desktop or Cursor. `riskpy-context`
 generates the conventions that bite, every module's public signatures and the tool list
-from the installed package, so it cannot go stale. See [the docs](https://slimboi34.github.io/RiskPY/agents/).
+from the installed package, so it cannot go stale. Over MCP, `riskpy_status`, `riskpy_doctor`
+and `riskpy_explain` let the agent see its recent calls, check the installation and look up a
+code or a tool's formula. See [the docs](https://slimboi34.github.io/RiskPY/agents/),
+[diagnostics](https://slimboi34.github.io/RiskPY/diagnostics/) and the
+[error codes](https://slimboi34.github.io/RiskPY/errors/).
 
 ## Verification
 
@@ -149,7 +173,7 @@ the SciPy oracle, and the docs site publishes the latest report.
 git clone https://github.com/slimboi34/RiskPY.git
 cd RiskPY
 make install    # pip install -e ".[dev]"
-make test       # pytest — 407 test cases
+make test       # pytest — 522 test cases
 make verify     # the verification suite
 ```
 

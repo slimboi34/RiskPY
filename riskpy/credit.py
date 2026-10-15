@@ -46,6 +46,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 from . import _special
 from ._validate import _check_finite, _check_non_negative, _check_positive
+from .errors import InputError, MissingDependencyError
 from .mc import _numpy
 from .quant import black_scholes
 
@@ -90,7 +91,7 @@ def _check_probability(name: str, value: float) -> float:
     value = _check_finite(name, value)
     if not 0.0 <= value <= 1.0:
         hint = " — probabilities here are decimals, so 1% is 0.01" if value > 1.0 else ""
-        raise ValueError(f"{name} must be in [0, 1], got {value!r}{hint}")
+        raise InputError(f"{name} must be in [0, 1], got {value!r}{hint}", code="RP103", param=name)
     return value
 
 
@@ -98,9 +99,9 @@ def _check_level(name: str, value: float) -> float:
     """A confidence level strictly inside (0, 1); 0 and 1 have no finite quantile."""
     value = _check_finite(name, value)
     if not 0.0 < value < 1.0:
-        raise ValueError(
+        raise InputError(
             f"{name} must be strictly inside (0, 1), got {value!r} — "
-            f"0.999 means the 99.9th percentile"
+            f"0.999 means the 99.9th percentile", code="RP110", param=name
         )
     return value
 
@@ -108,25 +109,25 @@ def _check_level(name: str, value: float) -> float:
 def _check_frequency(value: object, name: str = "frequency") -> int:
     """A positive integer number of payments per year. Rejects bools and 2.5."""
     if isinstance(value, bool):
-        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        raise InputError(f"{name} must be a positive integer, got {value!r}", code="RP107", param=name)
     if isinstance(value, numbers.Integral):
         m = int(value)
     elif isinstance(value, numbers.Real) and float(value).is_integer():
         m = int(value)
     else:
-        raise ValueError(f"{name} must be a positive integer (payments per year), got {value!r}")
+        raise InputError(f"{name} must be a positive integer (payments per year), got {value!r}", code="RP107", param=name)
     if m < 1:
-        raise ValueError(f"{name} must be >= 1, got {value!r}")
+        raise InputError(f"{name} must be >= 1, got {value!r}", code="RP107", param=name)
     return m
 
 
 def _check_count(value: object, name: str = "n") -> int:
     if isinstance(value, bool) or not isinstance(value, numbers.Integral):
         if not (isinstance(value, numbers.Real) and float(value).is_integer()):
-            raise ValueError(f"{name} must be a whole number of periods, got {value!r}")
+            raise InputError(f"{name} must be a whole number of periods, got {value!r}", code="RP107", param=name)
     n = int(value)
     if n < 0:
-        raise ValueError(f"{name} must be >= 0, got {value!r}")
+        raise InputError(f"{name} must be >= 0, got {value!r}", code="RP102", param=name)
     return n
 
 
@@ -318,23 +319,23 @@ def _hazard_curve(hazard: HazardLike, name: str = "hazard") -> List[Tuple[float,
     try:
         pairs = [tuple(item) for item in hazard]
     except TypeError:
-        raise ValueError(
+        raise InputError(
             f"{name} must be a rate, or a sequence of (time, rate) pairs giving a "
-            f"piecewise-constant term structure, got {hazard!r}"
+            f"piecewise-constant term structure, got {hazard!r}", code="RP503", param=name
         ) from None
     if not pairs:
-        raise ValueError(f"{name} term structure is empty")
+        raise InputError(f"{name} term structure is empty", code="RP111", param=name)
 
     knots: List[Tuple[float, float]] = []
     previous = 0.0
     for index, item in enumerate(pairs):
         if len(item) != 2:
-            raise ValueError(f"{name}[{index}] must be a (time, rate) pair, got {item!r}")
+            raise InputError(f"{name}[{index}] must be a (time, rate) pair, got {item!r}", code="RP503", param=f"{name}[{index}]")
         t = _check_positive(f"{name}[{index}] time", item[0])
         rate = _check_non_negative(f"{name}[{index}] rate", item[1])
         if not t > previous:
-            raise ValueError(
-                f"{name} times must be strictly increasing, got {previous!r} then {t!r}"
+            raise InputError(
+                f"{name} times must be strictly increasing, got {previous!r} then {t!r}", code="RP112", param=name
             )
         knots.append((t, rate))
         previous = t
@@ -391,9 +392,9 @@ def hazard_from_spread(spread: float, recovery: float) -> float:
     spread = _check_non_negative("spread", spread)
     recovery = _check_probability("recovery", recovery)
     if recovery == 1.0:
-        raise ValueError(
+        raise InputError(
             "recovery of 1 means default costs nothing, so no hazard rate can produce "
-            "a positive spread — use a recovery below 1"
+            "a positive spread — use a recovery below 1", code="RP103", param="recovery", hint="Recovery must be below 1 (0.4 means 40% recovered)."
         )
     return spread / (1.0 - recovery)
 
@@ -526,8 +527,8 @@ def cds_legs(
     protection *= notional
 
     if annuity <= 0.0:  # pragma: no cover - needs a zero notional or maturity
-        raise ValueError(
-            "the risky annuity is zero, so no par spread exists — check notional and maturity"
+        raise InputError(
+            "the risky annuity is zero, so no par spread exists — check notional and maturity", code="RP106", param="maturity"
         )
     par = protection / annuity
     contract = par if spread is None else _check_finite("spread", spread)
@@ -687,11 +688,11 @@ _ASSET_CLASSES = _CORPORATE_CLASSES + _RETAIL_CLASSES
 
 def _check_asset_class(asset_class: str) -> str:
     if not isinstance(asset_class, str):
-        raise ValueError(f"asset_class must be a string, got {asset_class!r}")
+        raise InputError(f"asset_class must be a string, got {asset_class!r}", code="RP108", param="asset_class")
     key = asset_class.strip().lower()
     if key not in _ASSET_CLASSES:
-        raise ValueError(
-            f"asset_class must be one of {', '.join(_ASSET_CLASSES)}, got {asset_class!r}"
+        raise InputError(
+            f"asset_class must be one of {', '.join(_ASSET_CLASSES)}, got {asset_class!r}", code="RP108", param="asset_class"
         )
     return key
 
@@ -821,10 +822,10 @@ def basel_irb_capital(
     maturity = _check_finite("maturity", maturity)
 
     if pd <= 0.0:
-        raise ValueError(
+        raise InputError(
             "pd must be > 0: the maturity adjustment contains ln(PD), which is "
             "undefined at zero. Use the supervisory floor of 0.0003 (3bp) if the "
-            "obligor has never defaulted."
+            "obligor has never defaulted.", code="RP103", param="pd", hint="Use the supervisory floor pd=0.0003 for an obligor that has never defaulted."
         )
 
     correlation = basel_correlation(pd, key)
@@ -835,9 +836,9 @@ def basel_irb_capital(
         adjustment = 1.0
     else:
         if not 1.0 <= maturity <= 5.0:
-            raise ValueError(
+            raise InputError(
                 f"maturity must be between 1 and 5 years for {key} exposures "
-                f"(the Accord's floor and cap), got {maturity!r}"
+                f"(the Accord's floor and cap), got {maturity!r}", code="RP106", param="maturity", hint="Basel caps effective maturity to [1, 5] years for non-retail exposures; 2.5 is the foundation default."
             )
         b = (0.11852 - 0.05478 * math.log(pd)) ** 2
         adjustment = (1.0 + (maturity - 2.5) * b) / (1.0 - 1.5 * b)
@@ -908,11 +909,11 @@ def credit_portfolio_loss(
     ead_list = [_check_non_negative(f"eads[{i}]", v) for i, v in enumerate(eads)]
     n = len(pd_list)
     if n == 0:
-        raise ValueError("the portfolio is empty — pds must have at least one exposure")
+        raise InputError("the portfolio is empty — pds must have at least one exposure", code="RP111", param="pds")
     if not len(lgd_list) == len(ead_list) == n:
-        raise ValueError(
+        raise InputError(
             f"pds, lgds and eads must have the same length, got "
-            f"{n}, {len(lgd_list)} and {len(ead_list)}"
+            f"{n}, {len(lgd_list)} and {len(ead_list)}", code="RP109", param="lgds" if len(lgd_list) != n else "eads"
         )
 
     if isinstance(rho, numbers.Real) and not isinstance(rho, bool):
@@ -920,13 +921,13 @@ def credit_portfolio_loss(
     else:
         rho_list = [_check_probability(f"rho[{i}]", v) for i, v in enumerate(rho)]
         if len(rho_list) != n:
-            raise ValueError(
+            raise InputError(
                 f"rho must be a scalar or one correlation per exposure, got "
-                f"{len(rho_list)} for {n} exposures"
+                f"{len(rho_list)} for {n} exposures", code="RP109", param="rho"
             )
 
     if not isinstance(trials, numbers.Integral) or isinstance(trials, bool) or trials < 1:
-        raise ValueError(f"trials must be a positive integer, got {trials!r}")
+        raise InputError(f"trials must be a positive integer, got {trials!r}", code="RP107", param="trials")
 
     thresholds = _special.norm_ppf_vec(np.asarray(pd_list, dtype=float))
     rho_array = np.asarray(rho_list, dtype=float)
@@ -1007,44 +1008,44 @@ class TransitionMatrix:
         labels = [str(label) for label in ratings]
         n = len(rows)
         if n == 0:
-            raise ValueError("a TransitionMatrix needs at least one rating")
+            raise InputError("a TransitionMatrix needs at least one rating", code="RP504", param="ratings")
         if len(labels) != n:
-            raise ValueError(
-                f"ratings has {len(labels)} labels for a {n}x{n} matrix — they must match"
+            raise InputError(
+                f"ratings has {len(labels)} labels for a {n}x{n} matrix — they must match", code="RP109", param="ratings"
             )
         if len(set(labels)) != n:
-            raise ValueError(f"ratings must be unique, got {labels!r}")
+            raise InputError(f"ratings must be unique, got {labels!r}", code="RP504", param="ratings")
         if labels[-1] != "D":
-            raise ValueError(
+            raise InputError(
                 f"the last rating must be 'D', the absorbing default state, got "
-                f"{labels[-1]!r} — order the ratings from best to worst"
+                f"{labels[-1]!r} — order the ratings from best to worst", code="RP504", param="ratings"
             )
 
         for i, row in enumerate(rows):
             if len(row) != n:
-                raise ValueError(
-                    f"the matrix must be square: row {i} has {len(row)} entries, expected {n}"
+                raise InputError(
+                    f"the matrix must be square: row {i} has {len(row)} entries, expected {n}", code="RP504", param="matrix"
                 )
             for j, value in enumerate(row):
                 value = _check_finite(f"matrix[{i}][{j}]", value)
                 if not 0.0 <= value <= 1.0:
-                    raise ValueError(
-                        f"matrix[{i}][{j}] must be a probability in [0, 1], got {value!r}"
+                    raise InputError(
+                        f"matrix[{i}][{j}] must be a probability in [0, 1], got {value!r}", code="RP504", param=f"matrix[{i}][{j}]"
                     )
                 rows[i][j] = value
             total = math.fsum(row)
             if abs(total - 1.0) > 1e-8:
-                raise ValueError(
+                raise InputError(
                     f"row {i} ({labels[i]}) sums to {total!r}, not 1 — every obligor has to "
                     f"end up somewhere. If a 'not rated' column was dropped, renormalise "
-                    f"the row or fold it into the diagonal."
+                    f"the row or fold it into the diagonal.", code="RP504", param=f"matrix[{i}]"
                 )
 
         default_row = rows[-1]
         if any(abs(v) > 1e-12 for v in default_row[:-1]) or abs(default_row[-1] - 1.0) > 1e-12:
-            raise ValueError(
+            raise InputError(
                 f"the default row must be absorbing, i.e. (0, …, 0, 1), got {default_row!r} — "
-                f"an issuer that has defaulted does not migrate back"
+                f"an issuer that has defaulted does not migrate back", code="RP504", param="matrix"
             )
 
         self._matrix: Tuple[Tuple[float, ...], ...] = tuple(tuple(row) for row in rows)
@@ -1070,8 +1071,8 @@ class TransitionMatrix:
         try:
             return self._ratings.index(rating)
         except ValueError:
-            raise ValueError(
-                f"unknown rating {rating!r}; this matrix has {', '.join(self._ratings)}"
+            raise InputError(
+                f"unknown rating {rating!r}; this matrix has {', '.join(self._ratings)}", code="RP108", param="rating"
             ) from None
 
     def probability(self, from_rating: str, to_rating: str) -> float:
@@ -1133,7 +1134,7 @@ class TransitionMatrix:
         """
         n = _check_count(n, "n")
         if n < 1:
-            raise ValueError(f"n must be >= 1 for a marginal default probability, got {n!r}")
+            raise InputError(f"n must be >= 1 for a marginal default probability, got {n!r}", code="RP107", param="n")
         return self.cumulative_pd(rating, n) - self.cumulative_pd(rating, n - 1)
 
     # -- presentation -------------------------------------------------------
@@ -1143,7 +1144,7 @@ class TransitionMatrix:
         try:
             import pandas  # noqa: WPS433
         except ImportError as exc:  # pragma: no cover - environment dependent
-            raise ImportError("to_frame() needs pandas: pip install pandas") from exc
+            raise MissingDependencyError("to_frame() needs pandas: pip install pandas", code="RP203") from exc
         frame = pandas.DataFrame(
             [list(row) for row in self._matrix],
             index=list(self._ratings),

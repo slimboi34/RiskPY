@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from ._validate import _check_finite, _check_non_negative, _check_positive
+from .errors import ConvergenceError, InputError
 from .mc import _numpy
 
 __all__ = [
@@ -74,15 +75,15 @@ _NAMED_COMPOUNDING = {
 def _check_frequency(value: object, name: str = "frequency") -> int:
     """A positive integer number of periods per year. Rejects bools and 2.5."""
     if isinstance(value, bool):
-        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        raise InputError(f"{name} must be a positive integer, got {value!r}", code="RP107", param=name)
     if isinstance(value, numbers.Integral):
         m = int(value)
     elif isinstance(value, numbers.Real) and float(value).is_integer():
         m = int(value)
     else:
-        raise ValueError(f"{name} must be a positive integer (periods per year), got {value!r}")
+        raise InputError(f"{name} must be a positive integer (periods per year), got {value!r}", code="RP107", param=name)
     if m < 1:
-        raise ValueError(f"{name} must be >= 1, got {value!r}")
+        raise InputError(f"{name} must be >= 1, got {value!r}", code="RP107", param=name)
     return m
 
 
@@ -92,9 +93,9 @@ def _periods_per_year(compounding: object) -> Optional[int]:
         key = compounding.strip().lower()
         if key in _NAMED_COMPOUNDING:
             return _NAMED_COMPOUNDING[key]
-        raise ValueError(
+        raise InputError(
             f"compounding must be 'continuous', 'annual' or a positive integer of "
-            f"periods per year (or 'semiannual', 'quarterly', 'monthly'), got {compounding!r}"
+            f"periods per year (or 'semiannual', 'quarterly', 'monthly'), got {compounding!r}", code="RP108", param="compounding", hint="compounding is 'continuous', 'annual', 'semiannual', 'quarterly', 'monthly' or a positive integer of periods per year."
         )
     return _check_frequency(compounding, "compounding")
 
@@ -109,9 +110,9 @@ def _whole_periods(maturity: float, frequency: int, what: str = "maturity") -> i
     """Number of coupon periods in ``maturity`` years, which must be whole."""
     periods = maturity * frequency
     if abs(periods - round(periods)) > 1e-8:
-        raise ValueError(
+        raise InputError(
             f"{what} {maturity!r} is not a whole number of periods at {frequency} per "
-            f"year — use a multiple of {1.0 / frequency:g}"
+            f"year — use a multiple of {1.0 / frequency:g}", code="RP107", param=what, hint=f"Use a multiple of {1.0 / frequency:g} years."
         )
     return int(round(periods))
 
@@ -135,7 +136,7 @@ def _bisect_root(
     if f_high == 0.0:
         return high
     if (f_low > 0.0) == (f_high > 0.0):
-        raise ValueError(f"no sign change on [{low!r}, {high!r}]")
+        raise ConvergenceError(f"no sign change on [{low!r}, {high!r}]", code="RP303")
     for _ in range(max_iterations):
         mid = 0.5 * (low + high)
         f_mid = fn(mid)
@@ -171,9 +172,9 @@ def discount_factor(rate: float, t: float, compounding: object = "continuous") -
         return math.exp(-rate * t)
     base = 1.0 + rate / m
     if base <= 0.0:
-        raise ValueError(
+        raise InputError(
             f"rate {rate!r} compounded {m} times a year gives 1 + rate/m <= 0; "
-            f"no discount factor exists — the rate is below -{m * 100:.0f}%"
+            f"no discount factor exists — the rate is below -{m * 100:.0f}%", code="RP104", param="rate", hint="Rates are decimals: 5% is 0.05."
         )
     return base ** (-m * t)
 
@@ -210,7 +211,7 @@ def forward_rate(
     t_1 = _check_non_negative("t_1", t_1)
     t_2 = _check_finite("t_2", t_2)
     if not t_2 > t_1:
-        raise ValueError(f"need t_1 < t_2, got t_1={t_1!r} t_2={t_2!r}")
+        raise InputError(f"need t_1 < t_2, got t_1={t_1!r} t_2={t_2!r}", code="RP113", param="t_2")
     df_1 = _check_positive("df_1", df_1)
     df_2 = _check_positive("df_2", df_2)
     return zero_rate(df_2 / df_1, t_2 - t_1, compounding)
@@ -321,18 +322,18 @@ class YieldCurve:
         times = [_check_positive(f"times[{i}]", t) for i, t in enumerate(times)]
         zeros = [_check_finite(f"zero_rates[{i}]", z) for i, z in enumerate(zero_rates)]
         if not times:
-            raise ValueError("a YieldCurve needs at least one knot")
+            raise InputError("a YieldCurve needs at least one knot", code="RP111", param="times")
         if len(times) != len(zeros):
-            raise ValueError(
-                f"times and zero_rates must have the same length, got {len(times)} and {len(zeros)}"
+            raise InputError(
+                f"times and zero_rates must have the same length, got {len(times)} and {len(zeros)}", code="RP109", param="zero_rates"
             )
         for earlier, later in zip(times, times[1:]):
             if not later > earlier:
-                raise ValueError(f"times must be strictly increasing, got {earlier!r} then {later!r}")
+                raise InputError(f"times must be strictly increasing, got {earlier!r} then {later!r}", code="RP112", param="times")
         if interpolation not in ("linear", "log_linear"):
-            raise ValueError(
+            raise InputError(
                 f"interpolation must be 'linear' (in zero rates) or 'log_linear' (in "
-                f"discount factors), got {interpolation!r}"
+                f"discount factors), got {interpolation!r}", code="RP108", param="interpolation"
             )
         self.times: Tuple[float, ...] = tuple(times)
         self.zero_rates: Tuple[float, ...] = tuple(zeros)
@@ -412,7 +413,7 @@ class YieldCurve:
         times = list(times)
         dfs = list(dfs)
         if len(times) != len(dfs):
-            raise ValueError(f"times and dfs must have the same length, got {len(times)} and {len(dfs)}")
+            raise InputError(f"times and dfs must have the same length, got {len(times)} and {len(dfs)}", code="RP109", param="dfs")
         zeros = [
             zero_rate(_check_positive(f"dfs[{i}]", df), _check_positive(f"times[{i}]", t), compounding)
             for i, (t, df) in enumerate(zip(times, dfs))
@@ -447,14 +448,14 @@ class YieldCurve:
         rates = [_check_finite(f"par_rates[{i}]", r) for i, r in enumerate(par_rates)]
         mats = [_check_positive(f"maturities[{i}]", t) for i, t in enumerate(maturities)]
         if not mats:
-            raise ValueError("bootstrap needs at least one par rate")
+            raise InputError("bootstrap needs at least one par rate", code="RP111", param="par_rates")
         if len(rates) != len(mats):
-            raise ValueError(
-                f"par_rates and maturities must have the same length, got {len(rates)} and {len(mats)}"
+            raise InputError(
+                f"par_rates and maturities must have the same length, got {len(rates)} and {len(mats)}", code="RP109", param="maturities"
             )
         for earlier, later in zip(mats, mats[1:]):
             if not later > earlier:
-                raise ValueError(f"maturities must be strictly increasing, got {earlier!r} then {later!r}")
+                raise InputError(f"maturities must be strictly increasing, got {earlier!r} then {later!r}", code="RP112", param="maturities")
 
         times: List[float] = []
         zeros: List[float] = []
@@ -470,10 +471,10 @@ class YieldCurve:
             try:
                 z = _bisect_root(mispricing, -0.5, 2.0)
             except ValueError:
-                raise ValueError(
+                raise ConvergenceError(
                     f"cannot bootstrap the {maturity:g}y par rate {par!r}: no continuous zero "
                     f"rate between -50% and +200% reprices it at par. Check the earlier "
-                    f"rates — an implausible short rate poisons every later maturity."
+                    f"rates — an implausible short rate poisons every later maturity.", code="RP303", param="par_rates"
                 ) from None
             times.append(maturity)
             zeros.append(z)
@@ -650,9 +651,9 @@ class Bond:
         ytm = _check_finite("ytm", ytm)
         base = 1.0 + ytm / self.frequency
         if base <= 0.0:
-            raise ValueError(
+            raise InputError(
                 f"ytm {ytm!r} is below -{self.frequency * 100:.0f}%, where "
-                f"(1 + ytm/{self.frequency}) is not positive and the price is undefined"
+                f"(1 + ytm/{self.frequency}) is not positive and the price is undefined", code="RP104", param="ytm", hint="Yields are decimals: 4.5% is 0.045."
             )
         return base
 
@@ -675,17 +676,17 @@ class Bond:
         price = _check_positive("price", price)
         low, high = -0.99, 1.0
         if self.price(low) < price:
-            raise ValueError(
+            raise ConvergenceError(
                 f"price {price!r} exceeds {self.price(low):.4f}, the price at a -99% yield — "
-                f"check the face and the units (the price is in the same units as face)"
+                f"check the face and the units (the price is in the same units as face)", code="RP302", param="price", hint="Prices are in the same units as face (a bond quoted at 101.8 per 100 face with face=100)."
             )
         for _ in range(6):
             if self.price(high) <= price:
                 break
             high *= 2.0
         else:
-            raise ValueError(
-                f"price {price!r} is below what a {high:.0%} yield produces — check the inputs"
+            raise ConvergenceError(
+                f"price {price!r} is below what a {high:.0%} yield produces — check the inputs", code="RP301", param="price"
             )
         return _bisect_root(lambda y: self.price(y) - price, low, high)
 
@@ -752,16 +753,16 @@ class Bond:
 
         low, high = -0.5, 1.0
         if spread_price(low) < price:
-            raise ValueError(
+            raise ConvergenceError(
                 f"price {price!r} exceeds {spread_price(low):.4f}, the price at a -50% spread — "
-                f"check the face and the units"
+                f"check the face and the units", code="RP302", param="price", hint="Prices are in the same units as face."
             )
         for _ in range(6):
             if spread_price(high) <= price:
                 break
             high *= 2.0
         else:
-            raise ValueError(f"price {price!r} is below what a {high:.0%} spread produces")
+            raise ConvergenceError(f"price {price!r} is below what a {high:.0%} spread produces", code="RP301", param="price")
         return _bisect_root(lambda s: spread_price(s) - price, low, high)
 
 
@@ -801,7 +802,7 @@ def _check_horizon(t: float, T: float) -> float:
     t = _check_non_negative("t", t)
     T = _check_finite("T", T)
     if T < t:
-        raise ValueError(f"need t <= T, got t={t!r} T={T!r}")
+        raise InputError(f"need t <= T, got t={t!r} T={T!r}", code="RP113", param="T", hint="t is the valuation time and T the bond's maturity, both in years: t <= T.")
     return T - t
 
 
@@ -906,9 +907,9 @@ def cir_curve(
 def _check_simulation(T: float, steps: int, trials: int) -> Tuple[float, int, int]:
     T = _check_positive("T", T)
     if isinstance(steps, bool) or not isinstance(steps, numbers.Integral) or steps < 1:
-        raise ValueError(f"steps must be a positive integer, got {steps!r}")
+        raise InputError(f"steps must be a positive integer, got {steps!r}", code="RP107", param="steps")
     if isinstance(trials, bool) or not isinstance(trials, numbers.Integral) or trials < 1:
-        raise ValueError(f"trials must be a positive integer, got {trials!r}")
+        raise InputError(f"trials must be a positive integer, got {trials!r}", code="RP107", param="trials")
     return T, int(steps), int(trials)
 
 

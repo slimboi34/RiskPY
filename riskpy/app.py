@@ -4,8 +4,10 @@ try:
     import tkinter as tk
     from tkinter import ttk, filedialog
 except ImportError as exc:  # pragma: no cover
-    raise ImportError(
-        "UnderwritingApp requires Tkinter. Install a Python build with Tk support."
+    from .errors import MissingDependencyError
+
+    raise MissingDependencyError(
+        "UnderwritingApp requires Tkinter. Install a Python build with Tk support.", code="RP206"
     ) from exc
 
 try:
@@ -15,9 +17,11 @@ try:
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
 except ImportError as exc:  # pragma: no cover
-    raise ImportError(
+    from .errors import MissingDependencyError
+
+    raise MissingDependencyError(
         "UnderwritingApp GUI charts require matplotlib and numpy. "
-        "Install with: pip install 'open-riskpy[gui]'"
+        "Install with: pip install 'open-riskpy[gui]'", code="RP202", hint='pip install "open-riskpy[gui]"'
     ) from exc
 
 from .cpp_underwriter import RiskEngine, ExcelExporter, Field, FactorModel, MonteCarloSimulator
