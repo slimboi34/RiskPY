@@ -672,3 +672,45 @@ def test_the_wheel_installs_only_the_extension_and_the_upload_waits_for_every_wh
     assert 'install.components = ["riskpy"]' in pyproject.read_text()
     needs = re.search(r"\n  publish:\n(?:.*\n)*?    needs: \[([^\]]*)\]", workflow.read_text()).group(1)
     assert "build-wheels-extra" in needs
+
+
+# ---------------------------------------------------------------- 0.5.2: found by testing 0.5.1
+
+
+def test_pickled_errors_keep_their_value_notes_and_attributes():
+    # A built-in exception pickles its __dict__ (notes, attributes); multiprocessing relies on it.
+    err = InputError("sigma must be >= 0, got -0.2", code="RP105", param="sigma", value=-0.2)
+    err.__notes__ = ["while pricing book 7"]           # add_note() is Python 3.11+
+    err.book = 7
+    again = pickle.loads(pickle.dumps(err))
+    assert (again.value, again.__notes__, again.book) == (-0.2, ["while pricing book 7"], 7)
+    assert (again.code, again.param, again.hint, str(again)) == (err.code, err.param, err.hint, str(err))
+    # a value that cannot be pickled is dropped, not allowed to make the error unpicklable
+    odd = InputError("bad", value=lambda: None)
+    assert str(pickle.loads(pickle.dumps(odd))) == "bad"
+
+
+def test_trace_cli_survives_a_foreign_or_broken_trace_file(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "trace.jsonl"
+    path.write_bytes(b'{"seq": 1, "tool": "black_scholes", "ok": true, "ms": 1.5}\n5\n"text"\n[1, 2]\nnull\n'
+                     b'{"seq": 2, "tool": "merton", "ok": false, "code": "RP104", "ms": "fast", "at": 12}\n'
+                     b'\xff\xfe not utf-8\n{"seq": 3, "tool": null}\n')
+    monkeypatch.setenv("RISKPY_TRACE_FILE", str(path))
+    tools.trace(clear=True)
+    assert tools.main(["trace"]) == 0
+    out = capsys.readouterr().out
+    assert "black_scholes" in out and "RP104" in out
+    assert tools.main(["trace", "--json"]) == 0
+    assert [e["seq"] for e in json.loads(capsys.readouterr().out)] == [1, 2, 3]
+    monkeypatch.setenv("RISKPY_TRACE_FILE", str(tmp_path))          # a directory
+    assert tools.main(["trace"]) == 0
+    assert "No tool calls traced" in capsys.readouterr().out
+
+
+def test_aggregate_loss_overflow_is_a_coded_error_with_a_parameter():
+    pytest.importorskip("riskpy.cpp_underwriter")
+    for mean, sd in ((1e300, 1e300), (1e-200, 1.0)):
+        out = tools.call("aggregate_loss", {"expected_frequency": 2, "severity_mean": mean, "severity_sd": sd,
+                                            "trials": 1000, "seed": 1}, errors="return")
+        assert out["error"]["code"] == "RP304" and out["error"]["param"] == "severity_sd"
+        assert "Result too large" not in out["error"]["message"]

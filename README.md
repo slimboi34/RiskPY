@@ -40,6 +40,10 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+> **v0.5.2** — a pickled error keeps its value and notes across processes,
+> `riskpy-tools trace` no longer crashes on a broken trace file, and an overflowing
+> `aggregate_loss` says which argument to fix. No result changes.
+>
 > **v0.5.1** — fixes from black-box testing 0.5.0: parametric `value_at_risk`
 > reports the normal expected shortfall (it returned the historical one),
 > `bornhuetter_ferguson` refuses a loss ratio typed as a percentage, errors name

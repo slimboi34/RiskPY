@@ -231,11 +231,13 @@ class _Stdio:
         self.proc.stdin.flush()
 
 
-def test_mcp_server_lists_and_calls_the_tools_over_stdio():
+def test_mcp_server_lists_and_calls_the_tools_over_stdio(tmp_path):
     pytest.importorskip("mcp")
-    # utf-8 explicitly: the descriptions carry en dashes, and Windows' locale codec is not utf-8
+    # utf-8 explicitly: the descriptions carry en dashes, and Windows' locale codec is not utf-8.
+    # cwd outside the checkout: `-m` puts the cwd first on sys.path, which would import the source
+    # tree (and whatever extension was last built there) instead of the installed package.
     proc = subprocess.Popen([sys.executable, "-m", "riskpy.mcp_server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
+                            stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1, cwd=str(tmp_path))
     try:
         io = _Stdio(proc)
         init = io.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},

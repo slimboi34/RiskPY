@@ -884,12 +884,21 @@ def aggregate_loss(expected_frequency: float, severity_mean: float, severity_sd:
     if expected_frequency * trials > LIMITS["simulated_claims"]:
         raise InputError(f"expected_frequency × trials = {expected_frequency * trials:g} simulated claims; the tool "
                          f"accepts at most {LIMITS['simulated_claims']:g} — lower trials", code="RP405", param="trials")
-    sigma_sq = math.log(1.0 + (severity_sd / severity_mean) ** 2)     # the same conversion as LogNormal.from_moments
-    mu, sigma = math.log(severity_mean) - 0.5 * sigma_sq, math.sqrt(sigma_sq)
-    losses = sorted(MonteCarloSimulator(trials=trials, seed=seed).simulate_aggregate_loss(expected_frequency, mu, sigma))
-    n = len(losses)
-    mean = sum(losses) / n
-    std = math.sqrt(sum((x - mean) ** 2 for x in losses) / (n - 1)) if n > 1 else 0.0
+    try:
+        sigma_sq = math.log(1.0 + (severity_sd / severity_mean) ** 2)     # the same conversion as LogNormal.from_moments
+        mu, sigma = math.log(severity_mean) - 0.5 * sigma_sq, math.sqrt(sigma_sq)
+        losses = sorted(MonteCarloSimulator(trials=trials, seed=seed).simulate_aggregate_loss(expected_frequency, mu, sigma))
+        n = len(losses)
+        mean = sum(losses) / n
+        std = math.sqrt(sum((x - mean) ** 2 for x in losses) / (n - 1)) if n > 1 else 0.0
+        if not (math.isfinite(mean) and math.isfinite(std)):
+            raise OverflowError
+    except OverflowError:
+        # Without this the agent got OverflowError's "(34, 'Result too large')" and no parameter.
+        raise InputError(f"the simulated losses overflow double precision (severity_mean = {severity_mean:g}, "
+                         f"severity_sd = {severity_sd:g})", code="RP304", param="severity_sd",
+                         hint="Express the amounts in larger units (thousands or millions) and check that "
+                              "severity_sd / severity_mean is a realistic coefficient of variation.") from None
     levels = (0.5, 0.75, 0.9, 0.95, 0.99, 0.995)
     var = {str(level): losses[min(n - 1, int(level * n))] for level in levels}
     tail = losses[int(0.995 * n):] or losses[-1:]
@@ -1313,13 +1322,24 @@ def riskpy_explain(topic: str) -> dict:
 
 
 def _read_trace_file(path: str, limit: Optional[int]) -> List[dict]:
+    """The entries in a JSON-lines trace file, skipping anything that is not one (never raises).
+
+    The file is whatever RISKPY_TRACE_FILE points at: it may hold a torn or foreign line, bytes
+    that are not UTF-8, or be a directory; none of that may turn ``riskpy-tools trace`` into a
+    traceback.
+    """
     entries = []
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(entry, dict):
+                    entries.append(entry)
+    except OSError:
+        return []
     return entries[-limit:] if limit else entries
 
 
@@ -1382,8 +1402,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         for e in entries:
             outcome = "ok" if e.get("ok") else f"{e.get('code')} {e.get('param') or ''} {e.get('message') or ''}".strip()
-            print(f"{e.get('at', '')[:23]}  {e.get('via', ''):<6} {e.get('tool', ''):<24} {e.get('ms', 0):>9.1f} ms  "
-                  f"{outcome}")
+            ms = e.get("ms")
+            ms_text = f"{ms:>9.1f}" if isinstance(ms, (int, float)) and not isinstance(ms, bool) else f"{'?':>9}"
+            print(f"{str(e.get('at') or '')[:23]}  {str(e.get('via') or ''):<6} {str(e.get('tool') or ''):<24} "
+                  f"{ms_text} ms  {outcome}")
         return 0
     if args.json:
         print(json.dumps(manifest(), indent=2))

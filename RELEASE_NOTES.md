@@ -1,3 +1,55 @@
+# RiskPY v0.5.2 — Release Notes
+
+**Release date:** unreleased (prepared 2026-10-15)  
+**Type:** Patch release — fixes found by a second round of testing (0.5.1 from PyPI)  
+**Install:** `pip install -U open-riskpy`
+
+---
+
+## TL;DR
+
+0.5.1 was installed from PyPI on Python 3.10, 3.12 and 3.13 and tested where the first round
+did not look: the library API directly (not the tools), exception behaviour, thread and
+process safety of the call trace, the MCP server under 1,200 pipelined requests, every
+documented example and command, and the published wheels. Results are bit-identical to 0.4.0
+on 268 sampled computations (the seeded C++ core included); the only numerical difference
+from 0.5.0 is the parametric expected shortfall that 0.5.1 corrected, and that matches SciPy
+to 2e-15. Three small bugs are fixed; no result changes.
+
+---
+
+## Fixed
+
+- **A pickled `RiskPyError` lost its state.** Built-in exceptions pickle their instance dict;
+  RiskPY's custom `__reduce__` rebuilt the error from its code, parameter and hint only, so
+  `value`, notes added with `add_note()` and any attribute a caller set disappeared when an
+  error crossed a process boundary (`multiprocessing`, `concurrent.futures`). They now travel
+  with it; a `value` that cannot be pickled is dropped instead of making the error unpicklable.
+- **`riskpy-tools trace` could end in a traceback.** A trace file holding bytes that are not
+  UTF-8, a JSON line that is not an object, a non-numeric `ms`, or a `RISKPY_TRACE_FILE` that
+  points at a directory crashed the command. It now skips what it cannot read.
+- **`aggregate_loss` reported an overflow as `(34, 'Result too large')`** with no parameter
+  (severity amounts near 1e300, or a coefficient of variation above 1e154). It is now RP304 on
+  `severity_sd`, with a hint to express the amounts in larger units.
+- Tests: the MCP stdio test now runs the server outside the checkout, so `python -m` imports
+  the installed package rather than the source tree (it failed on any Python other than the
+  one the in-tree extension was built for).
+
+## Checked and left alone
+
+- The OpenXLSX packaging fix holds: every 0.5.1 wheel on PyPI (26 files, macOS x86_64
+  included) installs only `riskpy/` (plus `open_riskpy.libs/` on Windows), the extension links
+  nothing but the system C/C++ runtime, and the sdist builds a working wheel.
+- The ~280 converted raise sites keep the built-in type each one raised in 0.4.x (checked per
+  function against 0.4.1's source and by calling 75 bad inputs on 0.4.0 and 0.5.1); messages
+  are unchanged or extended, except that an `UnknownNameError` (a `KeyError`) prints without
+  the quotes `KeyError` adds.
+- Errors raised by the compiled core are still plain `ValueError`s (RP100 through the tools).
+- The trace is exact under 8 threads × 6 processes × 500 calls, and the shared trace file
+  gets every line intact. Entries from different processes carry the same `seq` numbers.
+
+---
+
 # RiskPY v0.5.1 — Release Notes
 
 **Release date:** unreleased (prepared 2026-10-15)  

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 import re
 import sys
 from typing import Any, Dict, List, Optional
@@ -316,7 +317,15 @@ class RiskPyError(Exception):
         return self.message
 
     def __reduce__(self):  # keep pickling (multiprocessing) working with keyword-only arguments
-        return (_rebuild, (type(self), self.message, self.code, self.param, self.hint))
+        # The instance dict travels too, as it does for a built-in exception: ``value``, notes
+        # added with ``add_note`` and any attribute a caller set. A ``value`` that cannot be
+        # pickled (a lambda, an open file) is dropped rather than making the error unpicklable.
+        state = dict(self.__dict__)
+        try:
+            pickle.dumps(state.get("value"))
+        except Exception:  # noqa: BLE001 - any pickling failure
+            state.pop("value", None)
+        return (_rebuild, (type(self), self.message, self.code, self.param, self.hint), state)
 
     def to_dict(self) -> Dict[str, Any]:
         """``{code, message, param, hint, docs}`` — what an agent needs to correct the call."""
