@@ -143,10 +143,8 @@ def _plt():
         import matplotlib.pyplot as plt  # noqa: WPS433
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise MissingDependencyError(
-            "riskpy.viz needs Matplotlib, which is not installed:\n"
-            "    pip install open-riskpy[viz]\n"
-            "or just:\n"
-            "    pip install matplotlib", code="RP202"
+            'riskpy.viz needs Matplotlib, which is not installed: pip install "open-riskpy[viz]" '
+            "(or just pip install matplotlib).", code="RP202", hint='pip install "open-riskpy[viz]"'
         ) from exc
     return plt
 

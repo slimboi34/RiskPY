@@ -1,6 +1,78 @@
-# RiskPY v0.5.0 — Release Notes
+# RiskPY v0.5.1 — Release Notes
 
 **Release date:** unreleased (prepared 2026-10-15)  
+**Type:** Patch release — fixes found by black-box testing 0.5.0 from PyPI  
+**Install:** `pip install -U open-riskpy`
+
+---
+
+## TL;DR
+
+0.5.0 was installed from PyPI into fresh environments and driven the way a new user and an AI
+agent would: every CLI on a lean install, every one of the 30 tools over real MCP JSON-RPC with
+valid arguments and with typical agent mistakes, and the eleven new calculators checked against
+textbook formulas computed independently. The numbers were right with one exception, which this
+release fixes; the rest are clearer errors, one more percentage guard, and packaging.
+
+The only numerical change: `value_at_risk` with `method="parametric"` now reports the
+**normal** expected shortfall. Every other result is unchanged.
+
+---
+
+## Fixed
+
+- **`value_at_risk(method="parametric")` returned the historical expected shortfall** next to the
+  normal VaR, so the two numbers came from different models (and the ES could be below the VaR).
+  It now returns ES = −μ + σ·φ(z)/(1 − level), z = Φ⁻¹(1 − level), from the same sample mean and
+  standard deviation as the VaR. The historical method is unchanged.
+- **`bornhuetter_ferguson` accepted a loss ratio typed as a percentage.** `expected_loss_ratio=70`
+  (meant: 70%) gave reserves a hundred times too big. The tool now refuses a loss ratio above 5
+  (500%) with RP104 and the hint "Divide by 100 — 70% is 0.7"; 1.4 (a bad year) is still accepted.
+  `tools.PLAUSIBLE` gains `"loss_ratio": 5.0`.
+- **Errors named a parameter the tool does not have.** A library function names its own
+  arguments; the agent only knows the tool's. Now: an empty triangle is `triangle` (was `data`),
+  a non-whole maturity in `bootstrap_yield_curve` is `maturities` (was `maturity`), a negative
+  `at` time is `at` (was `t`), a bad compounding is `from_compounding` or `to_compounding` (was
+  `compounding`, so the agent could not tell which), and an unknown code in `riskpy_explain` is
+  `topic` (was `code`).
+- **A misleading hint for `aggregate_loss`.** Passing the lognormal's `severity_mu` /
+  `severity_sigma` suggested `'severity_sigma' → 'severity_mean'?`. It now says the tool takes the
+  claim size's mean and standard deviation on the money scale and gives the conversion from a
+  LogNormal(mu, sigma).
+- **The wheels installed OpenXLSX's headers, static libraries and CMake/pkg-config files** as
+  top-level `include/` and `lib/` directories in `site-packages` (2.7 MB nobody needs, and
+  generic names another package could collide with). The wheel now installs only the extension
+  (`install.components` in pyproject.toml; checked with a local build).
+- **0.5.0 shipped without macOS x86_64 wheels.** They built, but the upload job did not wait for
+  the best-effort wheel jobs and started three minutes before they finished; Intel Macs fell back
+  to compiling the sdist. The upload now waits for them (a failure there still does not block it).
+- `riskpy-doctor`'s self-check listed `quant` as verified on a lean install, where it is skipped;
+  it now names the modules it ran and the ones it skipped (and the JSON check carries `skipped`).
+- `riskpy-verify` on a lean install showed each skip reason cut off at "…ships as an extra:". The
+  missing-NumPy and missing-Matplotlib messages now put the quoted install line on their first
+  line (`pip install "open-riskpy[sim]"` — unquoted, zsh treats the brackets as a glob).
+- `riskpy-context` said a bond's `ytm` is an effective annual rate; it is compounded `frequency`
+  times a year. `riskpy_explain life_annuity_due` said the table runs to 120; it runs to 130.
+
+## Improved
+
+- `convert_rate` (the tool and `riskpy.rates`) also accepts `"weekly"` (52), `"daily"` (365),
+  `"annually"`, `"yearly"`, `"semi_annual"`, `"semiannually"`, `"semi-annually"` and
+  `"continuously"`. Existing spellings mean what they did.
+
+## Checked and left alone
+
+Negative rates, a 0% rate, LGD of exactly 0 or 1, PD of 1, recovery of 0, a 120% volatility,
+`T = 0`, rates up to the 100% cap, life ages up to 130 and terms of 0 all work as they should.
+Two limits are deliberate and documented: rates above 100% (hyperinflation) and volatilities
+above 500% are refused by the *tools* (the library functions take them), so `implied_vol` can
+return a volatility above 5 that `black_scholes` the tool will then refuse.
+
+---
+
+# RiskPY v0.5.0 — Release Notes
+
+**Release date:** 2026-10-15  
 **Type:** Minor release — diagnostics, error codes, more tools  
 **Install:** `pip install -U open-riskpy`
 

@@ -118,16 +118,19 @@ LIMITS: Dict[str, int] = {
 # for 20%. Both are legal inputs to the library (a 500% rate is just a number), so the
 # library computes an answer — a wrong one. The tools refuse values no real market quotes:
 # a rate, yield, coupon, dividend yield or spread above 100% in absolute value (RP104), a
-# volatility above 500% (RP105), an LGD outside [0, 1] (RP103). The library functions
-# underneath are unchanged.
+# volatility above 500% (RP105), an LGD outside [0, 1] (RP103), an expected loss ratio
+# above 500% (RP104: a loss ratio of 1.4 is a bad year, 70 is 70% typed as a percentage).
+# The library functions underneath are unchanged.
 PLAUSIBLE: Dict[str, float] = {
     "rate": 1.0,          # |r|, |i|, |ytm|, |coupon|, |q|, |spread|, |theta|: at most 1 (100%)
     "volatility": 5.0,    # sigma: at most 5 (500% a year)
+    "loss_ratio": 5.0,    # expected_loss_ratio: at most 5 (500%)
 }
 
 _RATE_PARAMS = {"r", "i", "ytm", "coupon", "q", "rate", "spread", "theta", "par_rates"}
 _VOL_PARAMS = {"sigma"}
 _UNIT_PARAMS = {"lgd"}
+_RATIO_PARAMS = {"expected_loss_ratio"}
 
 
 def _show(value: Any) -> str:
@@ -226,6 +229,32 @@ def _check_plausible(name: str, value: Any) -> None:
     elif name in _UNIT_PARAMS and isinstance(value, numbers.Real) and not 0.0 <= value <= 1.0:
         raise InputError(f"{name} must be in [0, 1], got {value!r}", code="RP103", param=name,
                          hint=f"{name} is a decimal fraction of the exposure: 45% is 0.45.", value=value)
+    elif name in _RATIO_PARAMS and isinstance(value, numbers.Real) and value > PLAUSIBLE["loss_ratio"]:
+        raise InputError(f"{name} = {value!r} looks like a percentage: a loss ratio is a decimal, so {name} must be "
+                         f"at most {PLAUSIBLE['loss_ratio']:g} (500%)", code="RP104", param=name,
+                         hint=f"Divide by 100 — {value:g}% is {value / 100:g}.", value=value)
+
+
+# A library function names its own parameters in its errors (a triangle is ``data`` inside
+# riskpy.reserving); the agent only knows the tool's. Where the two differ, the tool's name wins.
+_PARAM_RENAMES: Dict[str, Dict[str, str]] = {
+    "chain_ladder": {"data": "triangle"},
+    "mack_chain_ladder": {"data": "triangle"},
+    "bornhuetter_ferguson": {"data": "triangle"},
+    "bootstrap_yield_curve": {"maturity": "maturities", "times": "maturities", "t": "at"},
+    "riskpy_explain": {"code": "topic"},
+}
+
+
+def _rename_param(tool_name: str, accepted: "collections.abc.Collection[str]", exc: RiskPyError) -> None:
+    if not exc.param:
+        return
+    base, sep, rest = exc.param.partition("[")
+    if base in accepted:
+        return
+    renamed = _PARAM_RENAMES.get(tool_name, {}).get(base)
+    if renamed:
+        exc.param = renamed + sep + rest
 
 
 def _checked(fn: Callable) -> Callable:
@@ -244,7 +273,11 @@ def _checked(fn: Callable) -> Callable:
             if name in hints:
                 _check_arg(name, hints[name], value)
             _check_plausible(name, value)
-        return fn(*bound.args, **bound.kwargs)
+        try:
+            return fn(*bound.args, **bound.kwargs)
+        except RiskPyError as exc:
+            _rename_param(fn.__name__, signature.parameters, exc)
+            raise
 
     return run
 
@@ -489,6 +522,18 @@ _SYNONYMS: Dict[str, tuple] = {
     "loss_given_default": ("lgd",), "correlation": ("rho",), "confidence": ("level",), "alpha": ("level",),
     "lambda": ("expected_frequency", "hazard"), "frequency_mean": ("expected_frequency",), "n_trials": ("trials",),
     "simulations": ("trials",), "n_sims": ("trials",), "data": ("triangle", "returns"), "elr": ("expected_loss_ratio",),
+    "loss_ratio": ("expected_loss_ratio",), "premium": ("premiums",), "compounding": ("from_compounding",),
+}
+
+# Wrong names that are a wrong *idea*, not a misspelling: the right parameter means something
+# else, so a bare "did you mean" would mislead. The note says what to send instead.
+_ARGUMENT_NOTES: Dict[str, Dict[str, str]] = {
+    "aggregate_loss": dict.fromkeys(
+        ("mu", "sigma", "severity_mu", "severity_sigma", "severity_mean_log", "severity_sd_log"),
+        "aggregate_loss takes the claim size's mean and standard deviation on the money scale (severity_mean, "
+        "severity_sd), not the lognormal's mu and sigma. From a LogNormal(mu, sigma): severity_mean = "
+        "exp(mu + sigma²/2), severity_sd = severity_mean·sqrt(exp(sigma²) − 1).",
+    ),
 }
 
 
@@ -510,12 +555,15 @@ def _arguments(t: Tool, arguments: Any) -> dict:
     accepted = set(params)
     unknown = sorted(set(arguments) - accepted)
     if unknown:
-        guesses = {u: _suggest(u, accepted) for u in unknown}
+        notes = _ARGUMENT_NOTES.get(t.name, {})
+        note = next((notes[str(u)] for u in unknown if str(u) in notes), None)
+        guesses = {u: _suggest(u, accepted) for u in unknown if str(u) not in notes}
         suggestion = "; ".join(f"{u!r} → {g!r}?" for u, g in guesses.items() if g)
         raise ArgumentTypeError(
             f"{t.name}: unexpected argument(s) {unknown}; accepted: {sorted(accepted)}", code="RP402",
             param=str(unknown[0]),
-            hint=(f"Did you mean {suggestion} " if suggestion else "") + f"`riskpy-tools schema {t.name}` lists them.")
+            hint=(f"{note} " if note else "") + (f"Did you mean {suggestion} " if suggestion else "")
+            + f"`riskpy-tools schema {t.name}` lists them.")
     missing = [p for p, spec in params.items() if spec.default is spec.empty and p not in arguments]
     if missing:
         docs = _param_docs(t.fn)
@@ -1010,8 +1058,19 @@ def temporary_annuity_due(x: int, n: int, i: float, table: str = "sult") -> floa
 
 
 def _compounding(value: str, name: str) -> Any:
+    """The compounding convention as rates takes it, checked here so an error names the right argument."""
+    from . import rates
+
     text = value.strip().lower()
-    return int(text) if text.isdigit() else text
+    parsed: Any = int(text) if text.isdigit() else text
+    try:
+        rates._periods_per_year(parsed)
+    except RiskPyError as exc:
+        exc.param = name
+        exc.message = exc.message.replace("compounding must", f"{name} must", 1)
+        exc.args = (exc.message,)
+        raise
+    return parsed
 
 
 @tool()
@@ -1112,7 +1171,7 @@ def value_at_risk(returns: List[float], level: float = 0.99, method: str = "hist
 
     returns: periodic returns as decimals (-0.02 means a 2% loss); at least two
     level: confidence level as a decimal (0.99 means 99%)
-    method: "historical" (empirical quantile) or "parametric" (normal, from the sample mean and standard deviation)
+    method: "historical" (empirical quantile and tail mean) or "parametric" (normal, from the sample mean and standard deviation; both VaR and expected shortfall)
     """
     from . import quant
 
@@ -1121,8 +1180,18 @@ def value_at_risk(returns: List[float], level: float = 0.99, method: str = "hist
         raise InputError(f"method must be 'historical' or 'parametric', got {method!r}", code="RP108", param="method")
     if len(returns) < 2:
         raise InputError(f"returns needs at least two observations, got {len(returns)}", code="RP111", param="returns")
-    var = quant.historical_var(returns, level) if key == "historical" else quant.parametric_var(returns, level)
-    return {"var": float(var), "expected_shortfall": float(quant.expected_shortfall(returns, level)),
+    if key == "historical":
+        var = quant.historical_var(returns, level)
+        shortfall = quant.expected_shortfall(returns, level)
+    else:
+        # The normal model throughout: VaR = −(μ + zσ), ES = −μ + σ·φ(z)/(1 − level), z = Φ⁻¹(1 − level).
+        from . import _special
+
+        var = quant.parametric_var(returns, level)
+        mean = sum(returns) / len(returns)
+        sd = math.sqrt(sum((r - mean) ** 2 for r in returns) / (len(returns) - 1))
+        shortfall = -mean + sd * _special.norm_pdf(_special.norm_ppf(1.0 - level)) / (1.0 - level)
+    return {"var": float(var), "expected_shortfall": float(shortfall),
             "level": level, "method": key, "observations": len(returns)}
 
 
@@ -1189,7 +1258,7 @@ _EXPLAIN: Dict[str, Dict[str, Any]] = {
     },
     "life_annuity_due": {
         "formula": "ä_x = Σ_k v^k · kp_x, v = 1/(1 + i)",
-        "conventions": ["i is an effective annual rate (not continuous)", "AMLCR SULT, ages 20–120"],
+        "conventions": ["i is an effective annual rate (not continuous)", "AMLCR SULT, ages 20–130"],
     },
     "cds_par_spread": {
         "formula": "spread = protection leg / risky annuity, flat hazard, premium accrued on default",

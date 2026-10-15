@@ -17,10 +17,10 @@ riskpy-doctor --json     # {"ok", "version", "summary", "checks": [{id, status, 
 ```
 
 ```text
-riskpy-doctor — RiskPY 0.5.0
+riskpy-doctor — RiskPY 0.5.1
 
   ok    python            Python 3.12.13 (CPython) at /…/bin/python
-  ok    riskpy_version    open-riskpy 0.5.0 (riskpy at /…/site-packages/riskpy)
+  ok    riskpy_version    open-riskpy 0.5.1 (riskpy at /…/site-packages/riskpy)
   ok    core_import       compiled core loaded from /…/riskpy/cpp_underwriter.cpython-312-darwin.so
   ok    core_compute      the core simulates correctly (Poisson mean 3.0064 ≈ 3)
   ok    core_hardening    the core refuses non-finite parameters (0.4.1+ build)
@@ -85,6 +85,7 @@ refuse values no market quotes (`riskpy.tools.PLAUSIBLE`):
 | `r`, `i`, `q`, `ytm`, `coupon`, `rate`, `spread`, `theta`, `par_rates` | above 1 (100%) in absolute value | RP104 |
 | `sigma` | negative, or above 5 (500% a year) | RP105 |
 | `lgd` | outside [0, 1] | RP103 |
+| `expected_loss_ratio` | above 5 (500%) | RP104 |
 
 The library functions underneath are unchanged.
 

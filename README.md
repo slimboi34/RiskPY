@@ -40,6 +40,13 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+> **v0.5.1** — fixes from black-box testing 0.5.0: parametric `value_at_risk`
+> reports the normal expected shortfall (it returned the historical one),
+> `bornhuetter_ferguson` refuses a loss ratio typed as a percentage, errors name
+> the tool's own argument, the wheels no longer drop OpenXLSX's headers and
+> libraries into `site-packages`, and macOS x86_64 wheels ship again.
+> See [RELEASE_NOTES.md](RELEASE_NOTES.md).
+>
 > **v0.5.0** — RiskPY tells you (and your agent) exactly what went wrong.
 > Every error has a stable code, names the parameter and says how to fix it
 > (`riskpy-explain RP105`); the tools and the MCP server return

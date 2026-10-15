@@ -197,7 +197,7 @@ def test_plausibility_guards_leave_real_inputs_alone():
     assert tools.call("annuity_certain", {"i": 1.0, "n": 3}) == pytest.approx(1 / 2 + 1 / 4 + 1 / 8)
     with pytest.raises(ValueError, match="looks like a percentage"):
         tools.black_scholes(100, 100, 1, 5, 0.2)                                      # direct calls too
-    assert tools.PLAUSIBLE == {"rate": 1.0, "volatility": 5.0}
+    assert tools.PLAUSIBLE == {"rate": 1.0, "volatility": 5.0, "loss_ratio": 5.0}
 
 
 def test_raise_mode_keeps_the_old_exception_types():
@@ -555,3 +555,120 @@ def test_doctor_cli_runs_as_a_subprocess(tmp_path):
                          encoding="utf-8", env=env, timeout=120, cwd=tmp_path)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout)["ok"] is True
+
+
+# ---------------------------------------------------------------- 0.5.1: found by black-box testing 0.5.0
+
+
+def test_parametric_value_at_risk_reports_the_normal_expected_shortfall():
+    # 0.5.0 paired the normal VaR with the *historical* expected shortfall.
+    pytest.importorskip("numpy")
+    returns = [math.sin(7.3 * k) * 0.02 + 0.0005 for k in range(250)]
+    mean = sum(returns) / len(returns)
+    sd = math.sqrt(sum((r - mean) ** 2 for r in returns) / (len(returns) - 1))
+    for level in (0.95, 0.99, 0.995):
+        z = N.inv_cdf(1 - level)
+        out = tools.call("value_at_risk", {"returns": returns, "level": level, "method": "parametric"})
+        assert out["var"] == pytest.approx(-(mean + z * sd), abs=1e-12)
+        assert out["expected_shortfall"] == pytest.approx(-mean + sd * N.pdf(z) / (1 - level), rel=1e-9)
+        assert out["expected_shortfall"] > out["var"]
+    hist = tools.call("value_at_risk", {"returns": returns, "level": 0.99})          # unchanged
+    assert hist["expected_shortfall"] == pytest.approx(riskpy.quant.expected_shortfall(returns, 0.99), abs=0)
+
+
+def test_bornhuetter_ferguson_refuses_a_loss_ratio_typed_as_a_percentage():
+    pytest.importorskip("numpy")
+    args = {"triangle": [[100, 150, 160], [110, 170, None], [120, None, None]], "premiums": [200, 210, 220]}
+    bad = tools.call("bornhuetter_ferguson", {**args, "expected_loss_ratio": 70}, errors="return")["error"]
+    assert bad["code"] == "RP104" and bad["param"] == "expected_loss_ratio" and "0.7" in bad["hint"]
+    for elr in (0.0, 0.65, 1.4, 5.0):                    # a 140% loss ratio is a bad year, not a typo
+        assert "error" not in tools.call("bornhuetter_ferguson", {**args, "expected_loss_ratio": elr}, errors="return")
+
+
+@pytest.mark.parametrize("name, args, param", [
+    ("chain_ladder", {"triangle": []}, "triangle"),
+    ("bootstrap_yield_curve", {"par_rates": [0.03, 0.035], "maturities": [0.75, 2]}, "maturities"),
+    ("bootstrap_yield_curve", {"par_rates": [0.03, 0.035], "maturities": [1, 2], "at": [1.5, -1]}, "at"),
+    ("convert_rate", {"rate": 0.05, "from_compounding": "annual", "to_compounding": "fortnightly"}, "to_compounding"),
+    ("convert_rate", {"rate": 0.05, "from_compounding": "nope", "to_compounding": "annual"}, "from_compounding"),
+    ("convert_rate", {"rate": 0.05, "from_compounding": "annual", "to_compounding": "0"}, "to_compounding"),
+    ("riskpy_explain", {"topic": "RP999"}, "topic"),
+])
+def test_errors_name_the_tools_own_argument(name, args, param):
+    if name in ("chain_ladder",):
+        pytest.importorskip("numpy")
+    err = tools.call(name, args, errors="return")["error"]
+    assert err["param"] == param, err
+    if name == "convert_rate":
+        assert err["message"].startswith(f"{param} must")
+
+
+def test_aggregate_loss_explains_mu_and_sigma_instead_of_guessing_a_name():
+    err = tools.call("aggregate_loss", {"expected_frequency": 10, "severity_mu": 7, "severity_sigma": 0.5},
+                     errors="return")["error"]
+    assert err["code"] == "RP402" and "money scale" in err["hint"] and "exp(mu + sigma²/2)" in err["hint"]
+    assert "'severity_sigma' → 'severity_mean'" not in err["hint"]
+    # an ordinary misspelling still gets its suggestion
+    err = tools.call("aggregate_loss", {"expected_frequency": 10, "severity_mean": 1000, "severity_sd": 500,
+                                        "n_trials": 10}, errors="return")["error"]
+    assert "'n_trials' → 'trials'" in err["hint"]
+
+
+def test_convert_rate_accepts_the_usual_spellings():
+    r = 0.05
+    cases = {"daily": 365, "weekly": 52, "annually": 1, "yearly": 1, "semi_annual": 2, "semi-annually": 2}
+    for word, m in cases.items():
+        got = tools.call("convert_rate", {"rate": r, "from_compounding": word, "to_compounding": "continuous"})
+        assert got == pytest.approx(m * math.log(1 + r / m), abs=1e-14), word
+        assert riskpy.rates.convert_rate(r, word, m) == pytest.approx(r, abs=1e-12)
+    assert tools.call("convert_rate", {"rate": r, "from_compounding": "continuously", "to_compounding": "annual"}) \
+        == pytest.approx(math.exp(r) - 1, abs=1e-14)
+
+
+def test_doctor_selfcheck_names_only_the_modules_it_ran(monkeypatch):
+    from riskpy import verify
+
+    real = verify.run
+
+    def without_quant(modules=None, oracle=False):
+        report = real([m for m in modules if m != "quant"], oracle=oracle)
+        report.skipped.append(("quant", "riskpy.mc needs NumPy, which is not installed."))
+        return report
+
+    monkeypatch.setattr(verify, "run", without_quant)
+    check = next(c for c in diagnostics.checks() if c["id"] == "selfcheck")
+    assert check["status"] == "ok" and check["skipped"] == ["quant"]
+    ran = check["message"].split("(")[1].split(")")[0]
+    assert "quant" not in ran and "core" in ran and "skipped quant" in check["message"]
+
+
+def test_missing_numpy_message_puts_the_quoted_pip_line_first(monkeypatch):
+    import builtins
+
+    from riskpy import mc
+
+    real = builtins.__import__
+
+    def no_numpy(name, *a, **k):
+        if name == "numpy":
+            raise ImportError("No module named 'numpy'")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_numpy)
+    with pytest.raises(ImportError) as info:
+        mc._numpy()
+    first = str(info.value).splitlines()[0]
+    # riskpy-verify shows only the first line of a skip reason; zsh needs the quotes
+    assert first.startswith("riskpy.mc needs NumPy, which is not installed") and 'pip install "open-riskpy[sim]"' in first
+
+
+def test_the_wheel_installs_only_the_extension_and_the_upload_waits_for_every_wheel():
+    root = pathlib.Path(__file__).resolve().parents[1]
+    cmake, pyproject = root / "CMakeLists.txt", root / "pyproject.toml"
+    workflow = root / ".github" / "workflows" / "publish.yml"
+    if not (cmake.exists() and pyproject.exists() and workflow.exists()):
+        pytest.skip("not a source checkout")
+    assert re.search(r"install\(TARGETS cpp_underwriter DESTINATION riskpy COMPONENT riskpy\)", cmake.read_text())
+    assert 'install.components = ["riskpy"]' in pyproject.read_text()
+    needs = re.search(r"\n  publish:\n(?:.*\n)*?    needs: \[([^\]]*)\]", workflow.read_text()).group(1)
+    assert "build-wheels-extra" in needs

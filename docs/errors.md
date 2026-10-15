@@ -74,7 +74,7 @@ A probability (PD, LGD, recovery, a weight) is below 0 or above 1. Above 1 is al
 
 ### RP104 — Rate looks like a percentage {#rp104}
 
-An interest rate, yield, coupon or dividend yield is larger than 1 (100%) in absolute value. RiskPY takes rates as decimals, so 5 means 500%, not 5%.
+An interest rate, yield, coupon, dividend yield or spread is larger than 1 (100%) in absolute value, or an expected loss ratio larger than 5 (500%). RiskPY takes rates and ratios as decimals, so 5 means 500%, not 5%.
 
 **Fix:** Divide by 100: a 5% rate is 0.05.
 

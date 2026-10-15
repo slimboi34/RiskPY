@@ -35,9 +35,10 @@ CORE_CLASSES = ("MonteCarloSimulator", "LossTriangle", "FactorModel", "Actuarial
                 "ExposureRating", "RateAnalyzer", "FourierTransform", "RiskEngine", "ExcelExporter")
 
 CONVENTIONS = [
-    "**Rates are decimals.** `i=0.05` is 5%. `i` is an effective annual rate (life, annuities, bonds via "
-    "`ytm`); `r` in `quant` and `credit` is continuously compounded. Probability levels are decimals too: "
-    "`result.var(0.995)`.",
+    "**Rates are decimals.** `i=0.05` is 5%. `i` is an effective annual rate (life, annuities); a bond's "
+    "`ytm` is compounded `frequency` times a year, as bond yields are quoted; `r` in `quant` and `credit` is "
+    "continuously compounded (`rates.convert_rate` / the `convert_rate` tool moves between them). Probability "
+    "levels are decimals too: `result.var(0.995)`.",
     "**Times are years.** `T`, `maturity`, `t` and `n` are in years (or whole years for life contingencies); "
     "`frequency` is payments per year.",
     "**`LogNormal(mu, sigma)` takes the underlying normal's parameters, not a mean and standard deviation.** "

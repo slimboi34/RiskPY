@@ -82,12 +82,10 @@ def _numpy():
         import numpy  # noqa: WPS433
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise MissingDependencyError(
-            "riskpy.mc needs NumPy, which is not installed. The C++ core is "
-            "deliberately dependency-free, so the simulation layer ships as an "
-            "extra:\n"
-            "    pip install open-riskpy[sim]\n"
-            "or just:\n"
-            "    pip install numpy", code="RP201", hint='pip install "open-riskpy[sim]"'
+            'riskpy.mc needs NumPy, which is not installed: pip install "open-riskpy[sim]" '
+            "(or just pip install numpy).\n"
+            "The C++ core is deliberately dependency-free, so the simulation layer "
+            "ships as an extra.", code="RP201", hint='pip install "open-riskpy[sim]"'
         ) from exc
     return numpy
 

@@ -91,4 +91,8 @@ pybind11_add_module(cpp_underwriter
 target_include_directories(cpp_underwriter PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(cpp_underwriter PRIVATE OpenXLSX::OpenXLSX)
 
-install(TARGETS cpp_underwriter DESTINATION riskpy)
+# Our extension is the only thing the wheel installs. OpenXLSX's own install rules
+# (headers, static libraries, CMake and pkg-config files) are left out by
+# `install.components` in pyproject.toml; without that they landed as top-level
+# include/ and lib/ directories in site-packages.
+install(TARGETS cpp_underwriter DESTINATION riskpy COMPONENT riskpy)

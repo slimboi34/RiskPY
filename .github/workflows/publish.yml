@@ -194,7 +194,11 @@ jobs:
   # ---------------------------------------------------------------------------
   publish:
     name: Upload to PyPI
-    needs: [guard, build-sdist, build-wheels]
+    # Wait for the best-effort wheels too (they are continue-on-error, so a failure there does
+    # not block the upload). Without them in `needs`, the upload raced them: 0.5.0 went out
+    # without its macOS x86_64 wheels, which finished three minutes after the upload started.
+    needs: [guard, build-sdist, build-wheels, build-wheels-extra]
+    if: ${{ !cancelled() && needs.guard.result == 'success' && needs.build-sdist.result == 'success' && needs.build-wheels.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

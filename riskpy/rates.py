@@ -12,7 +12,8 @@ Two layers, split by what they cost to install:
 Conventions throughout: times are in **years**, rates are annualised
 **decimals** (``0.05``, not ``5``) and ``compounding`` is ``"continuous"``,
 ``"annual"`` or a positive integer ``m`` of periods per year (``"semiannual"``,
-``"quarterly"`` and ``"monthly"`` are accepted as aliases for 2, 4 and 12). A
+``"quarterly"``, ``"monthly"``, ``"weekly"`` and ``"daily"`` are accepted as aliases
+for 2, 4, 12, 52 and 365, as are ``"annually"`` and ``"semi-annually"``). A
 :class:`YieldCurve` stores zero rates in one convention and converts for you;
 a :class:`Bond` quotes its yield compounded at its own coupon frequency,
 because that is how bond yields are quoted.
@@ -64,6 +65,15 @@ _NAMED_COMPOUNDING = {
     "semi-annual": 2,
     "quarterly": 4,
     "monthly": 12,
+    # The other spellings people (and agents) use for the same conventions.
+    "continuously": None,
+    "annually": 1,
+    "yearly": 1,
+    "semi_annual": 2,
+    "semiannually": 2,
+    "semi-annually": 2,
+    "weekly": 52,
+    "daily": 365,
 }
 
 
@@ -95,7 +105,7 @@ def _periods_per_year(compounding: object) -> Optional[int]:
             return _NAMED_COMPOUNDING[key]
         raise InputError(
             f"compounding must be 'continuous', 'annual' or a positive integer of "
-            f"periods per year (or 'semiannual', 'quarterly', 'monthly'), got {compounding!r}", code="RP108", param="compounding", hint="compounding is 'continuous', 'annual', 'semiannual', 'quarterly', 'monthly' or a positive integer of periods per year."
+            f"periods per year (or 'semiannual', 'quarterly', 'monthly', 'weekly', 'daily'), got {compounding!r}", code="RP108", param="compounding", hint="compounding is 'continuous', 'annual', 'semiannual', 'quarterly', 'monthly', 'weekly' (52), 'daily' (365) or a positive integer of periods per year."
         )
     return _check_frequency(compounding, "compounding")
 

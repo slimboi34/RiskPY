@@ -54,6 +54,9 @@ The workflow refuses to upload a broken release. In order:
 | `build-wheels` | linux/x86_64, macos/arm64, windows/AMD64 — cp310–cp314 | **Yes** |
 | `build-wheels-extra` | linux/aarch64 (native ARM runner), macos/x86_64 (cross) | No — best effort |
 
+The upload waits for `build-wheels-extra` to finish, so its wheels ship whenever they
+build; if one of those jobs fails, the release goes out without it.
+
 The matrix itself lives in `pyproject.toml` under `[tool.cibuildwheel]`, so CI
 and local builds cannot drift. Reproduce it locally with `make wheels`.
 

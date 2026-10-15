@@ -67,7 +67,7 @@ most 1,000,000 trials and 10⁸ simulated claims (trials × expected frequency),
 the triangle tools at most 300 × 300. The limits are in `riskpy.tools.LIMITS`; a call over one
 fails at once with code RP405 and a message naming it. The tools also refuse percentages where
 decimals belong — a rate above 100% (RP104), a volatility above 500% (RP105), an LGD above 1
-(RP103) — because the library would compute a confident wrong answer from them
+(RP103), an expected loss ratio above 500% (RP104) — because the library would compute a confident wrong answer from them
 (`riskpy.tools.PLAUSIBLE`). Results never contain `NaN` or `Infinity` (they become `null`), so
 they are strict JSON.
 

@@ -184,9 +184,10 @@ def _extras() -> List[Dict[str, Any]]:
 def _selfcheck() -> Dict[str, Any]:
     from . import verify
 
+    modules = ["core", "special", "quant", "life", "rates", "credit"]
     t0 = time.perf_counter()
     try:
-        report = verify.run(["core", "special", "quant", "life", "rates", "credit"], oracle=False)
+        report = verify.run(modules, oracle=False)
     except Exception as exc:  # pragma: no cover
         return _check("selfcheck", FAIL, f"the verification subset raised {type(exc).__name__}: {exc}",
                       "Run riskpy-verify for the full report.")
@@ -196,9 +197,11 @@ def _selfcheck() -> Dict[str, Any]:
         return _check("selfcheck", FAIL, f"{len(report.failed)} of {len(report.checks)} identities fail ({names})",
                       "Run riskpy-verify -v for every value and reference, and report it on GitHub.",
                       checks=len(report.checks), failed=len(report.failed))
-    skipped = f", {len(report.skipped)} module(s) skipped" if report.skipped else ""
+    skipped_modules = [m for m, _ in report.skipped]
+    ran = [m for m in modules if m not in skipped_modules]
+    skipped = f"; skipped {', '.join(skipped_modules)} (an optional extra is missing)" if skipped_modules else ""
     return _check("selfcheck", OK, f"{len(report.checks)} identities verified in {seconds:.2f}s "
-                  f"(core, special, quant, life, rates, credit){skipped}", checks=len(report.checks), failed=0)
+                  f"({', '.join(ran)}){skipped}", checks=len(report.checks), failed=0, skipped=skipped_modules)
 
 
 def _tools() -> Dict[str, Any]:
