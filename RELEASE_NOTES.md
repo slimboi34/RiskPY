@@ -1,6 +1,6 @@
 # RiskPY v0.5.2 — Release Notes
 
-**Release date:** unreleased (prepared 2026-10-15)  
+**Release date:** 2026-10-17  
 **Type:** Patch release — fixes found by a second round of testing (0.5.1 from PyPI)  
 **Install:** `pip install -U open-riskpy`
 
@@ -52,7 +52,7 @@ to 2e-15. Three small bugs are fixed; no result changes.
 
 # RiskPY v0.5.1 — Release Notes
 
-**Release date:** unreleased (prepared 2026-10-15)  
+**Release date:** 2026-10-17  
 **Type:** Patch release — fixes found by black-box testing 0.5.0 from PyPI  
 **Install:** `pip install -U open-riskpy`
 
