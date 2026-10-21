@@ -112,9 +112,20 @@ def norm_ppf(p: float) -> float:
         x = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
             (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
 
-    # One Halley step: e is the CDF error, u = e / pdf(x).
-    e = 0.5 * math.erfc(-x / _SQRT2) - p
-    u = e * _SQRT_2PI * math.exp(0.5 * x * x)
+    # One Halley step: u = (cdf(x) - p) / pdf(x). Written as a relative error
+    # times exp(ln p + x²/2) so that pdf(x) ≈ 1e-320 does not overflow 1/pdf.
+    if p < 1e-300:
+        # erfc is subnormal here and carries only a few bits, so refine against
+        # the asymptotic log Φ(x) = -x²/2 - ln(-x√2π) + ln(1 - 1/x² + 3/x⁴ - …).
+        target = math.log(p)
+        for _ in range(4):
+            x2 = x * x
+            series = 1.0 - 1.0 / x2 + 3.0 / x2 ** 2 - 15.0 / x2 ** 3 + 105.0 / x2 ** 4
+            g = -0.5 * x2 - math.log(-x * _SQRT_2PI) + math.log(series) - target
+            x -= g / (-x - 1.0 / x)
+        return x
+    rel = 0.5 * math.erfc(-x / _SQRT2) / p - 1.0
+    u = rel * _SQRT_2PI * math.exp(math.log(p) + 0.5 * x * x)
     return x - u / (1.0 + 0.5 * x * u)
 
 
@@ -153,6 +164,8 @@ def trigamma(x: float) -> float:
     """ψ₁(x) = d²/dx² log Γ(x). Same construction as :func:`digamma`."""
     if x <= 0.0:
         raise ValueError(f"trigamma needs x > 0, got {x!r}")
+    if x < 1e-150:
+        return math.inf if x * x == 0.0 or 1.0 / (x * x) == math.inf else 1.0 / (x * x) + math.pi ** 2 / 6.0
     result = 0.0
     while x < 10.0:
         result += 1.0 / (x * x)
@@ -165,17 +178,49 @@ def trigamma(x: float) -> float:
     return result
 
 
+def _gamma_iters(a: float) -> int:
+    """Iteration cap for the incomplete-gamma series and continued fraction.
+
+    Both need on the order of √a terms when x is near a, so a fixed cap of 1000
+    silently truncates them once a passes about 1e5 (P(1e6, 1e6) came out 0.34).
+    """
+    return 1000 + int(50.0 * math.sqrt(a))
+
+
+def _stirling_err(a: float) -> float:
+    """lgamma(a) - [(a - ½)·ln a - a + ½·ln 2π], by its asymptotic series for a ≥ 100
+    (truncation error below 1e-20 there; at a = 10 it would be 1e-12)."""
+    if a < 100.0:
+        return math.lgamma(a) - ((a - 0.5) * math.log(a) - a + 0.5 * math.log(2.0 * math.pi))
+    inv = 1.0 / a
+    inv2 = inv * inv
+    return inv * (1.0 / 12.0 - inv2 * (1.0 / 360.0 - inv2 * (1.0 / 1260.0 - inv2 / 1680.0)))
+
+
+def _gamma_log_prefix(a: float, x: float) -> float:
+    """ln[x^a · e^(-x) / Γ(a)], written so it keeps its precision for large a.
+
+    The direct form ``-x + a·ln x - lgamma(a)`` subtracts numbers of size a·ln a
+    and loses about log10(a) digits; around x ≈ a the Stirling form only
+    carries a·(ln(1+t) - t) with t = x/a - 1, which is small.
+    """
+    if a < 100.0:
+        return -x + a * math.log(x) - math.lgamma(a)
+    t = (x - a) / a
+    return a * (math.log1p(t) - t) + 0.5 * math.log(a / (2.0 * math.pi)) - _stirling_err(a)
+
+
 def _gser(a: float, x: float) -> float:
     """Series for the regularised lower incomplete gamma, x < a + 1."""
     ap = a
     total = term = 1.0 / a
-    for _ in range(1000):
+    for _ in range(_gamma_iters(a)):
         ap += 1.0
         term *= x / ap
         total += term
         if abs(term) < abs(total) * _EPS:
             break
-    return total * math.exp(-x + a * math.log(x) - math.lgamma(a))
+    return total * math.exp(_gamma_log_prefix(a, x))
 
 
 def _gcf(a: float, x: float) -> float:
@@ -184,7 +229,7 @@ def _gcf(a: float, x: float) -> float:
     c = 1.0 / _FPMIN
     d = 1.0 / b
     h = d
-    for i in range(1, 1000):
+    for i in range(1, _gamma_iters(a)):
         an = -i * (i - a)
         b += 2.0
         d = an * d + b
@@ -198,7 +243,7 @@ def _gcf(a: float, x: float) -> float:
         h *= delta
         if abs(delta - 1.0) < _EPS:
             break
-    return math.exp(-x + a * math.log(x) - math.lgamma(a)) * h
+    return math.exp(_gamma_log_prefix(a, x)) * h
 
 
 def gammainc(a: float, x: float) -> float:
@@ -239,7 +284,35 @@ def gammaincc(a: float, x: float) -> float:
 
 
 def beta_function(a: float, b: float) -> float:
-    return math.exp(math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b))
+    """B(a, b) = Γ(a)Γ(b)/Γ(a+b), with the sign of the gammas kept for negative
+    non-integer arguments (``lgamma`` alone returns log|Γ|)."""
+    sign = 1.0
+    for z in (a, b):
+        if z < 0.0 and math.floor(z) % 2 == 1:
+            sign = -sign
+    if a + b < 0.0 and math.floor(a + b) % 2 == 1:
+        sign = -sign
+    return sign * math.exp(math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b))
+
+
+def _lbeta(a: float, b: float) -> float:
+    """ln B(a, b) for positive a, b, without the cancellation of
+    ``lgamma(a) + lgamma(b) - lgamma(a + b)`` when an argument is large: at
+    a = 2600 the three lgammas are about 1.8e4 each and the difference lost
+    eleven digits' worth of the Student-t CDF at df ≈ 5000."""
+    small, large = min(a, b), max(a, b)
+    if large < 100.0:
+        return math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
+    total = small + large
+    if small < 100.0:
+        # lgamma(large) - lgamma(large + small) by Stirling, in log1p form.
+        diff = (-(large - 0.5) * math.log1p(small / large) - small * math.log(total) + small
+                + _stirling_err(large) - _stirling_err(total))
+        return math.lgamma(small) + diff
+    return (0.5 * math.log(2.0 * math.pi) - 0.5 * math.log(total)
+            + (small - 0.5) * math.log(small / total) + large * math.log1p(-small / total)
+            - 0.5 * math.log1p(-small / total)
+            + _stirling_err(small) + _stirling_err(large) - _stirling_err(total))
 
 
 def _betacf(a: float, b: float, x: float) -> float:
@@ -252,7 +325,7 @@ def _betacf(a: float, b: float, x: float) -> float:
         d = _FPMIN
     d = 1.0 / d
     h = d
-    for m in range(1, 1000):
+    for m in range(1, 1000 + int(50.0 * math.sqrt(max(a, b)))):
         m2 = 2 * m
         aa = m * (b - m) * x / ((qam + m2) * (a + m2))
         d = 1.0 + aa * d
@@ -293,12 +366,23 @@ def betainc(a: float, b: float, x: float) -> float:
         return 0.0
     if x == 1.0:
         return 1.0
-    front = math.exp(
-        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log(1.0 - x)
-    )
+    return _betainc(a, b, x, 1.0 - x)
+
+
+def _betainc(a: float, b: float, x: float, y: float,
+             log_x: float | None = None, log_y: float | None = None) -> float:
+    """I_x(a, b) given both ``x`` and ``y = 1 - x``, so a caller that knows the
+    complement exactly (the Student-t with huge df, where x = df/(df+t²) is
+    within 1e-12 of 1) does not lose it to ``1.0 - x``. ``log_x``/``log_y`` may
+    be passed when x itself underflows (the t tail at |t| = 1e299 has x = 1e-598)."""
+    if log_x is None:
+        log_x = math.log(x)
+    if log_y is None:
+        log_y = math.log(y)
+    front = math.exp(a * log_x + b * log_y - _lbeta(a, b))
     if x < (a + 1.0) / (a + b + 2.0):
         return front * _betacf(a, b, x) / a
-    return 1.0 - front * _betacf(b, a, 1.0 - x) / b
+    return 1.0 - front * _betacf(b, a, y) / b
 
 
 # ---------------------------------------------------------------------------
@@ -312,9 +396,44 @@ def t_cdf(x: float, df: float) -> float:
         raise ValueError(f"df must be > 0, got {df!r}")
     if x == 0.0:
         return 0.5
-    t2 = x * x
-    ib = betainc(0.5 * df, 0.5, df / (df + t2))
+    if math.isinf(x):
+        return 1.0 if x > 0.0 else 0.0
+    if df >= 1e4:
+        tail = _t_tail_large_df(abs(x), df)
+        return 1.0 - tail if x > 0.0 else tail
+    # x = df/(df+t²) and its complement, formed from a ratio below 1 so that
+    # neither t² (|t| > 1e154) nor df/(df+t²) ≈ 1 loses the digits.
+    root_df = math.sqrt(df)
+    if abs(x) > root_df:
+        r = root_df / abs(x)
+        r2 = r * r
+        xb, yb = r2 / (1.0 + r2), 1.0 / (1.0 + r2)
+        log_r = math.log(root_df) - math.log(abs(x))
+        ib = _betainc(0.5 * df, 0.5, xb, yb, log_x=2.0 * log_r - math.log1p(r2), log_y=-math.log1p(r2))
+        return 1.0 - 0.5 * ib if x > 0.0 else 0.5 * ib
+    else:
+        r = abs(x) / root_df
+        r2 = r * r
+        xb, yb = 1.0 / (1.0 + r2), r2 / (1.0 + r2)
+    ib = _betainc(0.5 * df, 0.5, xb, yb)
     return 1.0 - 0.5 * ib if x > 0.0 else 0.5 * ib
+
+
+def _t_tail_large_df(t: float, df: float) -> float:
+    """P(T < -t) for large df, by Hill's normalising transform (ACM Algorithm 395).
+
+    The incomplete-beta continued fraction needs on the order of √df terms once
+    df is large, so it came out 1e-5 wrong at df = 1e10 under its iteration cap.
+    Hill's expansion is better than 1e-13 relative for df ≥ 1e4.
+    """
+    if math.isinf(df):
+        return norm_cdf(-t)
+    a = df - 0.5
+    b = 48.0 * a * a
+    z2 = a * math.log1p(t * t / df)
+    z = math.sqrt(z2)
+    z = (((((-0.4 * z2 - 3.3) * z2 - 24.0) * z2 - 85.5) / (0.8 * z2 * z2 + 100.0 + b) + z2 + 3.0) / b + 1.0) * z
+    return norm_cdf(-z)
 
 
 def t_ppf(p: float, df: float) -> float:
@@ -325,17 +444,50 @@ def t_ppf(p: float, df: float) -> float:
         raise ValueError(f"df must be > 0, got {df!r}")
     if p == 0.5:
         return 0.0
-    if df > 1e6:
+    if math.isinf(df):
         return norm_ppf(p)
-    # Bracket: t quantiles are wider than normal ones, and grow like p^(-1/df).
-    guess = abs(norm_ppf(p)) if 0.02 < p < 0.98 else 1.0
-    hi = max(4.0 * guess, 2.0)
-    while t_cdf(hi, df) < max(p, 1.0 - p):
-        hi *= 2.0
-        if hi > 1e300:
-            raise ValueError("t_ppf failed to bracket the quantile")
-    target = max(p, 1.0 - p)
-    value = brent(lambda t: t_cdf(t, df) - target, 0.0, hi)
+    # Solve in the lower tail, where t_cdf(-t) = ½·I(df/(df+t²); df/2, ½) keeps
+    # its relative precision: solving t_cdf(t) = 1 - p instead rounds 1 - 1e-20
+    # to 1 and returned -4096 for a quantile of -15684. The root is found in
+    # log t, so a quantile of 1e299 converges to relative, not absolute, accuracy.
+    if 0.25 < p < 0.75:
+        # Near the centre the tail is 0.5 - tiny and solving on it loses the
+        # tiny part; P(0 < T < t) = ½·I(t²/(df+t²); ½, df/2) keeps it, and
+        # p - 0.5 is exact here.
+        half = abs(p - 0.5)
+        target_c = math.log(2.0 * half)
+
+        def g(u: float) -> float:
+            t2 = math.exp(2.0 * u)
+            mass = _betainc(0.5, 0.5 * df, t2 / (df + t2), df / (df + t2))
+            return (math.log(mass) if mass > 0.0 else -math.inf) - target_c
+
+        lo, hi = -2.0, 2.0
+        while g(lo) > 0.0:
+            lo -= 4.0
+        while g(hi) < 0.0:
+            hi += 2.0
+        value = math.exp(brent(g, lo, hi, tol=1e-14))
+        return value if p > 0.5 else -value
+    q = min(p, 1.0 - p)
+    target = math.log(q)
+
+    def f(u: float) -> float:
+        tail = t_cdf(-math.exp(u), df)
+        return (math.log(tail) if tail > 0.0 else -math.inf) - target
+
+    hi = math.log(max(2.0 * abs(norm_ppf(q)), 1.0))
+    while f(hi) > 0.0:
+        hi += math.log(4.0)
+        if hi > 709.0:
+            # The quantile is beyond the largest double (p = 1e-250 at df = 0.5).
+            return math.inf if p > 0.5 else -math.inf
+    lo = hi - math.log(4.0)
+    while f(lo) < 0.0:
+        lo -= math.log(4.0)
+        if lo < -700.0:
+            break
+    value = math.exp(brent(f, lo, hi, tol=1e-14))
     return value if p > 0.5 else -value
 
 
@@ -351,10 +503,39 @@ def chi2_cdf(x: float, k: float) -> float:
 def chi2_ppf(p: float, k: float) -> float:
     if not (0.0 < p < 1.0):
         raise ValueError(f"p must be in (0, 1), got {p!r}")
-    hi = max(10.0, 4.0 * k)
-    while chi2_cdf(hi, k) < p:
-        hi *= 2.0
-    return brent(lambda x: chi2_cdf(x, k) - p, 0.0, hi)
+    if k <= 0.0:
+        raise ValueError(f"k must be > 0, got {k!r}")
+    # Root in log x for relative accuracy: with an absolute tolerance of 1e-12,
+    # chi2_ppf(0.5, 0.01) returned 5.7e-13 for a true quantile of 7e-61.
+    # The upper tail is solved against the survival function so p near 1 keeps its digits.
+    if p > 0.5:
+        target = math.log1p(-p)
+
+        def f(u: float) -> float:
+            sf = gammaincc(0.5 * k, 0.5 * math.exp(u))
+            return target - (math.log(sf) if sf > 0.0 else -math.inf)
+    else:
+        target = math.log(p)
+
+        def f(u: float) -> float:
+            cdf = chi2_cdf(math.exp(u), k)
+            return (math.log(cdf) if cdf > 0.0 else -math.inf) - target
+
+    # Bracket around the Wilson–Hilferty approximation, which is within a few percent
+    # for k ≥ 1, so brent starts close instead of bisecting down from 4k.
+    z = norm_ppf(p)
+    h = 2.0 / (9.0 * k)
+    wh = k * (1.0 - h + z * math.sqrt(h)) ** 3
+    guess = math.log(wh) if wh > 0.0 else math.log(max(10.0, 4.0 * k))
+    hi = guess + 0.1
+    while f(hi) < 0.0:
+        hi += math.log(2.0)
+    lo = min(guess - 0.1, hi - 0.1)
+    while f(lo) > 0.0:
+        lo -= math.log(4.0)
+        if lo < -745.0:      # below the smallest subnormal double
+            return 0.0
+    return math.exp(brent(f, lo, hi, tol=1e-14))
 
 
 def kolmogorov_sf(x: float) -> float:
@@ -646,7 +827,12 @@ def _gamma_pq_vec(a: float, x, upper: bool):
     out = np.zeros(flat.size, dtype=float)
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        prefix = np.exp(-flat + a * np.log(np.where(flat > 0, flat, 1.0)) - math.lgamma(a))
+        safe = np.where(flat > 0, flat, 1.0)
+        if a < 100.0:
+            prefix = np.exp(-flat + a * np.log(safe) - math.lgamma(a))
+        else:
+            t = (flat - a) / a
+            prefix = np.exp(a * (np.log1p(t) - t) + 0.5 * math.log(a / (2.0 * math.pi)) - _stirling_err(a))
 
     series_idx = np.flatnonzero((flat > 0) & (flat < a + 1.0))
     if series_idx.size:
@@ -655,7 +841,7 @@ def _gamma_pq_vec(a: float, x, upper: bool):
         total = term.copy()
         idx = np.arange(xs.size)
         ap = a
-        for _ in range(1000):
+        for _ in range(_gamma_iters(a)):
             if idx.size == 0:
                 break
             ap += 1.0
@@ -674,7 +860,7 @@ def _gamma_pq_vec(a: float, x, upper: bool):
         d = 1.0 / b
         h = d.copy()
         idx = np.arange(xc.size)
-        for i in range(1, 1000):
+        for i in range(1, _gamma_iters(a)):
             if idx.size == 0:
                 break
             an = -i * (i - a)
@@ -708,7 +894,7 @@ def _betacf_vec(a: float, b: float, x):
     d = 1.0 / d
     h = d.copy()
     idx = np.arange(x.size)
-    for m in range(1, 1000):
+    for m in range(1, 1000 + int(50.0 * math.sqrt(max(a, b)))):
         if idx.size == 0:
             break
         m2 = 2 * m

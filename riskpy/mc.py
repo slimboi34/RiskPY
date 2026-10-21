@@ -5,18 +5,17 @@ fast. This module covers the other case: you have a formula that is too awkward
 to solve analytically, so you feed it random inputs a hundred thousand times and
 look at the distribution that falls out.
 
-    from riskpy.mc import Model, LogNormal, Normal, Poisson
+    from riskpy.mc import Model, Compound, LogNormal, Normal, Poisson
 
     model = Model(
-        claims   = Poisson(mean=120),
-        severity = LogNormal(mu=8.5, sigma=1.2),
+        claims   = Compound(Poisson(mean=120), LogNormal(mu=8.5, sigma=1.2)),
         inflation= Normal(mean=0.04, sd=0.01),
     )
     model.correlate("claims", "inflation", 0.3)     # optional dependence
 
     @model.formula
-    def annual_loss(claims, severity, inflation):
-        return claims * severity * (1 + inflation)
+    def annual_loss(claims, inflation):
+        return claims * (1 + inflation)
 
     result = model.run(100_000, seed=42, sampling="lhs")
     print(result.summary())
@@ -70,6 +69,7 @@ __all__ = [
     "Empirical",
     "Categorical",
     "Mixture",
+    "Compound",
     "Truncated",
     "iman_conover",
     "correlation_matrix",
@@ -632,15 +632,27 @@ class Gamma(Distribution):
         base = 1.0 - 1.0 / (9.0 * k) + z * math.sqrt(1.0 / (9.0 * k))
         wilson = k * np.where(base > 0.0, base, 0.0) ** 3
         with np.errstate(divide="ignore"):
-            series = np.exp((np.log(safe_q) + math.lgamma(k + 1.0)) / k)
+            log_series = (np.log(safe_q) + math.lgamma(k + 1.0)) / k
+            series = np.exp(log_series)
         guess = _pick_guess(self, safe_q, [wilson, series], lo=0.0, hi=math.inf)
 
         x = _newton_ppf(self, q, guess * self.scale, 0.0, math.inf, sf=self.sf)
+        # Where the quantile is below ~1e-304 the series is exact to double
+        # precision but its value underflows (to 0 or a subnormal), and Newton
+        # started from the fallback guess wanders off: Gamma(0.01).ppf(1e-6)
+        # came back as 8e-25, above ppf(0.5) = 5e-31. Use the series there.
+        tiny = log_series + math.log(self.scale) < _LOG_TINY
+        x = np.where(tiny, np.exp(log_series) * self.scale, x)
         x = np.where(q <= 0.0, 0.0, np.where(q >= 1.0, np.inf, x))
         return float(x[0]) if scalar else x
 
     def moments(self) -> Moments:
         return Moments(self.shape * self.scale, self.shape * self.scale * self.scale)
+
+
+# Below exp(-700) ≈ 1e-304 a quantile is in (or next to) the subnormal range,
+# where the CDF cannot steer Newton; the lower-tail series is used directly.
+_LOG_TINY = -700.0
 
 
 def _pick_guess(dist, q, candidates, lo: float, hi: float):
@@ -816,6 +828,11 @@ class Beta(Distribution):
         guess = _pick_guess(self, safe_q, [body, lower, upper], lo=0.0, hi=1.0)
 
         x = _newton_ppf(self, q, guess, 0.0, 1.0)
+        # As for the gamma: once x^a / (a·B) puts the quantile below ~1e-304 the
+        # series is exact but underflows, so take it rather than Newton's guess.
+        with np.errstate(divide="ignore"):
+            log_lower = (np.log(safe_q) + math.log(self.a) + log_beta) / self.a
+        x = np.where(log_lower < _LOG_TINY, np.exp(log_lower), x)
         return np.where(q <= 0.0, 0.0, np.where(q >= 1.0, 1.0, x))
 
     def moments(self) -> Moments:
@@ -1328,6 +1345,74 @@ class Mixture(Distribution):
         return f"Mixture({parts})"
 
 
+class Compound(Distribution):
+    """The total of a random number of independent claims, S = X₁ + … + X_N:
+    a year's losses from a claim count and a claim-size curve.
+
+    ``claim_count * severity`` is *not* this. It multiplies one claim size by
+    the count, as if every claim in the year were the same size, and the tail
+    comes out far too heavy. Sampling here draws the counts, then one severity
+    per claim, and sums them per trial — vectorised, on the run's own seed.
+
+    Moments are exact (Wald). There is no closed-form CDF, so it works with
+    ``sampling="lhs"`` (the counts are stratified) and with ``correlation=``,
+    but not with a copula, which needs a quantile function.
+    """
+
+    _CHUNK = 1 << 21   # claims drawn per block, so memory stays bounded
+
+    def __init__(self, frequency: Distribution, severity: Distribution):
+        for name, dist in (("frequency", frequency), ("severity", severity)):
+            if not isinstance(dist, Distribution):
+                raise ArgumentTypeError(f"{name} must be a Distribution, got {type(dist).__name__}",
+                                        code="RP404", param=name)
+        if not frequency.discrete or frequency.support()[0] < 0.0:
+            raise InputError("frequency must be a claim-count distribution such as Poisson or NegativeBinomial",
+                             code="RP107", param="frequency")
+        self.frequency = frequency
+        self.severity = severity
+        self.discrete = severity.discrete
+
+    def _total(self, counts, rng):
+        np = _numpy()
+        n = np.asarray(counts, dtype=float)
+        if n.size and (not np.all(np.isfinite(n)) or n.min() < 0.0 or np.any(n != np.round(n))):
+            raise InputError("frequency produced a count that is not a whole number >= 0",
+                             code="RP107", param="frequency")
+        n = n.astype(np.int64)
+        out = np.zeros(n.size, dtype=float)
+        ends = np.cumsum(n)
+        start = 0
+        while start < n.size:
+            base = int(ends[start - 1]) if start else 0
+            stop = max(int(np.searchsorted(ends, base + self._CHUNK, side="right")), start + 1)
+            block = n[start:stop]
+            claims = int(block.sum())
+            if claims:
+                sizes = np.asarray(self.severity.sample(claims, rng), dtype=float)
+                owner = np.repeat(np.arange(block.size), block)
+                out[start:stop] = np.bincount(owner, weights=sizes, minlength=block.size)
+            start = stop
+        return out
+
+    def sample(self, n, rng):
+        return self._total(self.frequency.sample(n, rng), rng)
+
+    def sample_lhs(self, n, rng):
+        return self._total(self.frequency.sample_lhs(n, rng), rng)
+
+    def support(self):
+        lo, hi = self.severity.support()
+        return (0.0 if lo >= 0.0 else -math.inf, math.inf if hi > 0.0 else 0.0)
+
+    def moments(self) -> Moments:
+        f, s = self.frequency.moments(), self.severity.moments()
+        return Moments(f.mean * s.mean, f.mean * s.variance + f.variance * s.mean * s.mean)
+
+    def __repr__(self) -> str:
+        return f"Compound({self.frequency!r}, {self.severity!r})"
+
+
 class Truncated(Distribution):
     """A distribution conditioned on ``low <= X <= high`` — a severity curve
     that cannot exceed the policy limit, a rate that cannot go negative.
@@ -1603,7 +1688,16 @@ class Result:
         return self.percentile(level * 100.0)
 
     def tvar(self, level: float = 0.995) -> float:
-        """Tail VaR / Expected Shortfall — the mean of the losses beyond VaR.
+        """Tail VaR / Expected Shortfall at ``level``: the average of the worst
+        ``1 - level`` of outcomes.
+
+        Computed as ``ES = q + E[(X - q)+] / (1 - level)`` (Acerbi–Tasche), with
+        ``q`` the empirical ``level``-quantile. That is the mean of the worst
+        ``(1 - level)`` share of trials, counting a point mass at the quantile
+        only for the share of it that lies in the tail. The mean of every value
+        ``>= VaR`` (the conditional tail expectation) is the same number for a
+        continuous output but understates ES when VaR sits on an atom — a
+        1%-likely loss of 100 has ES at 95% of 20, not 100.
 
         Preferred to VaR for the same reason regulators prefer it: VaR tells you
         the threshold and nothing about how bad it gets past it.
@@ -1611,12 +1705,15 @@ class Result:
         _check_level(level)
         np = _numpy()
         ordered = self._ordered()
-        threshold = self.var(level)
-        start = int(np.searchsorted(ordered, threshold, side="left"))
-        tail = ordered[start:]
-        if tail.size == 0:  # pragma: no cover - only if every value is identical
-            return threshold
-        return float(tail.mean())
+        n = ordered.size
+        # Lower empirical quantile inf{x : F_n(x) >= level}.
+        k = min(max(int(math.ceil(n * level - 1e-9)) - 1, 0), n - 1)
+        q = float(ordered[k])
+        excess = ordered[k:] - q
+        es = q + float(excess.sum()) / (n * (1.0 - level))
+        # ES is at least every level-quantile; the interpolated VaR can sit a
+        # hair above the lower empirical quantile on a tiny sample.
+        return max(es, self.var(level))
 
     def cdf(self, x: float) -> float:
         """Empirical P(output <= x)."""

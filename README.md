@@ -15,18 +15,18 @@ pip install "open-riskpy[viz]"     # + Matplotlib: the charts
 ```
 
 ```python
-from riskpy.mc import Model, Poisson, LogNormal, Normal
+from riskpy.mc import Model, Compound, Poisson, LogNormal, Normal
 
 model = Model(
-    claim_count = Poisson(mean=140),
-    severity    = LogNormal.from_moments(mean=18_000, sd=42_000),
-    inflation   = Normal(mean=0.043, sd=0.012),
+    # 140 claims a year on average, each one sized independently
+    claims    = Compound(Poisson(mean=140), LogNormal.from_moments(mean=18_000, sd=42_000)),
+    inflation = Normal(mean=0.043, sd=0.012),
 )
-model.correlate("claim_count", "inflation", 0.3)
+model.correlate("claims", "inflation", 0.3)
 
 @model.formula
-def annual_loss(claim_count, severity, inflation):
-    return claim_count * severity * (1 + inflation)
+def annual_loss(claims, inflation):
+    return claims * (1 + inflation)
 
 result = model.run(200_000, seed=42, sampling="lhs")
 print(result.summary())          # mean, VaR, TVaR at every level
@@ -40,6 +40,14 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+> **v0.6.0** — an accuracy and edge-case pass over every module, with about forty fixes:
+> exact CDS accrual, `implied_vol` 460× tighter, Student-t, chi-squared and incomplete
+> gamma/beta accurate in the extreme tails, and `tvar` now expected shortfall. Also new:
+> `mc.Compound` for the sum of N claims. A regression notebook runs 52 real-use scenarios
+> in both versions: 0.5.2 fails 44 and 0.6.0 fails none. Some results change, and a few
+> inputs now raise instead of returning a misleading number; see
+> [RELEASE_NOTES.md](RELEASE_NOTES.md).
+>
 > **v0.5.2** — a pickled error keeps its value and notes across processes,
 > `riskpy-tools trace` no longer crashes on a broken trace file, and an overflowing
 > `aggregate_loss` says which argument to fix. No result changes.

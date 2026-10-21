@@ -56,6 +56,7 @@ interpolating development factors*, PCAS LXXI, for the inverse-power tail.
 from __future__ import annotations
 
 import math
+import numbers
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -87,8 +88,26 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+def _is_real(value: Any) -> bool:
+    """A real number — Python or NumPy scalar — but not a bool (``True`` is not a factor)."""
+    return isinstance(value, numbers.Real) and not isinstance(value, (bool, _np_bool_type()))
+
+
+def _is_int(value: Any) -> bool:
+    """An integer — Python or NumPy — but not a bool."""
+    return isinstance(value, numbers.Integral) and not isinstance(value, (bool, _np_bool_type()))
+
+
+def _np_bool_type():
+    try:
+        import numpy
+        return numpy.bool_
+    except ImportError:  # pragma: no cover
+        return bool
+
+
 def _check_level(level: float) -> float:
-    if not (isinstance(level, (int, float)) and 0.0 < level < 1.0):
+    if not (_is_real(level) and 0.0 < level < 1.0):
         raise InputError(
             f"level must be a probability in (0, 1), e.g. 0.995 — got {level!r}", code="RP110", param="level"
         )
@@ -96,7 +115,7 @@ def _check_level(level: float) -> float:
 
 
 def _check_tail(tail: float) -> float:
-    if not isinstance(tail, (int, float)) or not math.isfinite(tail) or tail <= 0.0:
+    if not _is_real(tail) or not math.isfinite(tail) or tail <= 0.0:
         raise InputError(
             f"tail must be a finite positive factor (1.0 means no tail), got {tail!r}. "
             f"Use fit_tail() to estimate one from the development factors.", code="RP102", param="tail"
@@ -169,7 +188,14 @@ def _pad_rows(data: Any, np) -> Any:
     if isinstance(data, Triangle):
         return data.cumulative
     if hasattr(data, "ndim"):  # ndarray, pandas DataFrame, …
-        arr = np.asarray(data, dtype=float)
+        try:
+            arr = np.asarray(data, dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise InputError(
+                f"data contains non-numeric values ({type(exc).__name__}: {exc}); a triangle "
+                "holds numbers, with NaN for the cells that have not happened yet",
+                code="RP502", param="data",
+            ) from exc
         if arr.ndim != 2:
             raise InputError(
                 f"data must be 2-D (origins × development periods), got {arr.ndim}-D", code="RP502", param="data"
@@ -463,7 +489,7 @@ def fit_tail(
     method = method.lower()
     if method not in ("exponential", "inverse_power"):
         raise InputError(f"method must be 'exponential' or 'inverse_power', got {method!r}", code="RP108", param="method")
-    if not isinstance(n_extrapolate, int) or n_extrapolate < 1:
+    if not _is_int(n_extrapolate) or n_extrapolate < 1:
         raise InputError(f"n_extrapolate must be a positive integer, got {n_extrapolate!r}", code="RP107", param="n_extrapolate")
     f = np.asarray(list(factors), dtype=float)
     if f.ndim != 1 or not np.all(np.isfinite(f)):
@@ -867,7 +893,7 @@ def chain_ladder(
         raise InputError(
             f"average must be 'volume', 'simple' or 'regression', got {average!r}", code="RP108", param="average"
         )
-    if n_periods is not None and (not isinstance(n_periods, int) or n_periods < 1):
+    if n_periods is not None and (not _is_int(n_periods) or n_periods < 1):
         raise InputError(f"n_periods must be a positive integer or None, got {n_periods!r}", code="RP107", param="n_periods")
 
     factors, _ = _development_factors(tri, average, n_periods, np)
@@ -1077,10 +1103,21 @@ def _resolve_cdf(tri: Triangle, factors: Optional[Sequence[float]], tail: float,
 
 def _per_origin(name: str, value: Any, n: int, np, non_negative: bool = True):
     """Broadcast a scalar, or check a length-``n`` sequence, of finite numbers."""
-    if isinstance(value, (int, float)):
+    if isinstance(value, (bool, np.bool_)):
+        raise InputError(f"{name} must be a number or one number per origin, got {value!r}", code="RP101", param=name)
+    if _is_real(value) or (np.ndim(value) == 0 and isinstance(value, np.generic)):
         arr = np.full(n, float(value))
     else:
-        arr = np.asarray(list(value), dtype=float)
+        try:
+            items = list(value)
+            if any(isinstance(v, (bool, np.bool_)) for v in items):
+                raise TypeError("bool")
+            arr = np.asarray(items, dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise InputError(
+                f"{name} must be a number or one number per origin ({n}), got {value!r}",
+                code="RP101", param=name,
+            ) from exc
         if arr.ndim != 1 or arr.size != n:
             raise InputError(
                 f"{name} must be a scalar or one value per origin ({n}), got "
@@ -1180,7 +1217,7 @@ def cape_cod(
     np = _numpy()
     tri = _as_triangle(triangle)
     tail = _check_tail(tail)
-    if not isinstance(decay, (int, float)) or not (0.0 < decay <= 1.0):
+    if not _is_real(decay) or not (0.0 < decay <= 1.0):
         raise InputError(f"decay must be in (0, 1] (1 = classic Cape Cod), got {decay!r}", code="RP100", param="decay")
     premium = _per_origin("premiums", premiums, tri.n_origin, np)
     cdf = _resolve_cdf(tri, factors, tail, np)
@@ -1372,7 +1409,9 @@ def bootstrap_chain_ladder(
     for large cells); ``"none"`` — parameter error only, which is what you
     compare to Mack's ``parameter_se``. A ``tail`` above 1 adds one final
     future cell per origin, ``Ĉ_last · (tail − 1)``, with process error like
-    the rest.
+    the rest. A perfectly proportional triangle fits with ``φ = 0``; it then
+    has no process noise and the process draw is skipped (every simulation is
+    the chain ladder projection).
 
     What people get wrong: quoting the bootstrap *mean* as the reserve. The
     point estimate is the chain ladder's; the bootstrap's job is the spread
@@ -1383,7 +1422,7 @@ def bootstrap_chain_ladder(
     np = _numpy()
     tri = _as_triangle(triangle)
     tail = _check_tail(tail)
-    if not isinstance(n, int) or n < 2:
+    if not _is_int(n) or n < 2:
         raise InputError(f"n must be an integer >= 2 (1000 is a sensible default), got {n!r}", code="RP107", param="n")
     process = process.lower() if isinstance(process, str) else process
     if process not in ("odp", "gamma", "none"):
@@ -1467,11 +1506,14 @@ def bootstrap_chain_ladder(
     # -- 4. process error around the projection ------------------------------------------
     simulated = means.copy()
     positive = means > 0.0
-    if process == "odp" and positive.any():
+    # A scale of exactly zero (a perfectly proportional triangle: every residual is
+    # zero) means no process noise at all — gamma(mean / 0, 0) would be NaN.
+    if process == "odp" and positive.any() and phi > 0.0:
         simulated[positive] = rng.gamma(means[positive] / phi, phi)
     elif process == "gamma" and positive.any():
         phi_gamma = float((((q_obs - m_obs) / m_obs) ** 2).sum() / dof)
-        simulated[positive] = rng.gamma(1.0 / phi_gamma, phi_gamma * means[positive])
+        if phi_gamma > 0.0:
+            simulated[positive] = rng.gamma(1.0 / phi_gamma, phi_gamma * means[positive])
 
     reserves = simulated.sum(axis=2)
     total = reserves.sum(axis=1)

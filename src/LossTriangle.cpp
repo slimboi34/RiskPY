@@ -2,6 +2,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <numeric>
+#include <string>
 
 void LossTriangle::add_origin_year(int year, const std::vector<double>& cumulative_payments) {
     if (year < 0) throw std::invalid_argument("Origin year cannot be negative");
@@ -53,11 +54,17 @@ std::vector<double> LossTriangle::get_development_factors() const {
         
         if (sum_curr > 0.0) {
             factors.push_back(sum_next / sum_curr);
-        } else if (sum_curr == 0.0 && sum_next == 0.0) {
+        } else if (sum_next == 0.0) {
+            // Nothing paid at either age: no development to project.
             factors.push_back(1.0);
         } else {
-            // If sum_curr is 0 but sum_next > 0, mathematically infinite. Protect against it.
-            factors.push_back(1.0);
+            // Zero at age d but positive at d+1: the age-to-age factor is infinite.
+            // Using 1.0 here silently dropped the development (reserving.chain_ladder
+            // raises RP502 for the same triangle).
+            throw std::invalid_argument(
+                "Development factor undefined: column " + std::to_string(d) +
+                " sums to zero but column " + std::to_string(d + 1) +
+                " is positive (start the triangle at the first non-zero age)");
         }
     }
     

@@ -39,7 +39,7 @@ std::vector<double> MonteCarloSimulator::simulate_life_portfolio(int policy_coun
     if (policy_count < 0) throw std::invalid_argument("Policy count cannot be negative");
     if (!(base_mortality_rate >= 0.0 && base_mortality_rate <= 1.0)) throw std::invalid_argument("Mortality probability must be between 0 and 1");
     if (!(shock_volatility >= 0.0) || !std::isfinite(shock_volatility)) throw std::invalid_argument("Shock volatility cannot be negative");
-    if (!(death_benefit >= 0.0)) throw std::invalid_argument("Death benefit cannot be negative");
+    if (!(death_benefit >= 0.0) || !std::isfinite(death_benefit)) throw std::invalid_argument("Death benefit must be finite and non-negative");
 
     std::vector<double> results(trials, 0.0);
     
@@ -68,6 +68,8 @@ std::vector<double> MonteCarloSimulator::simulate_economic_path(double initial_p
     if (!(initial_price > 0.0)) throw std::invalid_argument("Initial price must be strictly positive");
     if (!(volatility >= 0.0) || !std::isfinite(volatility)) throw std::invalid_argument("Volatility cannot be negative");
     if (time_steps <= 0) throw std::invalid_argument("Time steps must be strictly positive");
+    if (!std::isfinite(drift)) throw std::invalid_argument("Drift must be finite");
+    if (!std::isfinite(initial_price)) throw std::invalid_argument("Initial price must be finite");
 
     std::vector<double> results(trials, 0.0);
     std::mt19937 gen(seed == 0 ? std::random_device{}() : seed);
@@ -97,20 +99,34 @@ std::vector<double> MonteCarloSimulator::simulate_health_claims(double expected_
     std::vector<double> results(trials, 0.0);
     std::mt19937 gen(seed == 0 ? std::random_device{}() : seed);
     
-    // Convert (mean, dispersion) to Negative Binomial (r, p)
-    // p = mean / variance = 1 / (1 + mean * dispersion)
-    // r = 1 / dispersion
-    
-    double p = 1.0 / (1.0 + expected_frequency * dispersion);
-    double r = 1.0 / dispersion;
-    
-    std::negative_binomial_distribution<int> freq_dist(r, p);
+    // Negative binomial counts with mean m and variance m + d*m^2, drawn as the
+    // gamma-Poisson mixture: lambda_i ~ Gamma(shape = 1/d, scale = d*m), N_i ~ Poisson(lambda_i).
+    // std::negative_binomial_distribution<int> takes an integer k, so passing r = 1/d
+    // truncated it (d = 0.3 -> k = 3, d > 1 -> k = 0 and every count zero).
     std::gamma_distribution<double> sev_dist(severity_shape, severity_scale);
-    
+    const double mix_shape = 1.0 / dispersion;
+    const double mix_scale = dispersion * expected_frequency;
+    // A vanishing dispersion is the Poisson limit; 1/d would overflow the gamma shape.
+    const bool poisson_limit = !std::isfinite(mix_shape) || mix_shape > 1e12;
+    std::gamma_distribution<double> mix_dist(poisson_limit ? 1.0 : mix_shape,
+                                             mix_scale > 0.0 ? mix_scale : 1.0);
+    // Counts beyond this no longer fit in an int (or in memory as a loop).
+    const double max_count = 2e9;
+
     for(int i = 0; i < trials; ++i) {
-        int claims = freq_dist(gen);
+        double lambda = expected_frequency;
+        if (expected_frequency > 0.0 && !poisson_limit) lambda = mix_dist(gen);
+        if (!(lambda > 0.0)) { results[i] = 0.0; continue; }
+        if (lambda > 1e9) {
+            throw std::invalid_argument("Dispersion too large for this frequency: a gamma-mixed Poisson mean exceeded 1e9 claims");
+        }
+        std::poisson_distribution<long long> freq_dist(lambda);
+        long long claims = freq_dist(gen);
+        if (static_cast<double>(claims) > max_count) {
+            throw std::invalid_argument("Simulated claim count exceeds 2e9");
+        }
         double total_loss = 0.0;
-        for(int c = 0; c < claims; ++c) {
+        for(long long c = 0; c < claims; ++c) {
             total_loss += sev_dist(gen);
         }
         results[i] = total_loss;
@@ -120,8 +136,8 @@ std::vector<double> MonteCarloSimulator::simulate_health_claims(double expected_
 
 std::vector<double> MonteCarloSimulator::simulate_catastrophe_loss(double probability_of_event, double pareto_xm, double pareto_alpha) const {
     if (!(probability_of_event >= 0.0 && probability_of_event <= 1.0)) throw std::invalid_argument("Probability must be [0, 1]");
-    if (!(pareto_xm > 0.0)) throw std::invalid_argument("Pareto xm must be strictly positive");
-    if (!(pareto_alpha > 0.0)) throw std::invalid_argument("Pareto alpha must be strictly positive");
+    if (!(pareto_xm > 0.0) || !std::isfinite(pareto_xm)) throw std::invalid_argument("Pareto xm must be finite and strictly positive");
+    if (!(pareto_alpha > 0.0) || !std::isfinite(pareto_alpha)) throw std::invalid_argument("Pareto alpha must be finite and strictly positive");
 
     std::vector<double> results(trials, 0.0);
     std::mt19937 gen(seed == 0 ? std::random_device{}() : seed);

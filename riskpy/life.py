@@ -124,7 +124,9 @@ def _check_int(name: str, value: int, minimum: Optional[int] = None) -> int:
         raise InputError(f"{name} must be an integer, got {value!r}", code="RP107", param=name)
     if isinstance(value, numbers.Integral):
         out = int(value)
-    elif isinstance(value, float) and math.isfinite(value) and value.is_integer():
+    elif isinstance(value, numbers.Real) and math.isfinite(float(value)) and float(value).is_integer():
+        # Any real type with an integral value: 40.0, but also NumPy's float32
+        # (not a float subclass, unlike float64) and Fraction(40).
         out = int(value)
     else:
         raise InputError(
@@ -149,6 +151,44 @@ def _check_table(table: "LifeTable") -> "LifeTable":
     if not isinstance(table, LifeTable):
         raise ArgumentTypeError(f"table must be a LifeTable, got {type(table).__name__}", code="RP108", param="table", hint="Pass a riskpy.life.LifeTable, e.g. LifeTable.sult().")
     return table
+
+
+# Survivor columns are summed (curtate expectation, annuities) and multiplied
+# together (joint lives); a radix within 1e±300 keeps the sums of a few hundred
+# ages finite and the subnormal range, where l_x has only a few significant
+# bits left, out of reach of any realistic survival curve.
+_RADIX_RANGE = (1e-300, 1e300)
+
+
+def _check_radix(radix: float, name: str = "radix") -> float:
+    radix = _check_finite(name, radix)
+    if not (radix > 0.0):
+        raise InputError(f"{name} must be > 0, got {radix!r}", code="RP501", param="radix")
+    low, high = _RADIX_RANGE
+    if not (low <= radix <= high):
+        raise InputError(
+            f"{name} = {radix!r} is outside [{low:g}, {high:g}]: survivor columns this "
+            f"large overflow when summed, and this small lose their precision to "
+            f"subnormal rounding. Rescale it — the radix only sets units.",
+            code="RP501", param="radix", hint="Use a radix such as 100000 or 1; every probability is unchanged.",
+        )
+    return radix
+
+
+def _check_column(name: str, values) -> Sequence[float]:
+    """A sequence of numbers, not a string, scalar or None.
+
+    A string is iterable, so ``LifeTable("0.5")`` would otherwise be read one
+    character at a time, and a bare number or ``None`` would surface as a raw
+    ``TypeError`` from ``enumerate``.
+    """
+    if isinstance(values, (str, bytes)) or not hasattr(values, "__iter__"):
+        kind = "a string" if isinstance(values, (str, bytes)) else type(values).__name__
+        raise InputError(
+            f"{name} must be a sequence of numbers, one per age, got {kind} ({values!r})",
+            code="RP501", param=name, hint="Pass a list such as [0.01, 0.02, 1.0]; the last entry closes the table.",
+        )
+    return values
 
 
 # ---------------------------------------------------------------------------
@@ -217,11 +257,9 @@ class LifeTable:
 
     def __init__(self, qx: Sequence[float], start_age: int = 0, radix: float = 100_000.0):
         start_age = _check_int("start_age", start_age, minimum=0)
-        radix = _check_finite("radix", radix)
-        if not (radix > 0.0):
-            raise InputError(f"radix must be > 0, got {radix!r}", code="RP501", param="radix")
+        radix = _check_radix(radix)
 
-        rates = [_check_finite(f"q_{start_age + k}", q) for k, q in enumerate(qx)]
+        rates = [_check_finite(f"q_{start_age + k}", q) for k, q in enumerate(_check_column("qx", qx))]
         if not rates:
             raise InputError("qx is empty — a life table needs at least one age", code="RP501", param="qx")
         for k, q in enumerate(rates):
@@ -280,11 +318,12 @@ class LifeTable:
         implied ``q_x``), so ``lx(x)`` returns what you passed in.
         """
         start_age = _check_int("start_age", start_age, minimum=0)
-        values = [_check_finite(f"l_{start_age + k}", v) for k, v in enumerate(lx)]
+        values = [_check_finite(f"l_{start_age + k}", v) for k, v in enumerate(_check_column("lx", lx))]
         if len(values) < 2:
             raise InputError("lx needs at least two entries (a radix and a later age)", code="RP501", param="lx")
         if not (values[0] > 0.0):
             raise InputError(f"l_{start_age} (the radix) must be > 0, got {values[0]!r}", code="RP501", param="lx")
+        _check_radix(values[0], name=f"l_{start_age} (the radix)")
         for k in range(1, len(values)):
             if values[k] < 0.0:
                 raise InputError(f"l_{start_age + k} = {values[k]!r} is negative", code="RP501", param="lx")
@@ -302,9 +341,26 @@ class LifeTable:
             )
         values = values[: first_zero + 1]
 
-        rates = [1.0 - values[k + 1] / values[k] for k in range(len(values) - 1)]
-        table = cls(rates, start_age=start_age, radix=values[0])
+        # q = d/l rather than 1 − l'/l: the subtraction of a ratio rounds any
+        # survival below 1.1e-16 to q = 1 exactly, which would read as closing
+        # the table early and be rejected. A death rate is only 1 where the
+        # next l is 0; otherwise it is capped at the largest double below 1.
+        below_one = math.nextafter(1.0, 0.0)
+        rates = []
+        for k in range(len(values) - 1):
+            q = (values[k] - values[k + 1]) / values[k]
+            rates.append(min(q, below_one) if values[k + 1] > 0.0 else 1.0)
+        # Every check the constructor would make already holds (rates in
+        # [0, 1], closing exactly at the last age), and its survivor
+        # recursion would be thrown away: the caller's l_x are stored exactly.
+        # Re-running it would only risk a spurious underflow warning for a
+        # column that falls below 1e-308 of the radix through these capped q.
+        table = cls.__new__(cls)
+        table._start = start_age
+        table._radix = values[0]
+        table._q = rates
         table._l = values  # keep the caller's survivors exactly
+        table._omega = start_age + len(rates)
         return table
 
     @classmethod
@@ -363,11 +419,18 @@ class LifeTable:
             )
         start_age, max_age = _check_age_span(start_age, max_age)
 
+        # ∫ₓ^{x+1} B·c^s ds = B·c^x·(c − 1)/ln c, formed as the exponential of
+        # its logarithm: c**x overflows for a steep law or a long table (1.5 at
+        # age 1800, 1e10 at age 31), and once that integral passes ~745 the
+        # year's survival underflows anyway, so death is certain and q = 1 —
+        # which _close_generated then turns into an early, warned closure.
         log_c = math.log(c)
-        rates = [
-            1.0 - math.exp(-A - B * c ** x * (c - 1.0) / log_c)
-            for x in range(start_age, max_age)
-        ]
+        log_scale = math.log(B) + math.log((c - 1.0) / log_c)
+        rates = []
+        for x in range(start_age, max_age):
+            log_gompertz = log_scale + x * log_c
+            hazard = A + math.exp(log_gompertz) if log_gompertz < 709.0 else math.inf
+            rates.append(-math.expm1(-hazard))
         rates = _close_generated(rates, start_age, max_age)
         return cls(rates, start_age=start_age, radix=radix)
 
@@ -574,7 +637,8 @@ def nominal_rate(i: float, m: int) -> float:
     """``i^(m) = m·((1+i)^{1/m} − 1)``: nominal annual rate convertible ``m`` times a year."""
     i = _check_rate(i)
     m = _check_int("m", m, minimum=1)
-    return m * ((1.0 + i) ** (1.0 / m) - 1.0)
+    # (1+i)^{1/m} − 1 cancels to nothing for small i; expm1 of the log does not.
+    return m * math.expm1(math.log1p(i) / m)
 
 
 def effective_from_nominal(i_m: float, m: int) -> float:
@@ -592,13 +656,20 @@ def annuity_certain(i: float, n: int, due: bool = False) -> float:
 
     Immediate (the default) pays at the *end* of each year, due at the start;
     ``ä_n = (1+i)·a_n``. At ``i = 0`` both are simply ``n``.
+
+    Evaluated as ``−expm1(−n·ln(1+i))/i``: the textbook ``1 − vⁿ`` cancels as
+    ``i → 0`` and keeps only about ``16 + log10(i)`` digits (seven at
+    ``i = 1e-9``), while this form is accurate to rounding at every rate.
+    A negative rate near −1 over many years makes the value larger than a
+    double can hold; that raises ``InputError`` (RP304) rather than a bare
+    ``OverflowError``.
     """
     i = _check_rate(i)
     n = _check_int("n", n, minimum=0)
     if i == 0.0:
         return float(n)
-    v_n = (1.0 + i) ** (-n)
-    return (1.0 - v_n) / (i / (1.0 + i) if due else i)
+    value = -_expm1_checked(-n * math.log1p(i), "annuity_certain", i, n) / i
+    return value * (1.0 + i) if due else value
 
 
 def accumulated_annuity(i: float, n: int, due: bool = False) -> float:
@@ -607,8 +678,23 @@ def accumulated_annuity(i: float, n: int, due: bool = False) -> float:
     n = _check_int("n", n, minimum=0)
     if i == 0.0:
         return float(n)
-    growth = (1.0 + i) ** n
-    return (growth - 1.0) / (i / (1.0 + i) if due else i)
+    # expm1(n·ln(1+i)) rather than (1+i)^n − 1, for the same reason as annuity_certain.
+    value = _expm1_checked(n * math.log1p(i), "accumulated_annuity", i, n) / i
+    return value * (1.0 + i) if due else value
+
+
+def _expm1_checked(exponent: float, what: str, i: float, n: int) -> float:
+    """``expm1(exponent)``, raising a structured RP304 when the result overflows."""
+    try:
+        value = math.expm1(exponent)
+    except OverflowError:
+        value = math.inf
+    if math.isinf(value):
+        raise InputError(
+            f"{what}(i={i!r}, n={n}) overflows a double: the factor (1+i)^(±n) it needs is about e^{abs(exponent):.0f}",
+            code="RP304", param="n", hint="Use a shorter term or a rate further from -1 (or larger, for accumulation).",
+        )
+    return value
 
 
 def perpetuity(i: float, due: bool = False) -> float:
@@ -1177,11 +1263,14 @@ def joint_life_annuity_due(
     """
     ty, kx, ky, i, horizon = _joint_setup(table, x, y, i, table_y)
     v = 1.0 / (1.0 + i)
+    # Each column is divided by its own l before multiplying: l_x·l_y overflows
+    # once both radices pass 1e154, and the survival probabilities cannot.
+    lx0, ly0 = table._l[kx], ty._l[ky]
     total, disc = 0.0, 1.0
     for k in range(horizon):
-        total += disc * table._l[kx + k] * ty._l[ky + k]
+        total += disc * (table._l[kx + k] / lx0) * (ty._l[ky + k] / ly0)
         disc *= v
-    return total / (table._l[kx] * ty._l[ky])
+    return total
 
 
 def last_survivor_annuity_due(
@@ -1210,11 +1299,11 @@ def joint_life_insurance(
     """
     ty, kx, ky, i, horizon = _joint_setup(table, x, y, i, table_y)
     v = 1.0 / (1.0 + i)
-    scale = table._l[kx] * ty._l[ky]
+    lx0, ly0 = table._l[kx], ty._l[ky]   # per-life ratios, as in joint_life_annuity_due
     total, disc = 0.0, v
     alive = 1.0
     for k in range(horizon):
-        nxt = table._l[kx + k + 1] * ty._l[ky + k + 1] / scale
+        nxt = (table._l[kx + k + 1] / lx0) * (ty._l[ky + k + 1] / ly0)
         total += disc * (alive - nxt)
         alive = nxt
         disc *= v

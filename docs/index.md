@@ -20,18 +20,18 @@ solve. Rather than integrating, you feed the formula random inputs a few
 hundred thousand times and look at the distribution that comes out.
 
 ```python
-from riskpy.mc import Model, Poisson, LogNormal, Normal
+from riskpy.mc import Model, Compound, Poisson, LogNormal, Normal
 
 model = Model(
-    claim_count = Poisson(mean=140),
-    severity    = LogNormal.from_moments(mean=18_000, sd=42_000),
-    inflation   = Normal(mean=0.043, sd=0.012),
+    # 140 claims a year on average, each one sized independently
+    claims    = Compound(Poisson(mean=140), LogNormal.from_moments(mean=18_000, sd=42_000)),
+    inflation = Normal(mean=0.043, sd=0.012),
 )
-model.correlate("claim_count", "inflation", 0.3)     # dependence, if you have a view
+model.correlate("claims", "inflation", 0.3)     # dependence, if you have a view
 
 @model.formula
-def annual_loss(claim_count, severity, inflation):
-    return claim_count * severity * (1 + inflation)
+def annual_loss(claims, inflation):
+    return claims * (1 + inflation)
 
 result = model.run(200_000, seed=42, sampling="lhs")
 print(result.summary())

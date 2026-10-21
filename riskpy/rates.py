@@ -179,14 +179,21 @@ def discount_factor(rate: float, t: float, compounding: object = "continuous") -
     t = _check_non_negative("t", t)
     m = _periods_per_year(compounding)
     if m is None:
-        return math.exp(-rate * t)
-    base = 1.0 + rate / m
-    if base <= 0.0:
+        exponent = -rate * t
+    else:
+        base = 1.0 + rate / m
+        if base <= 0.0:
+            raise InputError(
+                f"rate {rate!r} compounded {m} times a year gives 1 + rate/m <= 0; "
+                f"no discount factor exists — the rate is below -{m * 100:.0f}%", code="RP104", param="rate", hint="Rates are decimals: 5% is 0.05."
+            )
+        exponent = -m * t * math.log1p(rate / m)
+    if exponent > 709.0:
         raise InputError(
-            f"rate {rate!r} compounded {m} times a year gives 1 + rate/m <= 0; "
-            f"no discount factor exists — the rate is below -{m * 100:.0f}%", code="RP104", param="rate", hint="Rates are decimals: 5% is 0.05."
+            f"discount factor at rate {rate!r} over {t!r} years is e^{exponent:.4g}, beyond what a double holds",
+            code="RP304", param="rate", hint="Rates are decimals (5% is 0.05) and t is in years; check both.",
         )
-    return base ** (-m * t)
+    return math.exp(exponent)
 
 
 def zero_rate(df: float, t: float, compounding: object = "continuous") -> float:
@@ -201,7 +208,9 @@ def zero_rate(df: float, t: float, compounding: object = "continuous") -> float:
     m = _periods_per_year(compounding)
     if m is None:
         return -math.log(df) / t
-    return m * (df ** (-1.0 / (m * t)) - 1.0)
+    # m·expm1(·) rather than m·(df^(-1/mt) - 1): with m in the millions the
+    # power is 1 + 1e-9 and the subtraction kept only seven digits.
+    return m * math.expm1(-math.log(df) / (m * t))
 
 
 def forward_rate(
@@ -581,9 +590,15 @@ class YieldCurve:
         """A new curve with every zero rate moved by ``bp`` basis points (parallel)."""
         bp = _check_finite("bp", bp)
         delta = bp / 10_000.0
-        return YieldCurve(
+        shifted = YieldCurve(
             self.times, [z + delta for z in self.zero_rates], self.interpolation, self.compounding
         )
+        if self._analytic is not None:
+            # Keep the formula: a shifted Nelson–Siegel curve is the formula plus
+            # delta at every t, not a flat-extrapolated sample of it.
+            base = self._analytic
+            shifted._analytic = lambda t: base(t) + delta
+        return shifted
 
     def points(
         self, grid: Optional[Sequence[float]] = None
@@ -835,8 +850,17 @@ def vasicek_zero_bond(r: float, t: float, T: float, kappa: float, theta: float, 
     tau = _check_horizon(t, T)
     if tau == 0.0:
         return 1.0
-    B = -math.expm1(-kappa * tau) / kappa
-    log_A = (B - tau) * (theta - sigma * sigma / (2.0 * kappa * kappa)) - sigma * sigma * B * B / (4.0 * kappa)
+    x = kappa * tau
+    B = -math.expm1(-x) / kappa
+    # The σ² part of ln A is −σ²/(2κ²)·[(B − τ) + κB²/2]. Each term inside the
+    # bracket is O(κτ²) and they cancel to O(κ²τ³), so for small κτ the
+    # bracket is taken from its series; written directly it returned a bond
+    # price of 1.45 at κ = 1e-10.
+    if x < 1e-3:
+        bracket_over_k2 = tau ** 3 * (-1.0 / 3.0 + x * (1.0 / 4.0 + x * (-7.0 / 60.0 + x / 24.0)))
+    else:
+        bracket_over_k2 = ((B - tau) + 0.5 * kappa * B * B) / (kappa * kappa)
+    log_A = (B - tau) * theta - 0.5 * sigma * sigma * bracket_over_k2
     return math.exp(log_A - B * r)
 
 
@@ -896,7 +920,9 @@ def vasicek_curve(
     r0 = _check_finite("r0", r0)
     grid = _DEFAULT_GRID if times is None else tuple(times)
     zeros = [-math.log(vasicek_zero_bond(r0, 0.0, T, kappa, theta, sigma)) / _check_positive("times", T) for T in grid]
-    return YieldCurve(grid, zeros, "linear", "continuous")
+    curve = YieldCurve(grid, zeros, "linear", "continuous")
+    curve._analytic = lambda t: r0 if t == 0.0 else -math.log(vasicek_zero_bond(r0, 0.0, t, kappa, theta, sigma)) / t
+    return curve
 
 
 def cir_curve(
@@ -906,7 +932,9 @@ def cir_curve(
     r0 = _check_non_negative("r0", r0)
     grid = _DEFAULT_GRID if times is None else tuple(times)
     zeros = [-math.log(cir_zero_bond(r0, 0.0, T, kappa, theta, sigma)) / _check_positive("times", T) for T in grid]
-    return YieldCurve(grid, zeros, "linear", "continuous")
+    curve = YieldCurve(grid, zeros, "linear", "continuous")
+    curve._analytic = lambda t: r0 if t == 0.0 else -math.log(cir_zero_bond(r0, 0.0, t, kappa, theta, sigma)) / t
+    return curve
 
 
 # ---------------------------------------------------------------------------

@@ -79,6 +79,10 @@ __all__ = [
 ]
 
 _SUPERVISORY_LEVEL = 0.999  # Basel's confidence level, fixed by the Accord.
+# Smallest PD the non-retail maturity adjustment is evaluated at. The pole of
+# (1 − 1.5·b) is at 2.93e-6 and K(PD) stops being increasing below ~9.9e-6 at
+# M = 5; 1e-5 clears both with a little room. See basel_irb_capital.
+_IRB_MIN_PD = 1e-5
 
 
 # ---------------------------------------------------------------------------
@@ -122,8 +126,15 @@ def _check_frequency(value: object, name: str = "frequency") -> int:
 
 
 def _check_count(value: object, name: str = "n") -> int:
-    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
-        if not (isinstance(value, numbers.Real) and float(value).is_integer()):
+    """A non-negative whole number of periods. ``3.0`` is accepted; ``True`` is not.
+
+    ``bool`` is an ``Integral`` (and ``float(True).is_integer()``), so it has to
+    be refused before either test or ``power(True)`` quietly means ``power(1)``.
+    """
+    if isinstance(value, bool):
+        raise InputError(f"{name} must be a whole number of periods, got {value!r}", code="RP107", param=name)
+    if not isinstance(value, numbers.Integral):
+        if not (isinstance(value, numbers.Real) and math.isfinite(float(value)) and float(value).is_integer()):
             raise InputError(f"{name} must be a whole number of periods, got {value!r}", code="RP107", param=name)
     n = int(value)
     if n < 0:
@@ -269,21 +280,33 @@ def merton(
     # Equity is a call on the assets. Delegating keeps one implementation of
     # Black-Scholes in the package, degenerate cases included.
     equity = black_scholes(S=assets, K=debt, T=T, r=r, sigma=sigma, kind="call")
-    debt_value = assets - equity
 
     moneyness = math.log(assets / debt)
-    if sigma == 0.0:
-        # Deterministic assets: default is a certainty or an impossibility.
+    vol = sigma * math.sqrt(T)
+    if vol == 0.0:
+        # Deterministic assets (or a volatility so small that σ√T underflows):
+        # default is a certainty or an impossibility.
         gap = moneyness + drift * T
         distance = math.inf if gap > 0.0 else (-math.inf if gap < 0.0 else 0.0)
         pd = 0.0 if gap > 0.0 else (1.0 if gap < 0.0 else 0.5)
+        # The risk-neutral payoff min(V·e^{rT}, D), discounted: the debt is
+        # riskless when the forward covers it and worth the assets when not.
+        log_ratio = min(moneyness + r * T, 0.0)
     else:
-        distance = (moneyness + (drift - 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
+        distance = (moneyness + (drift - 0.5 * sigma * sigma) * T) / vol
         pd = _special.norm_cdf(-distance)
+        log_ratio = _merton_log_debt_ratio(moneyness, r, T, sigma, vol)
 
-    # Continuously compounded yield on the risky debt, minus the risk-free rate.
-    # debt_value can only reach 0 if the assets do, which the validation forbids.
-    credit_spread = -math.log(debt_value / debt) / T - r
+    # The debt is priced directly, not as ``assets − equity``: that difference
+    # cancels catastrophically when the equity is nearly all of the firm (a
+    # huge σ√T) or nearly none of it, and went to zero or negative and crashed
+    # the logarithm. ``log_ratio`` is ln(B / (D·e^{−rT})), kept in log space so
+    # that a debt value too small to represent still has a finite yield.
+    debt_value = debt * math.exp(log_ratio - r * T)
+
+    # Continuously compounded yield on the risky debt, minus the risk-free rate:
+    # −ln(B/D)/T − r, which is −log_ratio/T once the e^{−rT} is taken out.
+    credit_spread = -log_ratio / T
 
     return MertonResult(
         distance_to_default=distance,
@@ -296,6 +319,51 @@ def merton(
         # present-value basis.
         leverage=debt * math.exp(-r * T) / assets,
     )
+
+
+def _log_norm_cdf(x: float) -> float:
+    """``ln Φ(x)`` without underflow, so a vanishing tail still has a logarithm.
+
+    ``erfc`` underflows near ``x = −37``; below ``−30`` the Mills-ratio
+    asymptotic series takes over, whose truncation error there is ~1e-14. For
+    positive ``x`` the complement keeps the digits that ``ln(1 − tiny)`` needs.
+    """
+    if x > 0.0:
+        return math.log1p(-_special.norm_cdf(-x))
+    if x > -30.0:
+        return math.log(_special.norm_cdf(x))
+    inv = 1.0 / (x * x)
+    series = 1.0 - inv * (1.0 - 3.0 * inv * (1.0 - 5.0 * inv * (1.0 - 7.0 * inv * (1.0 - 9.0 * inv))))
+    return -0.5 * x * x - math.log(-x) - 0.5 * math.log(2.0 * math.pi) + math.log(series)
+
+
+def _merton_log_debt_ratio(moneyness: float, r: float, T: float, sigma: float, vol: float) -> float:
+    """``ln(B / (D·e^{−rT})) = ln(N(d2) + k·N(−d1))`` with ``k = V·e^{rT}/D``.
+
+    The risky debt is ``B = D·e^{−rT}·N(d2) + V·N(−d1)``. Two regimes, two forms:
+
+    * when default is unlikely, the ratio is ``1 − p`` with ``p = N(−d2) − k·N(−d1)``
+      the put per unit of riskless debt, and ``log1p(−p)`` keeps the tiny
+      spread of a safe firm instead of rounding it to zero or below;
+    * when default is likely, ``p`` is close to 1 and both terms can underflow
+      (a σ√T of 100 makes them ~e^{−1250}), so the sum is taken in log space.
+
+    Every term is evaluated through ``_log_norm_cdf``, so neither ``k`` (which
+    overflows for a large ``rT``) nor the tails are ever formed on their own.
+    """
+    d1 = (moneyness + (r + 0.5 * sigma * sigma) * T) / vol
+    d2 = d1 - vol
+    log_k = moneyness + r * T
+    log_t1 = log_k + _log_norm_cdf(-d1)   # ln(k·N(−d1)); <= ln N(−d2) <= 0
+    log_t2 = _log_norm_cdf(-d2)           # ln N(−d2)
+    put = min(max(math.exp(log_t2) - math.exp(min(log_t1, 0.0)), 0.0), 1.0)
+    if put <= 0.5:
+        return math.log1p(-put)
+    a, b = _log_norm_cdf(d2), log_t1
+    hi, lo = (a, b) if a >= b else (b, a)
+    if hi == -math.inf:  # pragma: no cover - both terms beyond even log space
+        return -math.inf
+    return hi + math.log1p(math.exp(lo - hi))
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +383,13 @@ def _hazard_curve(hazard: HazardLike, name: str = "hazard") -> List[Tuple[float,
     if isinstance(hazard, numbers.Real) and not isinstance(hazard, bool):
         rate = _check_non_negative(name, hazard)
         return [(math.inf, rate)]
+    if isinstance(hazard, (str, bytes)):
+        # A string is iterable, so without this "0.02" would be read character
+        # by character and fail with a baffling message about the pair ('0',).
+        raise InputError(
+            f"{name} must be a number or a sequence of (time, rate) pairs, got the "
+            f"string {hazard!r} — pass 0.02, not \"0.02\"", code="RP101", param=name
+        )
 
     try:
         pairs = [tuple(item) for item in hazard]
@@ -383,8 +458,12 @@ def hazard_from_spread(spread: float, recovery: float) -> float:
     thumb survives contact with reality at all.
 
     Against the quarterly-premium :func:`cds_par_spread` it is an
-    approximation, accurate to better than 0.1% of the spread for hazards
-    under 5% and to about 1% at a hazard of 20%.
+    approximation whose error comes from discounting the premiums at discrete
+    dates: at ``r = 0`` it is exact, and at ``r = 3%`` the par spread sits
+    about 0.4% (relative) above ``h(1−R)`` for any hazard up to about 20%, so
+    a 120bp spread maps to a hazard of 200bp by the triangle against an exact
+    199.25bp. Higher rates and
+    rarer payments widen the gap roughly in proportion to ``r/frequency``.
 
     The one thing people get wrong: ``recovery``, not ``lgd``. A 40% recovery is
     ``0.4``, and the spread is divided by ``0.6``.
@@ -456,6 +535,41 @@ def _cds_schedule(maturity: float, frequency: int) -> List[float]:
     return [maturity - (periods - k) / frequency for k in range(1, periods + 1)]
 
 
+def _hazard_pieces(knots: Sequence[Tuple[float, float]], start: float, end: float):
+    """Split ``[start, end]`` at the hazard knots: ``(a, b, rate)`` with a constant rate on each."""
+    lower = 0.0
+    for knot, rate in knots:
+        a, b = max(lower, start), min(knot, end)
+        if b > a:
+            yield a, b, rate
+        if knot >= end:
+            break
+        lower = knot
+
+
+def _exp_moment0(x: float) -> float:
+    """``∫₀¹ e^{−x·t} dt = −expm1(−x)/x``, 1 at ``x = 0``."""
+    if x == 0.0:
+        return 1.0
+    return -math.expm1(-x) / x
+
+
+def _exp_moment1(x: float) -> float:
+    """``∫₀¹ t·e^{−x·t} dt = (1 − e^{−x}(1 + x))/x²``, ½ at ``x = 0``.
+
+    The closed form loses every digit to cancellation as ``x → 0``, so small
+    ``|x|`` uses the series ``Σ (−x)^k / (k!·(k + 2))``, which at ``|x| < 0.5``
+    has converged to double precision well inside 25 terms.
+    """
+    if abs(x) < 0.5:
+        total, term = 0.0, 1.0
+        for k in range(25):
+            total += term / (k + 2)
+            term *= -x / (k + 1)
+        return total
+    return (-math.expm1(-x) - x * math.exp(-x)) / (x * x)
+
+
 def cds_legs(
     hazard: HazardLike,
     recovery: float,
@@ -483,16 +597,20 @@ def cds_legs(
       no ACT/360 day counting, no business-day rolls, no holiday calendars);
     * a surviving premium is paid in full at the period end and discounted
       there;
-    * **default is assumed to happen at the midpoint of the period it falls
-      in**. The protection payment ``(1−R)`` and the accrued premium (half a
-      period) are both discounted to that midpoint.
+    * **default can happen at any instant**, and on default the protection
+      ``(1−R)`` and the premium accrued since the last payment date are paid
+      at that instant. Both are integrated **exactly** over the default
+      density — for a piecewise-constant hazard and a flat rate the integrals
+      have a closed form, split at any hazard knot inside a period.
 
-    The midpoint rule is the standard first-order fix for the fact that a
-    period is not a point. Paying protection at the period *end* instead would
-    understate the leg by roughly ``r·Δ/2``; assuming it at the *start* would
-    overstate it by the same. The midpoint is accurate to ``O(Δ²)`` and is what
-    makes the par spread reproduce the credit triangle ``h(1−R)`` to a fraction
-    of a basis point.
+    The exact integral replaces the common "default at the period midpoint"
+    shortcut, which is accurate to ``O(Δ²)`` only while ``h·Δ`` is small: it
+    is invisible at investment-grade hazards (a 5% hazard prices within a
+    hundredth of a basis point of the exact value) but at a distressed hazard
+    of 500% it understates the par spread by more than 10%, and at 5000% by a
+    factor of six. With ``r = 0`` the exact legs reproduce the credit triangle
+    ``h(1−R)`` identically, at every hazard and every frequency, because the
+    risky annuity is then exactly ``∫₀ᵀ S(u) du``.
 
     Not modelled: a term structure of interest rates (pass the flat equivalent),
     counterparty risk on the protection seller, and the standardised
@@ -508,20 +626,29 @@ def cds_legs(
     annuity = 0.0
     protection = 0.0
     start = 0.0
-    survival_start = 1.0
     for end in _cds_schedule(maturity, frequency):
         length = end - start
         survival_end = math.exp(-_cumulative_hazard(knots, end))
-        default_probability = survival_start - survival_end
-        middle = 0.5 * (start + end)
-        df_end = math.exp(-r * end)
-        df_mid = math.exp(-r * middle)
+        annuity += length * math.exp(-r * end) * survival_end   # paid in full if it survives
 
-        annuity += length * df_end * survival_end          # paid in full if it survives
-        annuity += 0.5 * length * df_mid * default_probability  # accrued if it does not
-        protection += (1.0 - recovery) * df_mid * default_probability
+        # Default inside the period, integrated exactly over each stretch of
+        # constant hazard [a, b]: with density h·S(a)·e^{−h(u−a)} and discount
+        # e^{−ru}, both legs reduce to the two moments of e^{−(h+r)τ} on
+        # [0, b − a], which _exp_moment0/_exp_moment1 evaluate without
+        # cancellation for any (h + r)(b − a), small, large or negative.
+        cumulative = _cumulative_hazard(knots, start)
+        for a, b, rate in _hazard_pieces(knots, start, end):
+            width = b - a
+            if rate > 0.0:
+                x = (rate + r) * width
+                weight = rate * math.exp(-cumulative - r * a) * width
+                m0 = _exp_moment0(x)
+                protection += (1.0 - recovery) * weight * m0
+                # Accrued premium (u − start) for a default at u = a + τ.
+                annuity += weight * ((a - start) * m0 + width * _exp_moment1(x))
+            cumulative += rate * width
 
-        start, survival_start = end, survival_end
+        start = end
 
     annuity *= notional
     protection *= notional
@@ -807,7 +934,13 @@ def basel_irb_capital(
     ``pd`` must be strictly positive because ``ln PD`` appears in ``b``.
     Supervisors additionally impose a 0.03% floor on PD for corporate and bank
     exposures; that floor is a policy choice, so it is documented here and not
-    applied for you.
+    applied for you. What *is* enforced, for the non-retail classes only, is a
+    mathematical minimum of ``1e-5`` (a tenth of a basis point, 30 times below
+    the floor): ``b`` grows as ``PD`` falls, ``1 − 1.5·b`` hits zero at
+    ``PD ≈ 2.93e-6`` and the adjustment flips sign beneath it, and between the
+    pole and about ``1e-5`` the capital requirement *increases* as the PD
+    falls. Neither is a capital number, so such a PD raises rather than
+    returning one.
 
     The one thing people get wrong: this is a *regulatory* capital number, not
     an economic one. It fixes the correlation by decree, the confidence level
@@ -839,6 +972,15 @@ def basel_irb_capital(
             raise InputError(
                 f"maturity must be between 1 and 5 years for {key} exposures "
                 f"(the Accord's floor and cap), got {maturity!r}", code="RP106", param="maturity", hint="Basel caps effective maturity to [1, 5] years for non-retail exposures; 2.5 is the foundation default."
+            )
+        if pd < _IRB_MIN_PD:
+            raise InputError(
+                f"pd = {pd!r} is below {_IRB_MIN_PD:g}, where the Basel maturity adjustment "
+                f"stops being meaningful for {key} exposures: its denominator 1 - 1.5·b "
+                f"reaches zero at PD ≈ 2.93e-6 and turns negative below it, and just "
+                f"above the pole capital *rises* as PD falls. The formula was calibrated "
+                f"for PDs at or above the supervisory floor.", code="RP100", param="pd",
+                hint="Floor the PD before calling: Basel II uses 0.0003 (3bp) for corporates and banks, Basel III 0.0005.",
             )
         b = (0.11852 - 0.05478 * math.log(pd)) ** 2
         adjustment = (1.0 + (maturity - 2.5) * b) / (1.0 - 1.5 * b)
@@ -916,7 +1058,11 @@ def credit_portfolio_loss(
             f"{n}, {len(lgd_list)} and {len(ead_list)}", code="RP109", param="lgds" if len(lgd_list) != n else "eads"
         )
 
-    if isinstance(rho, numbers.Real) and not isinstance(rho, bool):
+    if isinstance(rho, bool):
+        raise InputError(f"rho must be an asset correlation in [0, 1], got {rho!r}", code="RP103", param="rho")
+    if isinstance(rho, (numbers.Real, str, bytes)) or getattr(rho, "ndim", None) == 0:
+        # A 0-d array (np.array(0.1)) is a scalar that is not a numbers.Real
+        # and cannot be iterated; a string is iterable and must not be.
         rho_list = [_check_probability("rho", rho)] * n
     else:
         rho_list = [_check_probability(f"rho[{i}]", v) for i, v in enumerate(rho)]
@@ -948,8 +1094,7 @@ def credit_portfolio_loss(
         size = min(block, trials - start)
         z = rng.standard_normal(size)
         shocks = rng.standard_normal((size, n))
-        assets = systematic_weight * shocks + idiosyncratic_weight * shocks
-        # Recompute properly: the systematic term is common across the row.
+        # The systematic term is common across the row, the shock is per name.
         assets = systematic_weight * z[:, None] + idiosyncratic_weight * shocks
         defaulted = assets < thresholds
         losses[start:start + size] = defaulted.astype(float) @ severity
@@ -992,7 +1137,9 @@ class TransitionMatrix:
     column.
 
     Validated on construction — square, entries in ``[0, 1]``, every row summing
-    to 1 within ``1e-8``, and the default row exactly ``(0, …, 0, 1)``. A matrix
+    to 1 within ``1e-8``, and the default row ``(0, …, 0, 1)`` within ``1e-12``
+    — and then made exact: rows are renormalised and the default row snapped to
+    the unit vector, so that tolerance cannot compound through :meth:`power`. A matrix
     that fails any of these is not a Markov chain, and finding that out after a
     ten-year projection is worse than useless.
 
@@ -1048,8 +1195,44 @@ class TransitionMatrix:
                 f"an issuer that has defaulted does not migrate back", code="RP504", param="matrix"
             )
 
+        # Accepted within tolerance, then made exact. A row that sums to
+        # 1 + 5e-9 passes the check above, but P^n carries that excess to the
+        # power n — (1 + 5e-9)^2000 is a 1e-5 leak — so rows off by more than
+        # rounding noise are renormalised, and the default row is snapped to the
+        # exact unit vector so "D" absorbs exactly rather than to 1e-12.
+        noise = 4.0 * n * 2.0 ** -52
+        for i, row in enumerate(rows[:-1]):
+            total = math.fsum(row)
+            if abs(total - 1.0) > noise:
+                rows[i] = [value / total for value in row]
+        rows[-1] = [0.0] * (n - 1) + [1.0]
+
         self._matrix: Tuple[Tuple[float, ...], ...] = tuple(tuple(row) for row in rows)
         self._ratings: Tuple[str, ...] = tuple(labels)
+
+    @classmethod
+    def _from_product(cls, rows: List[List[float]], ratings: Tuple[str, ...]) -> "TransitionMatrix":
+        """Wrap a matrix computed *from* a valid one, without re-validating it.
+
+        A product of stochastic matrices is stochastic, but only up to
+        rounding: after a few thousand periods an absorbed default column
+        reads ``1.0000000000000002`` and the public constructor — rightly
+        strict about user input — would reject the package's own arithmetic.
+        Entries are clamped to ``[0, 1]`` and a row is renormalised only if
+        rounding has moved its sum by more than ``1e-12``, which in practice
+        never happens because ``_matmul`` accumulates with ``math.fsum``.
+        """
+        out = []
+        for row in rows:
+            row = [min(max(value, 0.0), 1.0) for value in row]
+            total = math.fsum(row)
+            if abs(total - 1.0) > 1e-12 and total > 0.0:
+                row = [value / total for value in row]
+            out.append(tuple(row))
+        matrix = cls.__new__(cls)
+        matrix._matrix = tuple(out)
+        matrix._ratings = tuple(ratings)
+        return matrix
 
     # -- accessors ----------------------------------------------------------
 
@@ -1068,8 +1251,10 @@ class TransitionMatrix:
         return len(self._ratings)
 
     def _index(self, rating: str) -> int:
+        # Labels were stored as str(label), so look up the same way: a matrix
+        # built with ratings [1, 2, "D"] answers to probability(1, "D").
         try:
-            return self._ratings.index(rating)
+            return self._ratings.index(str(rating))
         except ValueError:
             raise InputError(
                 f"unknown rating {rating!r}; this matrix has {', '.join(self._ratings)}", code="RP108", param="rating"
@@ -1105,7 +1290,7 @@ class TransitionMatrix:
             n >>= 1
             if n:
                 base = _matmul(base, base)
-        return TransitionMatrix(result, self._ratings)
+        return TransitionMatrix._from_product(result, self._ratings)
 
     # -- default probabilities ---------------------------------------------
 
@@ -1249,8 +1434,8 @@ def _verification_checks():
     )
 
     # -- CDS: the credit triangle --------------------------------------------
-    # With r = 0 the discounting cancels and the only error left is the
-    # trapezium rule on the risky annuity, which is O(dt^2 h^2).
+    # With r = 0 the exactly integrated legs give h(1-R) identically: the
+    # risky annuity is then exactly the integral of the survival curve.
     hazard, recovery = 0.01, 0.4
     checks.append(
         ("CDS par spread = credit triangle h(1-R)",

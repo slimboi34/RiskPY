@@ -2,6 +2,8 @@
 #include <cmath>
 #include <stdexcept>
 #include <utility>
+#include <algorithm>
+#include <string>
 
 namespace {
 
@@ -187,58 +189,120 @@ FourierTransform::compound_poisson_pmf(const std::vector<double>& severity_pmf,
     // For a true PMF, |φ_X(t)| ≤ 1 ⇒ Re(λ(φ−1)) ≤ 0 ⇒ exp is stable (no overflow).
     const double inv_sev = 1.0 / sev_sum;
 
+    // Severity moments in grid units; they size the grid and check it afterwards.
+    double sev_mean = 0.0, sev_m2 = 0.0;
+    std::size_t support = 0;  // index of the last non-zero severity point
+    for (std::size_t i = 0; i < severity_pmf.size(); ++i) {
+        const double p = severity_pmf[i] * inv_sev;
+        if (p > 0.0) support = i;
+        sev_mean += static_cast<double>(i) * p;
+        sev_m2 += static_cast<double>(i) * static_cast<double>(i) * p;
+    }
+    const double lam = expected_frequency;
+    const double target_mean = lam * sev_mean;
+
+    // Largest grid we will allocate (16M points, ~400 MB of work arrays).
+    const std::size_t max_grid = static_cast<std::size_t>(1) << 24;
+
     std::size_t n;
-    if (grid_size == 0) {
-        n = next_power_of_two(severity_pmf.size() * 2);
-        if (n < 16) n = 16;
+    const bool auto_grid = (grid_size == 0);
+    if (auto_grid) {
+        // The aggregate lives on [0, support * N]. Size the grid from the claim count
+        // (N <= lambda + 10 sqrt(lambda) + 10 essentially surely) and from the aggregate
+        // moments, whichever is smaller; a grid that is still too small (circular
+        // wrap-around) is detected below and doubled.
+        const double n_max = lam + 10.0 * std::sqrt(lam) + 10.0;
+        const double by_support = static_cast<double>(support) * n_max + 1.0;
+        const double by_moments = target_mean + 12.0 * std::sqrt(lam * sev_m2)
+                                  + 2.0 * static_cast<double>(support) + 16.0;
+        double want = std::min(by_support, by_moments);
+        want = std::max(want, 2.0 * static_cast<double>(severity_pmf.size()));
+        want = std::max(want, 16.0);
+        if (!(want <= static_cast<double>(max_grid))) {
+            n = max_grid;
+        } else {
+            n = next_power_of_two(static_cast<std::size_t>(std::ceil(want)));
+        }
+        if (n < severity_pmf.size()) {
+            throw std::invalid_argument("severity_pmf is longer than the largest supported FFT grid (2^24)");
+        }
     } else {
         if (!is_power_of_two(grid_size)) {
             throw std::invalid_argument("grid_size must be a power of 2 (or 0 for auto)");
         }
         n = static_cast<std::size_t>(grid_size);
+        if (n > max_grid) {
+            throw std::invalid_argument("grid_size must be at most 2^24 (16777216)");
+        }
         if (n < severity_pmf.size()) {
             throw std::invalid_argument("grid_size must be >= severity_pmf length");
         }
     }
 
-    std::vector<double> re(n, 0.0), im(n, 0.0);
-    for (std::size_t i = 0; i < severity_pmf.size(); ++i) {
-        re[i] = severity_pmf[i] * inv_sev;
-    }
-
-    fft_inplace(re, im, false);
-
-    // Ŝ(t) = exp(λ (X̂(t) − 1))
-    for (std::size_t i = 0; i < n; ++i) {
-        const double xr = re[i] - 1.0;
-        const double xi = im[i];
-        // Clamp real exponent for pathological float noise (should be ≤ 0 for valid PMFs)
-        double mag = expected_frequency * xr;
-        if (mag > 0.0) mag = 0.0;
-        if (mag < -700.0) mag = -700.0;  // underflows to ~0, avoids denorm churn
-        const double phase = expected_frequency * xi;
-        const double scale = std::exp(mag);
-        re[i] = scale * std::cos(phase);
-        im[i] = scale * std::sin(phase);
-    }
-
-    fft_inplace(re, im, true);
-    const double inv_n = 1.0 / static_cast<double>(n);
-    std::vector<double> pmf(n);
-    double mass = 0.0;
-    for (std::size_t i = 0; i < n; ++i) {
-        // Clip tiny negative round-off from floating point
-        double p = re[i] * inv_n;
-        if (p < 0.0) p = 0.0;
-        pmf[i] = p;
-        mass += p;
-    }
-    // Renormalize residual FFT mass error so callers can treat the result as a PMF
-    if (mass > 0.0 && std::isfinite(mass)) {
-        const double inv_mass = 1.0 / mass;
-        for (double& p : pmf) {
-            p *= inv_mass;
+    std::vector<double> pmf;
+    for (;;) {
+        std::vector<double> re(n, 0.0), im(n, 0.0);
+        for (std::size_t i = 0; i < severity_pmf.size(); ++i) {
+            re[i] = severity_pmf[i] * inv_sev;
         }
+
+        fft_inplace(re, im, false);
+
+        // Ŝ(t) = exp(λ (X̂(t) − 1))
+        for (std::size_t i = 0; i < n; ++i) {
+            const double xr = re[i] - 1.0;
+            const double xi = im[i];
+            // Clamp real exponent for pathological float noise (should be ≤ 0 for valid PMFs)
+            double mag = lam * xr;
+            if (mag > 0.0) mag = 0.0;
+            if (mag < -700.0) mag = -700.0;  // underflows to ~0, avoids denorm churn
+            const double phase = lam * xi;
+            const double scale = std::exp(mag);
+            re[i] = scale * std::cos(phase);
+            im[i] = scale * std::sin(phase);
+        }
+
+        fft_inplace(re, im, true);
+        const double inv_n = 1.0 / static_cast<double>(n);
+
+        // Circular convolution folds any aggregate mass beyond the grid back onto the
+        // start: total mass is kept, but the mean drops. Compare the raw mean with λ·E[X].
+        double raw_mean = 0.0;
+        for (std::size_t i = 0; i < n; ++i) raw_mean += static_cast<double>(i) * re[i] * inv_n;
+        const double mean_err = std::fabs(raw_mean - target_mean);
+        const double noise = 1e-9 * std::max(target_mean, 1.0) + 1e-12 * static_cast<double>(n);
+        const bool wrapped = mean_err > noise;
+        if (wrapped) {
+            if (auto_grid && n < max_grid) {
+                n <<= 1;
+                continue;
+            }
+            // An explicit grid keeps the caller's choice unless the fold is material.
+            if (auto_grid || mean_err > 1e-3 * std::max(target_mean, 1.0)) {
+                throw std::invalid_argument(
+                    "FFT grid too small: aggregate mass wrapped around the grid (mean " +
+                    std::to_string(raw_mean) + " vs lambda*E[X] = " + std::to_string(target_mean) +
+                    "); pass a larger power-of-two grid_size (max 2^24) or 0 for auto");
+            }
+        }
+
+        pmf.assign(n, 0.0);
+        double mass = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            // Clip tiny negative round-off from floating point
+            double p = re[i] * inv_n;
+            if (p < 0.0) p = 0.0;
+            pmf[i] = p;
+            mass += p;
+        }
+        // Renormalize residual FFT mass error so callers can treat the result as a PMF
+        if (mass > 0.0 && std::isfinite(mass)) {
+            const double inv_mass = 1.0 / mass;
+            for (double& p : pmf) {
+                p *= inv_mass;
+            }
+        }
+        break;
     }
     return pmf;
 }

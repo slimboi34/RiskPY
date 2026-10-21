@@ -3,20 +3,20 @@
 #include <stdexcept>
 
 double ActuarialMath::present_value(double rate, int periods, double payment) {
-    if (rate <= -1.0) throw std::invalid_argument("Rate cannot be <= -1.0");
+    if (!(rate > -1.0) || !std::isfinite(rate)) throw std::invalid_argument("Rate must be finite and > -1.0");
     if (rate == 0.0) return payment * periods;
     return payment * ((1.0 - std::pow(1.0 + rate, -periods)) / rate);
 }
 
 double ActuarialMath::future_value(double rate, int periods, double payment) {
-    if (rate <= -1.0) throw std::invalid_argument("Rate cannot be <= -1.0");
+    if (!(rate > -1.0) || !std::isfinite(rate)) throw std::invalid_argument("Rate must be finite and > -1.0");
     if (rate == 0.0) return payment * periods;
     return payment * ((std::pow(1.0 + rate, periods) - 1.0) / rate);
 }
 
 double ActuarialMath::calculate_loss_ratio(double incurred_losses, double earned_premium) {
-    if (earned_premium <= 0.0) throw std::invalid_argument("Earned premium must be strictly positive");
-    if (incurred_losses < 0.0) throw std::invalid_argument("Incurred losses cannot be negative");
+    if (!(earned_premium > 0.0) || !std::isfinite(earned_premium)) throw std::invalid_argument("Earned premium must be finite and strictly positive");
+    if (!(incurred_losses >= 0.0) || !std::isfinite(incurred_losses)) throw std::invalid_argument("Incurred losses must be finite and non-negative");
     return incurred_losses / earned_premium;
 }
 

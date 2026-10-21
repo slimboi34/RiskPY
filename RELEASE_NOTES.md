@@ -1,3 +1,141 @@
+# RiskPY v0.6.0 — Release Notes
+
+**Release date:** 2026-10-21  
+**Type:** Minor release — accuracy and edge-case fixes, `mc.Compound`, and a few deliberate behaviour changes  
+**Install:** `pip install -U open-riskpy`
+
+---
+
+## TL;DR
+
+A stress-testing pass on every module, checked against SciPy, mpmath (where SciPy is itself
+wrong) and closed forms, found about forty bugs: wrong answers in extreme but legal inputs,
+silent NaNs, hangs, and a few everyday numbers that were slightly off. All of them are fixed.
+A new notebook, `benchmarks/user_workflows/regression.ipynb`, runs 52 real-use scenarios in
+both versions. 0.5.2 fails 44 of them and 0.6.0 fails none. On 625 ordinary inputs, results
+match 0.5.2 to about 1e-14, apart from the changes listed below.
+
+`riskpy.mc` gains `Compound(frequency, severity)`, the sum of N independent claims. The
+headline example in the README and docs used `claim_count * severity`. That multiplies a
+single claim size by the count, and for the documented book it put the 1-in-200 loss at
+34 million instead of 4.5 million. The examples now use `Compound`.
+
+---
+
+## Results that change
+
+- **`cds_par_spread`**: protection and premium accrual are now integrated exactly. Everyday
+  spreads move by up to about 3e-5. Extreme hazard and recovery inputs were off by as much
+  as 84%.
+- **`implied_vol`** is about 460× closer to the true volatility on ordinary prices, and it
+  now converges for deep in- and out-of-the-money options. Across a smile with strikes from
+  25 to 400, 23 of 41 strikes used to be off by more than 1e-6.
+- **`Result.tvar` and the `aggregate_loss` tool's `tvar_0.995`** are now expected shortfall
+  (Acerbi–Tasche). This equals "mean beyond VaR" when the distribution has no atom at the VaR,
+  and stays correct when it does, for example when there are many zero-loss years.
+- **Negative-binomial claim counts in the C++ health simulation** now come from a true
+  gamma–Poisson mixture.
+- **`ExposureRating` lognormal curves** now use the exact loss elimination ratio.
+
+## Now raise instead of returning a misleading number
+
+- `implied_vol` raises **RP301** or **RP302** when the price cannot pin down a volatility (at
+  the intrinsic floor, or when vega is too small to resolve it), instead of returning an
+  arbitrary sigma.
+- The Basel IRB formula raises **RP100** for non-retail exposures with PD below 1e-5, where
+  the formula is outside its calibrated range. Retail classes are unchanged.
+- Calculators whose result overflows raise **RP304**. Previously they returned `inf`, or
+  `null` through the tools. This covers discount factors, annuities and bond analytics with
+  huge inputs.
+- `LossTriangle` raises an error for a development column of zeros followed by a positive
+  one, instead of dividing by zero.
+
+## Fixed: numerics
+
+- **Special functions:**
+  - The incomplete gamma and beta functions use Stirling-form prefactors, and their
+    iteration caps grow with √a. Large shapes no longer lose digits or run out of iterations.
+  - `beta_function` keeps the sign of the gamma functions.
+  - `trigamma` handles tiny arguments.
+- **Student-t:**
+  - `t_ppf` is solved in log space with a separate central branch. It is accurate just off
+    the median, in the extreme tails, and for huge degrees of freedom, and it returns ±inf
+    only when the quantile is beyond double range.
+  - `t_cdf` uses Hill's expansion for df ≥ 1e4.
+- **Chi-squared and normal quantiles:**
+  - `chi2_ppf` uses log-space root finding with a Wilson–Hilferty bracket. It is accurate in
+    both tails, down to subnormal quantiles, and faster than 0.5.2.
+  - `norm_ppf` adds a Halley refinement step and an asymptotic branch for p < 1e-300.
+- **Rates:**
+  - `discount_factor` and `zero_rate` stay exact at very high compounding frequencies,
+    through `log1p` and `expm1`.
+  - `vasicek_zero_bond` uses a series expansion when κτ is small, so it stays continuous as
+    κ → 0.
+  - `YieldCurve.shift`, `vasicek_curve` and `cir_curve` keep their analytic form.
+- **Options:**
+  - `norm_cdf` uses `erfc` in the tails.
+  - `black_scholes` never returns a negative price.
+  - The Greeks at sigma = 0 use the deterministic forward.
+  - `heston_price` returns intrinsic value at T = 0.
+- **Credit:** the Merton debt value is computed directly with a log-space normal CDF, so it
+  is accurate for very safe firms.
+- **Life:**
+  - Annuities use `expm1` forms, so i → 0 is exact.
+  - Gompertz and Makeham survival are computed in log space.
+  - `TransitionMatrix` powers renormalise their rows.
+  - `from_lx` is fixed.
+- **Monte Carlo and reserving:**
+  - Gamma and Beta quantiles stay monotone for tiny shapes.
+  - The ODP bootstrap with φ = 0 skips process noise instead of producing NaN.
+- **C++ core:**
+  - The FFT grid is sized from λ, with wrap-around detection and a 2^24 cap.
+  - NaN-safe input checks throughout.
+  - `simulate_*` releases the GIL, so other Python threads keep running during a long
+    simulation.
+
+## Fixed: agent tools and CLI
+
+- Whole-number floats such as `trials: 2000.0` from JSON are accepted where an integer is
+  expected.
+- `bootstrap_yield_curve` bounds the frequency × maturity work, so it raises RP405 instead
+  of hanging.
+- `convert_rate` rejects absurd compounding strings with RP405, and non-ASCII digits with
+  RP108.
+- `verify` de-duplicates its module list and rejects an empty one (RP111).
+- `trace` rejects a negative limit.
+- The trace file survives lone surrogates in tool names and arguments.
+- `riskpy-tools trace --json` emits strict JSON.
+- The CLI reports pathological JSON (very deep or very long) as RP406 instead of a
+  traceback.
+- Validation is tightened in credit, life, mc and reserving:
+  - bools are rejected where numbers are expected;
+  - NumPy scalars and 0-d arrays are accepted;
+  - a radix must lie in [1e-300, 1e300];
+  - a DataFrame triangle containing strings raises RP502.
+
+## Added
+
+- `riskpy.mc.Compound(frequency, severity)`:
+  - It is vectorised, uses the run's seed, and stratifies the counts under
+    `sampling="lhs"`.
+  - It works with `correlation=` and has exact (Wald) moments.
+  - It matches the C++ `simulate_aggregate_loss` to within Monte Carlo error.
+- Stress test suites: `tests/test_stress_numerics.py`, `test_stress_credit_life.py`,
+  `test_stress_core_reserving.py`, `test_stress_agent_surface.py` and
+  `test_user_workflows.py`.
+- `benchmarks/user_workflows/`: the regression notebook against the published 0.5.2, its
+  52 scenarios with independent reference values, and the script that rebuilds it.
+
+## Speed
+
+- `black_scholes` takes 0.49 µs, against 0.40 µs in 0.5.2.
+- `chi2_ppf` is faster than in 0.5.2.
+- `cds_par_spread` takes about 30 µs, against 6 µs, because it now integrates exactly.
+- `implied_vol` takes about 22 µs, against 13 µs, because of its tighter stopping rule and
+  identifiability check.
+
+---
+
 # RiskPY v0.5.2 — Release Notes
 
 **Release date:** 2026-10-17  

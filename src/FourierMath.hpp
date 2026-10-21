@@ -22,7 +22,9 @@ public:
     //   Ŝ(t) = exp(λ (X̂(t) − 1))
     // severity_pmf is a discrete severity mass on {0, 1, …, n-1}; auto-normalized
     // to a PMF if total mass > 0. Output is renormalized to sum ≈ 1.
-    // grid_size must be a power of 2 (or 0 to auto-select next power of 2 ≥ 2 * severity size).
+    // grid_size must be a power of 2 up to 2^24, or 0 to size the grid from λ and the severity
+    // (support and moments) so the aggregate does not wrap around. A grid on which a material
+    // share of the aggregate wraps around raises std::invalid_argument.
     static std::vector<double>
     compound_poisson_pmf(const std::vector<double>& severity_pmf,
                          double expected_frequency,

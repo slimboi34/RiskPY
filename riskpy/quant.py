@@ -23,6 +23,7 @@ import cmath
 import math
 
 from . import _special
+from ._validate import _check_finite, _check_non_negative, _check_positive
 from .errors import ConvergenceError, InputError
 from .mc import _numpy
 from dataclasses import dataclass
@@ -45,11 +46,14 @@ __all__ = [
 
 _SQRT_2 = math.sqrt(2.0)
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
+_EPS = 2.220446049250313e-16
 
 
 def norm_cdf(x: float) -> float:
-    """Standard normal CDF, via ``math.erf`` — no SciPy, full double precision."""
-    return 0.5 * (1.0 + math.erf(x / _SQRT_2))
+    """Standard normal CDF, via ``math.erfc`` — no SciPy, full relative precision
+    in the lower tail (``erf`` rounds to -1 below x ≈ -8, which priced a far
+    out-of-the-money put at exactly 0 and a 3×-strike call 8% wrong)."""
+    return 0.5 * math.erfc(-x / _SQRT_2)
 
 
 def norm_pdf(x: float) -> float:
@@ -97,6 +101,16 @@ def black_scholes(
     value.
     """
     kind = _check_option(kind)
+    try:
+        finite = (math.isfinite(S) and math.isfinite(K) and math.isfinite(T) and math.isfinite(r)
+                  and math.isfinite(sigma) and math.isfinite(q))
+    except TypeError:
+        finite = False
+    if not finite:
+        # The slow path names the bad argument; the fast one above keeps a pricing loop at
+        # the cost of six isfinite calls.
+        S, K, T, r, sigma, q = (_check_finite(name, value) for name, value in
+                                (("S", S), ("K", K), ("T", T), ("r", r), ("sigma", sigma), ("q", q)))
     if S <= 0 or K <= 0:
         raise InputError(f"S and K must be positive, got S={S!r} K={K!r}", code="RP102",
                          param="S" if not S > 0 else "K",
@@ -118,9 +132,11 @@ def black_scholes(
     discount_s = S * math.exp(-q * T)
     discount_k = K * math.exp(-r * T)
 
+    # Far out of the money the two terms are nearly equal and rounding can
+    # leave a difference of -1e-323; an option is never worth less than 0.
     if kind == "call":
-        return discount_s * norm_cdf(d1) - discount_k * norm_cdf(d2)
-    return discount_k * norm_cdf(-d2) - discount_s * norm_cdf(-d1)
+        return max(discount_s * norm_cdf(d1) - discount_k * norm_cdf(d2), 0.0)
+    return max(discount_k * norm_cdf(-d2) - discount_s * norm_cdf(-d1), 0.0)
 
 
 @dataclass(frozen=True)
@@ -161,7 +177,7 @@ def greeks(
     kind = _check_option(kind)
     price = black_scholes(S, K, T, r, sigma, q, kind)
 
-    if T == 0 or sigma == 0:
+    if T == 0:
         # Every Greek is either zero or undefined at the kink; report zeros
         # rather than raising, so a portfolio sweep containing an expiring
         # option does not blow up.
@@ -171,6 +187,25 @@ def greeks(
         elif kind == "put" and S < K:
             intrinsic_delta = -1.0
         return Greeks(price=price, delta=intrinsic_delta, gamma=0.0, vega=0.0, theta=0.0, rho=0.0)
+
+    if sigma == 0:
+        # Zero volatility with time left: the payoff is the deterministic
+        # forward S·e^(−qT) − K·e^(−rT), so moneyness is decided by the
+        # forward, not by S against K, and theta and rho are the derivatives of
+        # that discounted intrinsic value — not zero.
+        disc_s = S * math.exp(-q * T)
+        disc_k = K * math.exp(-r * T)
+        sign = 1.0 if kind == "call" else -1.0
+        if sign * (disc_s - disc_k) <= 0.0:
+            return Greeks(price=price, delta=0.0, gamma=0.0, vega=0.0, theta=0.0, rho=0.0)
+        return Greeks(
+            price=price,
+            delta=sign * math.exp(-q * T),
+            gamma=0.0,
+            vega=0.0,
+            theta=sign * (q * disc_s - r * disc_k) / 365.0,
+            rho=sign * K * T * math.exp(-r * T) / 100.0,
+        )
 
     d1, d2 = _d1_d2(S, K, T, r, sigma, q)
     sqrt_t = math.sqrt(T)
@@ -221,9 +256,19 @@ def implied_vol(
 
     Raises ``ValueError`` if the price is outside the no-arbitrage bounds, which
     is the useful answer: it means the quote is stale or wrong, not that the
-    solver failed.
+    solver failed. It also raises when the price is so close to a bound that
+    double precision cannot tell volatilities apart (a 2000%-vol call is worth
+    S to sixteen digits): any answer then would be arbitrary.
+
+    ``tolerance`` is on the price, relative to it once the price is below 1, so
+    a far out-of-the-money quote of 1e-12 is matched to its own digits rather
+    than "converged" at the first midpoint.
     """
     kind = _check_option(kind)
+    price = _check_finite("price", price)
+    if price < 0:
+        raise InputError(f"price must be >= 0, got {price!r}", code="RP102", param="price",
+                         hint="An option price is a non-negative amount of money per unit.")
     if T <= 0:
         raise InputError(f"implied vol is undefined at or after expiry: T must be > 0, got {T!r}", code="RP106",
                          param="T", hint="At expiry an option is worth its intrinsic value whatever the volatility, "
@@ -236,6 +281,14 @@ def implied_vol(
             f"can produce it, so the quote violates no-arbitrage.", code="RP301", param="price",
             hint=f"The {kind}'s floor here is {lower_bound:.6f} (its discounted intrinsic value). Check the price, "
                  f"and that kind={kind!r} matches the quote.",
+        )
+
+    if price - lower_bound <= 8.0 * _EPS * max(abs(price), abs(lower_bound), 1e-300):
+        raise ConvergenceError(
+            f"price {price!r} equals the option's intrinsic floor ({lower_bound:.6g}) in double precision, so it "
+            f"has no measurable time value and does not determine a volatility.", code="RP301", param="price",
+            hint="Implied vol is only defined where the option has time value; for a deep in-the-money quote, "
+                 "invert the other side via put-call parity.",
         )
 
     low, high = 1e-9, 5.0
@@ -253,16 +306,35 @@ def implied_vol(
                  f"({'S·e^(−qT)' if kind == 'call' else 'K·e^(−rT)'}). Check the price is per unit, and S and K.",
         )
 
+    price_tolerance = tolerance * min(1.0, price) if price > 0 else tolerance
+    mid = 0.5 * (low + high)
     for _ in range(max_iterations):
         mid = 0.5 * (low + high)
         value = black_scholes(S, K, T, r, mid, q, kind)
-        if abs(value - price) < tolerance:
-            return mid
+        # Stop when the price matches and the vol bracket is tight too: deep in
+        # the money vega is tiny, and a price match alone left 4e-5 vol error.
+        if (abs(value - price) < price_tolerance and high - low < 1e-10 * high) or high - low < 1e-15 * high:
+            break
         if value < price:
             low = mid
         else:
             high = mid
-    return 0.5 * (low + high)
+
+    # A volatility is only an answer if the price pins it down: if moving it by
+    # 1% leaves the price unchanged in double precision, every vol in a wide
+    # range is equally "right" and bisection just returned one of them.
+    bumped_down = black_scholes(S, K, T, r, mid * 0.99, q, kind)
+    bumped_up = black_scholes(S, K, T, r, mid * 1.01, q, kind)
+    if bumped_up - bumped_down <= 8.0 * _EPS * max(abs(price), 1e-300):
+        at_floor = price - lower_bound <= 8.0 * _EPS * max(abs(price), 1e-300)
+        raise ConvergenceError(
+            f"price {price!r} is indistinguishable from the {'intrinsic floor' if at_floor else 'no-arbitrage ceiling'} "
+            f"in double precision, so it does not determine a volatility (anything near {mid:.4g} reproduces it).",
+            code="RP301" if at_floor else "RP302", param="price",
+            hint="Implied vol is only defined where the option has measurable time value; use a quote with more "
+                 "time value, or the option's other side via put-call parity.",
+        )
+    return mid
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +362,10 @@ def gbm_paths(
     np = _numpy()
     if steps < 1 or trials < 1:
         raise InputError("steps and trials must both be >= 1", code="RP107", param="steps" if steps < 1 else "trials")
+    S0 = _check_positive("S0", S0)
+    mu = _check_finite("mu", mu)
+    sigma = _check_non_negative("sigma", sigma)
+    T = _check_non_negative("T", T)
 
     dt = T / steps
     rng = np.random.default_rng(seed)
@@ -321,6 +397,15 @@ def merton_jump_paths(
     the jumps quietly add drift and the model prices nothing sensibly.
     """
     np = _numpy()
+    if steps < 1 or trials < 1:
+        raise InputError("steps and trials must both be >= 1", code="RP107", param="steps" if steps < 1 else "trials")
+    S0 = _check_positive("S0", S0)
+    mu = _check_finite("mu", mu)
+    sigma = _check_non_negative("sigma", sigma)
+    T = _check_non_negative("T", T)
+    jump_intensity = _check_non_negative("jump_intensity", jump_intensity)
+    jump_mean = _check_finite("jump_mean", jump_mean)
+    jump_sd = _check_non_negative("jump_sd", jump_sd)
     dt = T / steps
     rng = np.random.default_rng(seed)
 
@@ -355,6 +440,8 @@ def historical_var(returns: Sequence[float], level: float = 0.99) -> float:
     data = np.asarray(list(returns), dtype=float)
     if data.size == 0:
         raise InputError("returns is empty", code="RP111", param="returns")
+    if not np.all(np.isfinite(data)):
+        raise InputError("returns contains NaN or infinity", code="RP101", param="returns")
     return float(-np.percentile(data, (1.0 - level) * 100.0))
 
 
@@ -381,6 +468,8 @@ def parametric_var(
             raise InputError("need at least two returns, or explicit mean and sd", code="RP111", param="returns")
         mean = float(data.mean()) if mean is None else mean
         sd = float(data.std(ddof=1)) if sd is None else sd
+    mean = _check_finite("mean", mean)
+    sd = _check_non_negative("sd", sd)
 
     z = _special.norm_ppf(1.0 - level)
     return float(-(mean + z * sd))
@@ -389,7 +478,13 @@ def parametric_var(
 def expected_shortfall(returns: Sequence[float], level: float = 0.99) -> float:
     """Mean loss in the worst ``1 - level`` of outcomes, as a positive number."""
     np = _numpy()
+    if not (0.0 < level < 1.0):
+        raise InputError(f"level must be in (0, 1), got {level!r}", code="RP110", param="level")
     data = np.asarray(list(returns), dtype=float)
+    if data.size == 0:
+        raise InputError("returns is empty", code="RP111", param="returns")
+    if not np.all(np.isfinite(data)):
+        raise InputError("returns contains NaN or infinity", code="RP101", param="returns")
     cutoff = np.percentile(data, (1.0 - level) * 100.0)
     tail = data[data <= cutoff]
     if tail.size == 0:  # pragma: no cover
@@ -456,6 +551,21 @@ def heston_price(
     """
     np = _numpy()
     kind = _check_option(kind)
+    S, K = _check_positive("S", S), _check_positive("K", K)
+    T = _check_non_negative("T", T)
+    r, q = _check_finite("r", r), _check_finite("q", q)
+    v0 = _check_non_negative("v0", v0)
+    kappa = _check_positive("kappa", kappa)
+    theta = _check_non_negative("theta", theta)
+    xi = _check_positive("xi", xi)
+    rho = _check_finite("rho", rho)
+    if not -1.0 <= rho <= 1.0:
+        raise InputError(f"rho must be in [-1, 1], got {rho!r}", code="RP102", param="rho",
+                         hint="rho is the correlation between spot and variance shocks (about -0.7 for equities).")
+    if T == 0:
+        # At expiry the option is its intrinsic value; the transform's
+        # quadrature error would otherwise leave a small negative price.
+        return float(max(S - K, 0.0) if kind == "call" else max(K - S, 0.0))
 
     if 2.0 * kappa * theta <= xi * xi:
         import warnings

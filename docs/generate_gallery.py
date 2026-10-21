@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 from riskpy import credit, life, quant, rates, reserving, verify, viz  # noqa: E402
 from riskpy.mc import (  # noqa: E402
+    Compound,
     Constant,
     LogNormal,
     Model,
@@ -60,17 +61,16 @@ def emit(name: str, fig) -> None:
 # ---------------------------------------------------------------------------
 
 model = Model(
-    claim_count=Poisson(mean=140),
-    severity=LogNormal.from_moments(mean=18_000, sd=42_000),
+    claims=Compound(Poisson(mean=140), LogNormal.from_moments(mean=18_000, sd=42_000)),
     inflation=Normal(mean=0.043, sd=0.012),
     reinsurance_recovery=PERT(low=0.0, mode=0.15, high=0.45),
 )
-model.correlate("claim_count", "inflation", 0.35)
+model.correlate("claims", "inflation", 0.35)
 
 
 @model.formula
-def annual_loss(claim_count, severity, inflation, reinsurance_recovery):
-    gross = claim_count * severity * (1.0 + inflation)
+def annual_loss(claims, inflation, reinsurance_recovery):
+    gross = claims * (1.0 + inflation)
     return gross * (1.0 - reinsurance_recovery)
 
 
@@ -88,8 +88,8 @@ emit("qq", viz.qq(result, dist=LogNormal.from_moments(result.mean, result.std),
                   title="Q–Q against a log-normal with the same moments"))
 emit("dashboard", viz.dashboard(result))
 emit("correlation", viz.correlation(result))
-emit("scatter", viz.scatter(result, "claim_count", "inflation",
-                            title="Correlated inputs — claim count against inflation"))
+emit("scatter", viz.scatter(result, "claims", "inflation",
+                            title="Correlated inputs — claims cost against inflation"))
 
 # ---------------------------------------------------------------------------
 # 2. Scenario comparison — same model, three reinsurance structures.
@@ -113,10 +113,10 @@ emit("spread", viz.spread(scenarios, title="Annual loss by reinsurance structure
 # ---------------------------------------------------------------------------
 
 overdispersed = simulate(
-    lambda claim_count, severity: claim_count * severity,
+    lambda claims: claims,
     trials=100_000, seed=SEED, label="annual loss",
-    claim_count=NegativeBinomial.from_mean_dispersion(mean=140, dispersion=2.4),
-    severity=LogNormal.from_moments(mean=18_000, sd=42_000),
+    claims=Compound(NegativeBinomial.from_mean_dispersion(mean=140, dispersion=2.4),
+                    LogNormal.from_moments(mean=18_000, sd=42_000)),
 )
 emit("overdispersion", viz.compare({"Poisson frequency": result, "Negative binomial": overdispersed},
                                    title="What over-dispersion does to the tail"))

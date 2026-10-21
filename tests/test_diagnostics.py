@@ -619,7 +619,7 @@ def test_convert_rate_accepts_the_usual_spellings():
     cases = {"daily": 365, "weekly": 52, "annually": 1, "yearly": 1, "semi_annual": 2, "semi-annually": 2}
     for word, m in cases.items():
         got = tools.call("convert_rate", {"rate": r, "from_compounding": word, "to_compounding": "continuous"})
-        assert got == pytest.approx(m * math.log(1 + r / m), abs=1e-14), word
+        assert got == pytest.approx(m * math.log1p(r / m), abs=1e-14), word
         assert riskpy.rates.convert_rate(r, word, m) == pytest.approx(r, abs=1e-12)
     assert tools.call("convert_rate", {"rate": r, "from_compounding": "continuously", "to_compounding": "annual"}) \
         == pytest.approx(math.exp(r) - 1, abs=1e-14)

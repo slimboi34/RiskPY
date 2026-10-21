@@ -13,24 +13,29 @@ pip install "open-riskpy[sim]"
 ```python
 from riskpy import viz
 from riskpy.mc import (
-    Model, Poisson, LogNormal, Normal, PERT,
+    Model, Compound, Poisson, LogNormal, Normal, PERT,
     Gamma, NegativeBinomial, Pareto, Mixture, Truncated, Categorical,
 )
 
 model = Model(
-    claim_count          = Poisson(mean=140),
-    severity             = LogNormal.from_moments(mean=18_000, sd=42_000),
+    claims               = Compound(Poisson(mean=140), LogNormal.from_moments(mean=18_000, sd=42_000)),
     inflation            = Normal(mean=0.043, sd=0.012),
     reinsurance_recovery = PERT(low=0.0, mode=0.15, high=0.45),
 )
 
 @model.formula
-def annual_loss(claim_count, severity, inflation, reinsurance_recovery):
-    gross = claim_count * severity * (1 + inflation)
+def annual_loss(claims, inflation, reinsurance_recovery):
+    gross = claims * (1 + inflation)
     return gross * (1 - reinsurance_recovery)
 
 result = model.run(200_000, seed=42)
 ```
+
+`Compound(frequency, severity)` is the year's total: it draws a claim count,
+then one claim size *per claim*, and adds them up. Writing
+`claim_count * severity` instead multiplies a single claim size by the count —
+as if all 140 claims were the same size — and puts the 1-in-200 loss for this
+book at 34 million instead of 4.5 million.
 
 Your formula is called **once**, with NumPy arrays of length `trials` — not once
 per trial. Two hundred thousand trials is a single vectorised expression.
@@ -52,10 +57,9 @@ you are sweeping scenarios in a loop:
 from riskpy.mc import simulate, Constant
 
 result = simulate(
-    lambda claims, severity: claims * severity,
+    lambda claims: claims,
     trials=100_000, seed=42, label="annual loss",
-    claims=Poisson(mean=140),
-    severity=LogNormal.from_moments(mean=18_000, sd=42_000),
+    claims=Compound(Poisson(mean=140), LogNormal.from_moments(mean=18_000, sd=42_000)),
 )
 ```
 
@@ -79,6 +83,7 @@ viz.compare(scenarios)
 | `LogNormal(mu, sigma)` | `NegativeBinomial(n_success, p)` | `Empirical(data)` |
 | `Uniform(low, high)` | `Bernoulli(p)` | `Categorical(values, probs)` |
 | `Triangular(low, mode, high)` | `Binomial(trials, p)` | `Mixture([dists], weights)` |
+| | | `Compound(frequency, severity)` |
 | `PERT(low, mode, high, lam=4)` | | `Truncated(dist, low, high)` |
 | `Exponential(scale)` | | |
 | `Gamma(shape, scale)` | | |
@@ -133,6 +138,7 @@ Mixture([LogNormal(8, 1), Pareto(50_000, 2.5)], weights=[0.9, 0.1])   # attritio
 Truncated(LogNormal(8, 1), high=1_000_000)                            # a policy limit
 Truncated(Normal(0.04, 0.02), low=0.0)                                # a rate that cannot go negative
 Categorical([0.9, 1.0, 1.15], probs=[0.2, 0.6, 0.2])                  # scenario weights
+Compound(NegativeBinomial(5, 0.04), LogNormal(9, 1.5))                # a year's total: sum of N claims
 ```
 
 `Truncated` samples by inversion, so it never rejects and never loops, and its
@@ -143,8 +149,8 @@ moments are integrated numerically to about 1e-8 relative.
 Inputs are independent unless you say otherwise. Two ways to say otherwise:
 
 ```python
-model.correlate("claim_count", "inflation", 0.3)     # Spearman rank correlation
-model.correlate("severity", "inflation", 0.2)
+model.correlate("claims", "inflation", 0.3)                   # Spearman rank correlation
+model.correlate("inflation", "reinsurance_recovery", -0.2)
 
 result = simulate(fn, ..., correlation={("a", "b"): 0.7})   # or a full matrix
 ```
@@ -184,7 +190,7 @@ result.skewness, result.kurtosis    # how badly a normal approximation will do
 result.standard_error               # how much the mean would move on a new seed
 result.percentile(99.5)
 result.var(0.995)                   # Value at Risk
-result.tvar(0.995)                  # mean loss beyond VaR
+result.tvar(0.995)                  # expected shortfall (Acerbi–Tasche; = mean beyond VaR when no ties)
 result.cdf(5e6)                     # P(output <= x)
 result.prob_above(5e6)
 result.describe()                   # a dict of the lot
@@ -241,10 +247,9 @@ for name, correlation in result.sensitivity():
 ```
 
 ```
-severity                 +0.99
-inflation                +0.23
-reinsurance_recovery     -0.07
-claim_count              +0.06
+claims                   +0.88
+reinsurance_recovery     -0.44
+inflation                +0.05
 ```
 
 Spearman **rank** correlation by default — the relationship between an input

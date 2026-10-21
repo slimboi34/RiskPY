@@ -383,10 +383,12 @@ def test_result_summary_statistics():
         result.percentile(101.0)
 
 
-def test_tvar_uses_every_tail_value():
+def test_tvar_is_mean_of_worst_tail_share():
+    # ES = mean of the worst (1 - level) of trials (Acerbi–Tasche); with 20 000
+    # distinct values and level 0.99 that is exactly the top 200.
     result = simulate(lambda x: x, trials=20_000, seed=SEED, x=Normal(0, 1))
-    threshold = result.var(0.99)
-    assert result.tvar(0.99) == pytest.approx(float(result.values[result.values >= threshold].mean()), rel=1e-12)
+    worst = np.sort(result.values)[-200:]
+    assert result.tvar(0.99) == pytest.approx(float(worst.mean()), rel=1e-12)
 
 
 def test_sensitivity_methods():
@@ -425,3 +427,66 @@ def test_plot_kinds_are_validated():
 def test_plain_number_rejected_in_simulate_too():
     with pytest.raises(TypeError, match="Constant"):
         simulate(lambda x: x, trials=10, x=3.0)
+
+
+# ---------------------------------------------------------------------------
+# Compound: the sum of N independent claims
+# ---------------------------------------------------------------------------
+
+
+def test_compound_matches_wald_moments_and_core():
+    sev = LogNormal.from_moments(mean=18_000, sd=42_000)
+    comp = mc.Compound(Poisson(140), sev)
+    m = comp.moments()
+    assert m.mean == pytest.approx(140 * 18_000)
+    assert m.variance == pytest.approx(140 * (42_000**2 + 18_000**2))
+    x = comp.sample(200_000, np.random.default_rng(5))
+    assert x.mean() == pytest.approx(m.mean, rel=0.01)
+    assert x.std() == pytest.approx(m.sd, rel=0.03)
+    try:
+        import riskpy
+        core = np.asarray(riskpy.MonteCarloSimulator(200_000, 9).simulate_aggregate_loss(140.0, sev.mu, sev.sigma))
+    except (ImportError, AttributeError):
+        return
+    assert np.quantile(x, 0.995) == pytest.approx(np.quantile(core, 0.995), rel=0.03)
+
+
+def test_compound_is_not_count_times_one_severity():
+    sev = LogNormal.from_moments(mean=18_000, sd=42_000)
+    total = mc.simulate(lambda s: s, trials=100_000, seed=3, s=mc.Compound(Poisson(140), sev))
+    naive = mc.simulate(lambda n, s: n * s, trials=100_000, seed=3, n=Poisson(140), s=sev)
+    assert total.mean == pytest.approx(naive.mean, rel=0.05)
+    assert naive.var(0.995) > 5 * total.var(0.995)
+
+
+def test_compound_zero_counts_lhs_and_reproducibility():
+    comp = mc.Compound(Poisson(0.2), LogNormal(8, 1))
+    a = comp.sample(50_000, np.random.default_rng(1))
+    assert np.mean(a == 0.0) == pytest.approx(math.exp(-0.2), abs=0.01)
+    b = comp.sample_lhs(50_000, np.random.default_rng(1))
+    assert np.mean(b == 0.0) == pytest.approx(math.exp(-0.2), abs=0.002)
+    model = mc.Model(claims=mc.Compound(Poisson(30), LogNormal(8, 1)), inflation=Normal(0.03, 0.01))
+    model.correlate("claims", "inflation", 0.4)
+    model.formula(lambda claims, inflation: claims * (1 + inflation))
+    r1 = model.run(20_000, seed=7, sampling="lhs")
+    r2 = model.run(20_000, seed=7, sampling="lhs")
+    assert r1.var(0.99) == r2.var(0.99)
+
+
+def test_compound_chunks_without_changing_the_answer(monkeypatch):
+    comp = mc.Compound(Poisson(50), LogNormal(5, 1))
+    whole = comp.sample(4_000, np.random.default_rng(2))
+    monkeypatch.setattr(mc.Compound, "_CHUNK", 1000)
+    chunked = comp.sample(4_000, np.random.default_rng(2))
+    np.testing.assert_allclose(chunked, whole, rtol=1e-12)
+
+
+def test_compound_validation():
+    from riskpy.errors import RiskPyError
+    with pytest.raises(RiskPyError) as e:
+        mc.Compound(Normal(10, 2), LogNormal(8, 1))
+    assert e.value.code == "RP107"
+    with pytest.raises(RiskPyError) as e:
+        mc.Compound(Poisson(10), 5000.0)
+    assert e.value.code == "RP404"
+    assert "Compound" in mc.__all__

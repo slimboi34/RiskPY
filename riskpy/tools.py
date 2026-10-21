@@ -243,6 +243,7 @@ _PARAM_RENAMES: Dict[str, Dict[str, str]] = {
     "bornhuetter_ferguson": {"data": "triangle"},
     "bootstrap_yield_curve": {"maturity": "maturities", "times": "maturities", "t": "at"},
     "riskpy_explain": {"code": "topic"},
+    "hazard_from_spread": {"t": "horizon"},
 }
 
 
@@ -272,6 +273,10 @@ def _checked(fn: Callable) -> Callable:
         for name, value in bound.arguments.items():
             if name in hints:
                 _check_arg(name, hints[name], value)
+                # A whole-number float passed for an int (JSON has one number type) is
+                # handed on as an int: the C++ core's pybind signatures refuse 1000.0.
+                if isinstance(value, float) and hints[name] in (int, Optional[int]):
+                    bound.arguments[name] = int(value)
             _check_plausible(name, value)
         try:
             return fn(*bound.args, **bound.kwargs)
@@ -437,8 +442,9 @@ def _record(name: Any, arguments: Any, started: float, error: Optional[dict], vi
     if path:
         try:
             with open(path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except OSError:
+                # ASCII escapes, so a lone surrogate in an argument cannot fail the encode.
+                fh.write(json.dumps(entry) + "\n")
+        except (OSError, ValueError):
             pass                      # tracing must never break a call
 
 
@@ -452,6 +458,8 @@ def trace(limit: Optional[int] = 50, clear: bool = False) -> List[dict]:
     ``RISKPY_TRACE_FILE`` to also append every entry to a JSON-lines file, which is how
     ``riskpy-tools trace`` sees calls made by earlier processes.
     """
+    if limit is not None and limit < 0:
+        raise InputError(f"limit must be >= 0 (0 or None for all), got {limit!r}", code="RP102", param="limit")
     with _trace_lock:
         entries = list(_trace)
         if clear:
@@ -573,6 +581,25 @@ def _arguments(t: Tool, arguments: Any) -> dict:
     return dict(arguments)
 
 
+def _check_result_finite(value: Any, path: str = "result") -> None:
+    """Refuse a calculator result holding an overflowed number.
+
+    ``_jsonable`` turns inf and NaN into null, which an agent reads as a successful answer
+    with a missing field; a duration that overflowed is an error, so say so.
+    """
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise InputError(f"{path} is {value!r}: an intermediate value overflowed double precision",
+                             code="RP304", param=None,
+                             hint="Use inputs of a realistic size (amounts in thousands or millions, times in years).")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _check_result_finite(item, f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _check_result_finite(item, f"{path}[{index}]")
+
+
 def call(name: str, arguments: Optional[dict] = None, *, errors: str = "raise", via: str = "python") -> Any:
     """Run a tool by name with keyword arguments; the result is JSON-able.
 
@@ -594,7 +621,10 @@ def call(name: str, arguments: Optional[dict] = None, *, errors: str = "raise", 
             raise ToolUnavailable(f"{name} needs {_EXTRA_NAME.get(t.requires, t.requires)} (the {module} package), "
                                   f"which is not installed: {t.install}",
                                   code=_EXTRA_CODE.get(t.requires, "RP201"), param=None, hint=t.install)
-        result = _jsonable(t.fn(**args))
+        raw = t.fn(**args)
+        if t.kind == "calculator":
+            _check_result_finite(raw)
+        result = _jsonable(raw)
     except Exception as exc:  # noqa: BLE001 - every failure becomes a structured error
         detail = _errors.from_exception(exc)
         if t is None or t.kind == "calculator":
@@ -901,10 +931,13 @@ def aggregate_loss(expected_frequency: float, severity_mean: float, severity_sd:
                               "severity_sd / severity_mean is a realistic coefficient of variation.") from None
     levels = (0.5, 0.75, 0.9, 0.95, 0.99, 0.995)
     var = {str(level): losses[min(n - 1, int(level * n))] for level in levels}
-    tail = losses[int(0.995 * n):] or losses[-1:]
+    # Expected shortfall (Acerbi–Tasche): VaR + E[(X − VaR)⁺]/(1 − level). The plain mean of the
+    # values at or above VaR overstates it when VaR sits on a run of tied values.
+    var_995 = var["0.995"]
+    tvar = var_995 + sum(x - var_995 for x in losses if x > var_995) / (n * (1.0 - 0.995))
     return {
         "trials": n, "mean": mean, "std": std, "min": losses[0], "max": losses[-1], "var": var,
-        "tvar_0.995": sum(tail) / len(tail), "severity_mu": mu, "severity_sigma": sigma,
+        "tvar_0.995": tvar, "severity_mu": mu, "severity_sigma": sigma,
     }
 
 
@@ -977,6 +1010,10 @@ def verify(modules: Optional[List[str]] = None, oracle: bool = False) -> dict:
     if unknown:
         raise InputError(f"modules: unknown module(s) {unknown}; choose from {list(_verify.MODULES)}", code="RP108",
                          param="modules")
+    if modules is not None:
+        if not modules:
+            raise InputError("modules is empty; omit it to run every module", code="RP111", param="modules")
+        modules = list(dict.fromkeys(modules))     # ["mc"] * 1000 is one run, not a thousand
     report = _verify.run(modules, oracle=oracle)
     return {
         "ok": report.ok, "version": report.version, "checks": len(report.checks), "passed": len(report.passed),
@@ -1071,7 +1108,11 @@ def _compounding(value: str, name: str) -> Any:
     from . import rates
 
     text = value.strip().lower()
-    parsed: Any = int(text) if text.isdigit() else text
+    # isascii: "²".isdigit() is True and int("²") then fails with a bare ValueError.
+    parsed: Any = int(text) if text.isascii() and text.isdigit() else text
+    if isinstance(parsed, int) and parsed > LIMITS["integer"]:
+        raise InputError(f"{name}: {parsed} periods per year is more than the tool accepts "
+                         f"({LIMITS['integer']}); use \"continuous\" for the limit", code="RP405", param=name)
     try:
         rates._periods_per_year(parsed)
     except RiskPyError as exc:
@@ -1111,6 +1152,10 @@ def bootstrap_yield_curve(par_rates: List[float], maturities: List[float], frequ
     if len(par_rates) != len(maturities):
         raise InputError(f"par_rates and maturities must have the same length, got {len(par_rates)} and "
                          f"{len(maturities)}", code="RP109", param="maturities")
+    if maturities:
+        # Each knot is solved by bisection over its coupon dates, so the work is about
+        # knots × periods: bound it like bond_analytics bounds maturity × frequency.
+        _check_periods(len(maturities) * max(maturities), frequency)
     curve = rates.YieldCurve.bootstrap(par_rates, maturities, frequency=frequency)
     times = list(curve.times)
     out = {"times": times, "zero_rates": list(curve.zero_rates), "discount_factors": [curve.df(t) for t in times],
@@ -1263,7 +1308,7 @@ _EXPLAIN: Dict[str, Dict[str, Any]] = {
         "formula": "S = Σ_{k=1..N} X_k, N ~ Poisson(λ), X ~ LogNormal(μ, σ) with σ² = ln(1 + sd²/mean²), "
                    "μ = ln(mean) − σ²/2",
         "conventions": ["severity mean and sd on the money scale (the tool converts)", "seed 0 is a fresh seed",
-                        "var keys are levels; tvar_0.995 is the mean of the worst 0.5%"],
+                        "var keys are levels; tvar_0.995 is the expected shortfall at 99.5% (VaR + mean excess over VaR / 0.005)"],
     },
     "life_annuity_due": {
         "formula": "ä_x = Σ_k v^k · kp_x, v = 1/(1 + i)",
@@ -1343,6 +1388,13 @@ def _read_trace_file(path: str, limit: Optional[int]) -> List[dict]:
     return entries[-limit:] if limit else entries
 
 
+def _non_negative_int(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0 (0 for all), got {value}")
+    return value
+
+
 def _print_error(detail: dict, as_json: bool = True) -> None:
     if as_json:
         print(json.dumps({"error": detail}, indent=2, ensure_ascii=False))
@@ -1363,14 +1415,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_schema.add_argument("name")
     p_trace = sub.add_parser("trace", help="recent tool calls: this process, plus RISKPY_TRACE_FILE if set")
     p_trace.add_argument("--json", action="store_true", dest="trace_json", help="print JSON")
-    p_trace.add_argument("--limit", type=int, default=50, help="how many entries (default 50)")
+    p_trace.add_argument("--limit", type=_non_negative_int, default=50, help="how many entries (default 50; 0 for all)")
     p_trace.add_argument("--file", help="read this JSON-lines trace file (default: $RISKPY_TRACE_FILE)")
     args = parser.parse_args(argv)
 
     if args.command == "call":
         try:
             arguments = json.loads(args.arguments)
-        except json.JSONDecodeError as exc:
+        except (ValueError, RecursionError) as exc:      # JSONDecodeError, 4300-digit ints, deep nesting
             _print_error({"code": "RP406", "message": f"the arguments are not valid JSON: {exc}", "param": None,
                           "hint": _errors.CATALOGUE["RP406"]["hint"], "docs": f"{_errors.DOCS}#rp406"})
             return 1
@@ -1394,7 +1446,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             entries = _read_trace_file(path, None) + entries
         entries = entries[-args.limit:] if args.limit else entries
         if args.trace_json:
-            print(json.dumps(entries, indent=2, ensure_ascii=False))
+            print(json.dumps(_jsonable(entries), indent=2, ensure_ascii=False, allow_nan=False))
             return 0
         if not entries:
             print("No tool calls traced. The trace lives in the process that made the calls (riskpy_status over "
