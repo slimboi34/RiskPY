@@ -21,6 +21,8 @@ only when you touch it:
                      Ferguson, Cape Cod, bootstrap
 :mod:`riskpy.rates`  curves, bonds, durations, short-rate models
 :mod:`riskpy.credit` credit risk — Merton, hazard rates, CDS, Basel, portfolios
+:mod:`riskpy.capital` economic capital — copulas, aggregation, Euler allocation
+:mod:`riskpy.audit`  the audit ledger — record tool calls, verify, replay, report
 :mod:`riskpy.verify` the verification suite — every identity, checked
 ===================  =========================================================
 
@@ -88,6 +90,8 @@ __all__ = [
     "reserving",
     "rates",
     "credit",
+    "capital",
+    "audit",
     "verify",
     "tools",
     "context",
@@ -109,6 +113,8 @@ _LAZY_SUBMODULES = {
     "reserving",
     "rates",
     "credit",
+    "capital",
+    "audit",
     "verify",
     "tools",
     "context",

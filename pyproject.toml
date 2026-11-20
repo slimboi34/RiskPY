@@ -8,8 +8,8 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "open-riskpy"
-version = "0.6.0"
-description = "Risk and actuarial engine with a C++ core: Monte Carlo with correlation and Latin hypercube, life contingencies, claims reserving (chain ladder, Mack, bootstrap), yield curves and short-rate models, credit risk, option pricing, twenty-two charts, and a verification suite that checks every identity."
+version = "0.7.0"
+description = "Risk and actuarial engine with a C++ core: Monte Carlo with correlation and Latin hypercube, life contingencies, claims reserving (chain ladder, Mack, bootstrap), yield curves and short-rate models, credit risk, economic capital (copulas, aggregation, Euler allocation), option pricing, stress testing, twenty-two charts, agent tools with an audit ledger, and a verification suite that checks every identity."
 readme = "README.md"
 # PEP 639 SPDX expression (metadata 2.4) — replaces the deprecated table form.
 license = "MIT"
@@ -48,6 +48,10 @@ keywords = [
     "basel",
     "copula",
     "latin-hypercube",
+    "economic-capital",
+    "capital-allocation",
+    "stress-testing",
+    "mcp",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -78,6 +82,7 @@ riskpy-context = "riskpy.context:main"
 riskpy-mcp = "riskpy.mcp_server:main"
 riskpy-doctor = "riskpy.diagnostics:main"
 riskpy-explain = "riskpy.errors:main"
+riskpy-audit = "riskpy.audit:main"
 
 [project.optional-dependencies]
 dev = [

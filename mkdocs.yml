@@ -1,5 +1,5 @@
 site_name: RiskPY
-site_description: Risk and actuarial engine with a C++ core — Monte Carlo, life contingencies, claims reserving, yield curves, credit risk, option pricing, and a verification suite.
+site_description: Risk and actuarial engine with a C++ core — Monte Carlo, life contingencies, claims reserving, yield curves, credit risk, economic capital, option pricing, stress testing, agent tools with an audit ledger, and a verification suite.
 site_url: https://slimboi34.github.io/RiskPY/
 repo_url: https://github.com/slimboi34/RiskPY
 repo_name: slimboi34/RiskPY
@@ -57,10 +57,13 @@ nav:
       - Claims reserving: reserving.md
       - Interest rates: rates.md
       - Credit risk: credit.md
+      - Economic capital: capital.md
+      - Stress and scenario testing: stress.md
   - Verification: verification.md
   - For AI agents:
       - Tools, MCP and the context pack: agents.md
       - Diagnostics: diagnostics.md
+      - The audit ledger: audit.md
       - Error codes: errors.md
   - The compiled core:
       - How it works: HOW_IT_WORKS.md

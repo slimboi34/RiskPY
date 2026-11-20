@@ -11,6 +11,7 @@ act on and a way to see what has been happening:
     tools.call("black_scholes", {..., "sigma": -0.2}, errors="return")
         # {"error": {"code": "RP105", "message": "sigma must be >= 0, got -0.2", "param": "sigma", "hint": ...}}
     tools.trace()         # the recent calls: tool, arguments, duration, ok or error code
+    tools.call("sensitivity", {"tool": "black_scholes", "arguments": {...}, "parameter": "S"})   # bump and revalue
 
     riskpy-tools                                   # the list, on the command line
     riskpy-tools call black_scholes '{"S": 100, "K": 100, "T": 1, "r": 0.05, "sigma": 0.2}'
@@ -110,6 +111,9 @@ LIMITS: Dict[str, int] = {
     "periods": 100_000,               # bond_analytics, cds_par_spread: maturity × frequency
     "triangle": 300,                  # chain_ladder, mack_chain_ladder: origin and development periods
     "list": 1_000,                    # any other list argument
+    "matrix": 100,                    # capital_aggregate, capital_allocation, nearest_correlation: risks
+    "capital_cells": 20_000_000,      # capital_allocation: trials × lines
+    "scenarios": 100,                 # scenario_table: scenarios in one call
     "string": 200,                    # any string argument, in characters
     "integer": 2**31 - 1,             # any integer argument, in absolute value
 }
@@ -196,6 +200,13 @@ def _check_arg(name: str, hint: Any, value: Any) -> None:
                                     hint=f"Send {name} as a JSON string; got a {_json_name(value)}.")
         if len(value) > LIMITS["string"]:
             raise InputError(f"{name} is longer than {LIMITS['string']} characters", code="RP405", param=name)
+    elif hint is dict or origin in (dict, collections.abc.Mapping):
+        if not isinstance(value, dict):
+            raise ArgumentTypeError(f"{name} must be an object, got {_show(value)}", code="RP404", param=name,
+                                    hint=f"Send {name} as a JSON object ({{\"key\": value}}); got a {_json_name(value)}.")
+        if len(value) > LIMITS["list"]:
+            raise InputError(f"{name} has {len(value)} keys; at most {LIMITS['list']} are accepted", code="RP405",
+                             param=name)
     elif origin in (list, tuple, collections.abc.Sequence):
         if not isinstance(value, (list, tuple)):
             raise ArgumentTypeError(f"{name} must be a list, got {_show(value)}", code="RP404", param=name,
@@ -244,6 +255,8 @@ _PARAM_RENAMES: Dict[str, Dict[str, str]] = {
     "bootstrap_yield_curve": {"maturity": "maturities", "times": "maturities", "t": "at"},
     "riskpy_explain": {"code": "topic"},
     "hazard_from_spread": {"t": "horizon"},
+    "copula_dependence": {"correlation": "rho", "theta": "copula_theta", "copula": "family", "tau": "copula_theta"},
+    "capital_allocation": {"theta": "copula_theta", "losses": "means", "tau": "copula_theta"},
 }
 
 
@@ -338,7 +351,7 @@ def _json_type(hint: Any) -> dict:
         return {"anyOf": members}
     if origin in (list, tuple, collections.abc.Sequence):
         return {"type": "array", "items": _json_type(args[0]) if args else {}}
-    if origin in (dict, collections.abc.Mapping):
+    if hint is dict or origin in (dict, collections.abc.Mapping):
         return {"type": "object"}
     return {}
 
@@ -452,7 +465,8 @@ def trace(limit: Optional[int] = 50, clear: bool = False) -> List[dict]:
     """The most recent tool calls in this process, oldest first.
 
     Each entry: ``{seq, at, tool, args, ms, ok, code, param, message, via}`` — ``code`` is
-    the error code when the call failed, ``via`` is "python", "cli" or "mcp". The buffer
+    the error code when the call failed, ``via`` is "python", "cli", "mcp" or "replay" (a call
+    recomputed by :func:`riskpy.audit.replay`). The buffer
     keeps the last 200 calls; ``clear=True`` empties it after reading. Calls made directly
     in Python (``tools.black_scholes(...)``) bypass :func:`call` and are not traced; set
     ``RISKPY_TRACE_FILE`` to also append every entry to a JSON-lines file, which is how
@@ -490,6 +504,7 @@ def status(recent: int = 10) -> dict:
         "plausible": dict(PLAUSIBLE),
         "trace": {**counts, "recent": trace(recent) if recent else []},
         "trace_file": os.environ.get("RISKPY_TRACE_FILE"),
+        "audit_file": os.environ.get("RISKPY_AUDIT_FILE"),
         "next_steps": "riskpy_doctor checks the installation; riskpy_explain takes an error code (RP105) or a tool "
                       "name (black_scholes) and says what it means or which formula and conventions it uses.",
     }
@@ -629,12 +644,23 @@ def call(name: str, arguments: Optional[dict] = None, *, errors: str = "raise", 
         detail = _errors.from_exception(exc)
         if t is None or t.kind == "calculator":
             _record(name, arguments, started, detail, via)
+            _audit(name, arguments, None, detail, started, via)
         if errors == "return":
             return {"error": detail}
         raise
     if t.kind == "calculator":
         _record(name, arguments, started, None, via)
+        _audit(name, arguments, result, None, started, via)
     return result
+
+
+def _audit(name: Any, arguments: Any, result: Any, error: Optional[dict], started: float, via: str) -> None:
+    """Hand the call to the audit ledger, when one is active (see :mod:`riskpy.audit`)."""
+    if not (os.environ.get("RISKPY_AUDIT_FILE") or "riskpy.audit" in sys.modules):
+        return
+    from . import audit
+
+    audit._record(name, arguments, result, error, (time.perf_counter() - started) * 1000.0, via)
 
 
 # ---------------------------------------------------------------------------
@@ -1001,7 +1027,7 @@ def mack_chain_ladder(triangle: List[List[Optional[float]]], tail: float = 1.0) 
 def verify(modules: Optional[List[str]] = None, oracle: bool = False) -> dict:
     """Run RiskPY's verification suite: every identity the library claims, checked against sources it had no hand in.
 
-    modules: restrict the run to these modules (core, special, mc, quant, life, reserving, rates, credit, viz)
+    modules: restrict the run to these modules (core, special, mc, quant, life, reserving, rates, credit, capital, viz)
     oracle: also cross-check the special functions against SciPy when it is installed (slower)
     """
     from . import verify as _verify
@@ -1274,6 +1300,416 @@ def bornhuetter_ferguson(triangle: List[List[Optional[float]]], premiums: List[f
 
 
 # ---------------------------------------------------------------------------
+# Added in 0.7.0: economic capital (riskpy.capital) and bump-and-revalue over any calculator
+
+
+def _risk_names(names: Optional[List[str]], count: int, prefix: str) -> List[str]:
+    if names is None:
+        return [f"{prefix}_{i + 1}" for i in range(count)]
+    if len(names) != count:
+        raise InputError(f"names has {len(names)} entries but there are {count} {prefix}s", code="RP109",
+                         param="names")
+    if len(set(names)) != len(names):
+        raise InputError("names must be distinct", code="RP113", param="names")
+    return list(names)
+
+
+def _check_matrix_size(count: int, param: str) -> None:
+    if count > LIMITS["matrix"]:
+        raise InputError(f"{param} has {count} risks; at most {LIMITS['matrix']} are accepted", code="RP405",
+                         param=param)
+
+
+@tool()
+def capital_aggregate(standalone: List[float], correlation: List[List[float]],
+                      names: Optional[List[str]] = None) -> dict:
+    """Aggregate standalone capital figures with a correlation matrix (the variance–covariance formula): diversified total, diversification benefit, and each risk's Euler contribution.
+
+    standalone: the capital of each risk on its own, all >= 0, same confidence level and currency
+    correlation: the correlation matrix in the same order, as rows; ones on the diagonal, entries decimals in [-1, 1]
+    names: labels for the risks (default risk_1, risk_2, ...)
+    """
+    from . import capital
+
+    _check_matrix_size(len(standalone), "standalone")
+    labels = _risk_names(names, len(standalone), "risk")
+    return capital.aggregate_capital(standalone, correlation, labels).to_dict()
+
+
+_COPULA_FAMILIES = ("gaussian", "t", "clayton", "survival_clayton", "gumbel", "survival_gumbel", "frank")
+
+
+def _copula(family: str, dim: int, correlation: Any, df: Optional[float], copula_theta: Optional[float]):
+    """Build a riskpy.capital copula from tool arguments, refusing parameters the family does not take."""
+    from . import capital
+
+    key = family.strip().lower().replace("-", "_").replace(" ", "_")
+    key = {"student_t": "t", "student": "t", "normal": "gaussian", "gauss": "gaussian"}.get(key, key)
+    if key not in _COPULA_FAMILIES:
+        close = difflib.get_close_matches(key, _COPULA_FAMILIES, n=1, cutoff=0.5)
+        raise InputError(f"unknown copula {family!r}; choose from {list(_COPULA_FAMILIES)}", code="RP108",
+                         param="copula", hint=(f"Did you mean {close[0]!r}? " if close else "")
+                         + "gaussian and t take a correlation; clayton, gumbel and frank take copula_theta.")
+    if key in ("gaussian", "t"):
+        if correlation is None:
+            raise InputError(f"a {key} copula needs a correlation", code="RP113", param="correlation",
+                             hint="Pass the correlation of the latent variables (a decimal in [-1, 1], or a matrix).")
+        if copula_theta is not None:
+            raise InputError(f"copula_theta is for clayton, gumbel and frank copulas, not {key}", code="RP113",
+                             param="copula_theta")
+        if key == "gaussian":
+            if df is not None:
+                raise InputError("df is for the t copula; a gaussian copula has none", code="RP113", param="df")
+            return capital.GaussianCopula(correlation)
+        if df is None:
+            raise InputError("a t copula needs df (degrees of freedom, e.g. 4)", code="RP113", param="df")
+        return capital.StudentTCopula(correlation, df)
+    if copula_theta is None:
+        raise InputError(f"a {key} copula needs copula_theta", code="RP113", param="copula_theta",
+                         hint="clayton: theta = 2·tau/(1 − tau) > 0; gumbel: theta = 1/(1 − tau) >= 1; frank: any "
+                              "non-zero theta. tau is Kendall's rank correlation.")
+    if correlation is not None or df is not None:
+        which = "correlation" if correlation is not None else "df"
+        raise InputError(f"{which} is for gaussian and t copulas; {key} takes copula_theta only", code="RP113",
+                         param=which)
+    if key == "frank":
+        return capital.FrankCopula(copula_theta, dim)
+    cls = capital.ClaytonCopula if key.endswith("clayton") else capital.GumbelCopula
+    return cls(copula_theta, dim, survival=key.startswith("survival_"))
+
+
+@tool()
+def copula_dependence(family: str, rho: Optional[float] = None, copula_theta: Optional[float] = None,
+                      df: Optional[float] = None, level: float = 0.995) -> dict:
+    """What a two-risk copula implies, in closed form: Kendall's tau, lower and upper tail dependence, and the probability that both risks exceed the same quantile at once.
+
+    family: "gaussian", "t", "clayton", "survival_clayton", "gumbel", "survival_gumbel" or "frank"
+    rho: correlation of the latent variables, a decimal in [-1, 1] (gaussian and t only)
+    copula_theta: the dependence parameter of a clayton (> 0), gumbel (>= 1) or frank (non-zero) copula
+    df: degrees of freedom (t only)
+    level: the quantile for the joint exceedance, as a decimal (0.995 is the 1-in-200)
+    """
+    from . import capital
+
+    cop = _copula(family, 2, rho, df, copula_theta)
+    if not 0.0 < level < 1.0:
+        raise InputError(f"level must be strictly between 0 and 1, got {level!r}", code="RP110", param="level",
+                         hint="A confidence level is a decimal: 99.5% is 0.995.")
+    tails = cop.tail_dependence()
+    joint = cop.joint_exceedance(level)
+    independent = (1.0 - level) ** 2
+    out = {
+        "family": family.strip().lower(), "kendall_tau": cop.kendall_tau(),
+        "tail_dependence": {"lower": tails.lower, "upper": tails.upper},
+        "level": level, "joint_exceedance": joint, "independent_joint_exceedance": independent,
+        "multiple_of_independent": joint / independent,
+        "conditional_exceedance": joint / (1.0 - level),
+    }
+    if isinstance(cop, capital.GaussianCopula):
+        out["spearman_rho"] = cop.spearman_rho()
+    return out
+
+
+@tool(requires="sim")
+def nearest_correlation(matrix: List[List[float]]) -> dict:
+    """Repair a correlation matrix that is not positive semi-definite: the nearest valid correlation matrix (Higham 2002).
+
+    matrix: the intended correlations as rows; symmetric, entries decimals in [-1, 1]
+    """
+    from . import capital
+    from .mc import _numpy
+
+    _check_matrix_size(len(matrix), "matrix")
+    np = _numpy()
+    fixed = capital.nearest_correlation(matrix)
+    given = np.array(matrix, dtype=float)
+    target = 0.5 * (given + given.T)
+    np.fill_diagonal(target, 1.0)
+    distance = float(np.linalg.norm(fixed - target, "fro"))
+    return {
+        "matrix": fixed.tolist(), "changed": bool(distance > 1e-12), "frobenius_distance": distance,
+        "min_eigenvalue_before": float(np.linalg.eigvalsh(target).min()),
+        "min_eigenvalue_after": float(np.linalg.eigvalsh(fixed).min()),
+    }
+
+
+@tool(requires="sim")
+def capital_allocation(means: List[float], sds: List[float], correlation: Optional[List[List[float]]] = None,
+                       level: float = 0.99, measure: str = "tvar", method: str = "euler",
+                       marginal: str = "lognormal", copula: str = "gaussian", df: Optional[float] = None,
+                       copula_theta: Optional[float] = None, names: Optional[List[str]] = None,
+                       trials: int = 200_000, seed: int = 0) -> dict:
+    """Simulate a portfolio of loss lines joined by a copula, then measure its capital (TVaR or VaR) and allocate it to the lines: total, standalone, contributions that add up, diversification benefit.
+
+    means: expected loss of each line, on the money scale
+    sds: standard deviation of each line's loss, on the money scale, all > 0
+    correlation: correlation matrix of the copula's latent variables, as rows (gaussian and t copulas)
+    level: confidence level as a decimal (0.99 means 99%)
+    measure: "tvar" (expected shortfall) or "var"
+    method: "euler" (marginal contributions; co-TVaR for tvar), "covariance" or "standalone" (pro rata)
+    marginal: each line's distribution: "lognormal" (means must be > 0) or "normal"
+    copula: "gaussian", "t", "clayton", "survival_clayton", "gumbel", "survival_gumbel" or "frank"
+    df: degrees of freedom (t copula only)
+    copula_theta: dependence parameter of a clayton, gumbel or frank copula (the same for every pair of lines)
+    names: labels for the lines (default line_1, line_2, ...)
+    trials: simulated years
+    seed: random seed; the same non-zero seed gives the same answer, 0 draws a fresh seed each call
+    """
+    from . import capital, mc
+
+    np = mc._numpy()
+    k = len(means)
+    if k < 2:
+        raise InputError(f"at least two lines are needed to allocate between, got {k}", code="RP111", param="means")
+    _check_matrix_size(k, "means")
+    if len(sds) != k:
+        raise InputError(f"means has {k} entries but sds has {len(sds)}", code="RP109", param="sds")
+    labels = _risk_names(names, k, "line")
+    if marginal not in ("lognormal", "normal"):
+        raise InputError(f"marginal must be 'lognormal' or 'normal', got {marginal!r}", code="RP108",
+                         param="marginal")
+    for i, sd in enumerate(sds):
+        if sd <= 0:
+            raise InputError(f"sds[{i}] must be > 0, got {sd!r}", code="RP102", param=f"sds[{i}]")
+        if marginal == "lognormal" and means[i] <= 0:
+            raise InputError(f"means[{i}] must be > 0 for a lognormal line, got {means[i]!r}", code="RP102",
+                             param=f"means[{i}]", hint='Use marginal="normal" for a line whose mean is not positive.')
+    if not 2 <= trials <= LIMITS["trials"]:
+        raise InputError(f"trials must be between 2 and {LIMITS['trials']}, got {trials!r}",
+                         code="RP405" if trials > 2 else "RP107", param="trials")
+    if trials * k > LIMITS["capital_cells"]:
+        raise InputError(f"trials × lines = {trials * k:g}; the tool accepts at most {LIMITS['capital_cells']:g} "
+                         "— lower trials", code="RP405", param="trials")
+    if seed < 0:
+        raise InputError(f"seed must be >= 0, got {seed!r}", code="RP102", param="seed",
+                         hint="Use a positive seed for a reproducible run, or 0 for a fresh one.")
+    if correlation is not None and len(correlation) != k:
+        raise InputError(f"correlation must be a {k}x{k} matrix in the order of the lines", code="RP109",
+                         param="correlation")
+    cop = _copula(copula, k, correlation, df, copula_theta)
+    u = cop.sample(trials, seed=seed or None)
+    losses = {}
+    for j, label in enumerate(labels):
+        try:
+            dist = (mc.LogNormal.from_moments(means[j], sds[j]) if marginal == "lognormal"
+                    else mc.Normal(means[j], sds[j]))
+            losses[label] = np.asarray(dist.ppf(u[:, j]), dtype=float)
+            if not np.all(np.isfinite(losses[label])):
+                raise OverflowError
+        except (RiskPyError, OverflowError):
+            raise InputError(f"line {j} (mean {means[j]:g}, sd {sds[j]:g}) cannot be simulated in double precision",
+                             code="RP304", param=f"sds[{j}]",
+                             hint="Express the amounts in larger units (thousands or millions) and check that "
+                                  "sd / mean is a realistic coefficient of variation.") from None
+    out = capital.allocate(losses, level=level, measure=measure, method=method).to_dict()
+    out.update({"names": labels, "copula": copula.strip().lower(), "marginal": marginal, "seed": seed})
+    return out
+
+
+_META_TOOLS = ("sensitivity", "scenario_table")
+
+
+def _inner_tool(tool_name: str, arguments: dict) -> "tuple[Tool, dict]":
+    """The calculator a meta-tool is asked to drive, with its base arguments checked."""
+    try:
+        t = _lookup(tool_name)
+    except UnknownNameError as exc:
+        exc.param = "tool"
+        raise
+    if t.kind != "calculator" or t.name in _META_TOOLS:
+        raise InputError(f"{tool_name!r} is not a calculator this tool can drive", code="RP108", param="tool",
+                         hint="Name one of the calculators `riskpy-tools` lists, e.g. black_scholes or bond_analytics.")
+    if not t.available:
+        raise ToolUnavailable(f"{t.name} needs {_EXTRA_NAME.get(t.requires, t.requires)}, which is not installed: "
+                              f"{t.install}", code=_EXTRA_CODE.get(t.requires, "RP201"), param="tool", hint=t.install)
+    return t, _arguments(t, arguments)
+
+
+def _run_inner(t: Tool, arguments: dict) -> Any:
+    raw = t.fn(**arguments)
+    _check_result_finite(raw)
+    return _jsonable(raw)
+
+
+def _numeric_leaves(value: Any, path: str = "") -> Dict[str, float]:
+    """Every number in a JSON result, keyed by its dotted path ("result" for a bare number)."""
+    if isinstance(value, bool) or value is None:
+        return {}
+    if isinstance(value, (int, float)):
+        return {path or "result": float(value)}
+    if isinstance(value, dict):
+        out: Dict[str, float] = {}
+        for key, item in value.items():
+            out.update(_numeric_leaves(item, f"{path}.{key}" if path else str(key)))
+        return out
+    if isinstance(value, list):
+        out = {}
+        for index, item in enumerate(value):
+            out.update(_numeric_leaves(item, f"{path}[{index}]"))
+        return out
+    return {}
+
+
+def _needs_seed(t: Tool, arguments: dict, param: str) -> None:
+    spec = inspect.signature(t.fn).parameters.get("seed")
+    if spec is not None and arguments.get("seed", spec.default) in (0, None):
+        raise InputError(f"{t.name} is a simulation: pass a non-zero seed in arguments so every revaluation uses "
+                         "the same random draws", code="RP113", param=param,
+                         hint='Add "seed": 1 (any positive whole number) to arguments; with seed 0 each run draws '
+                              "fresh numbers and the differences would be sampling noise.")
+
+
+@tool()
+def sensitivity(tool: str, arguments: dict, parameter: str, bump: Optional[float] = None,
+                relative: bool = False) -> dict:
+    """Bump-and-revalue any calculator: the first and second derivative and the elasticity of every numeric output with respect to one input, by central differences.
+
+    tool: the calculator to differentiate, e.g. "black_scholes" or "bond_analytics"
+    arguments: the base-case arguments for that calculator, as an object
+    parameter: the numeric argument to bump, e.g. "S" or "ytm"
+    bump: size of the bump in the parameter's own units (default 0.0001 × max(1, |value|); 1 for a whole-number parameter)
+    relative: true to read bump as a fraction of the parameter's value (0.01 means a 1% bump)
+    """
+    t, base_args = _inner_tool(tool, arguments)
+    _needs_seed(t, base_args, "arguments")
+    params = inspect.signature(t.fn).parameters
+    if parameter not in params:
+        guess = _suggest(parameter, set(params))
+        raise InputError(f"{t.name} has no argument {parameter!r}; it takes {sorted(params)}", code="RP108",
+                         param="parameter", hint=(f"Did you mean {guess!r}? " if guess else "")
+                         + f"`riskpy-tools schema {t.name}` lists them.")
+    hint = typing.get_type_hints(t.fn).get(parameter)
+    members = [a for a in typing.get_args(hint) if a is not type(None)] or [hint]
+    if members[0] not in (float, int):
+        raise InputError(f"{parameter!r} is not a numeric argument of {t.name}, so it cannot be bumped", code="RP108",
+                         param="parameter", hint="Use scenario_table to compare discrete choices such as kind or table.")
+    whole = members[0] is int
+    x = base_args.get(parameter, params[parameter].default)
+    if isinstance(x, bool) or not isinstance(x, numbers.Real):
+        raise InputError(f"{parameter!r} has no numeric value to bump: give it in arguments", code="RP403",
+                         param="arguments")
+    x = int(x) if whole else float(x)
+    if bump is None:
+        if relative:
+            raise InputError("relative=true needs a bump (0.01 for a 1% bump)", code="RP113", param="bump")
+        h = 1 if whole else 1e-4 * max(1.0, abs(x))
+    else:
+        h = bump * abs(x) if relative else bump
+        if not h > 0.0:
+            raise InputError("the bump must be positive" + (" (a relative bump of a zero value is zero)"
+                                                              if relative else f", got {bump!r}"),
+                             code="RP102", param="bump")
+        if whole:
+            if float(h) != round(h):
+                raise InputError(f"{parameter!r} is a whole number, so the bump must be one too (got {h!r})",
+                                 code="RP107", param="bump")
+            h = int(round(h))
+    if x + h == x or x - h == x or (not whole and float(h) * float(h) == 0.0):
+        raise InputError(f"a bump of {h!r} is too small to change {parameter} = {x!r} in double precision",
+                         code="RP102", param="bump", hint="Leave bump out for the default (0.0001 × max(1, |value|)).")
+
+    def value_at(shift: Any) -> Dict[str, float]:
+        return _numeric_leaves(_run_inner(t, {**base_args, parameter: x + shift}))
+
+    base = _numeric_leaves(_run_inner(t, base_args))
+    if not base:
+        raise InputError(f"{t.name} returned no numbers to differentiate", code="RP113", param="tool")
+    up = down = None
+    failure: Optional[RiskPyError] = None
+    try:
+        up = value_at(h)
+    except RiskPyError as exc:
+        failure = exc
+    try:
+        down = value_at(-h)
+    except RiskPyError as exc:
+        failure = failure or exc
+    if up is not None and down is not None:
+        scheme, far = "central", None
+    elif up is not None:
+        scheme, far = "forward", value_at(2 * h)
+    elif down is not None:
+        scheme, far = "backward", value_at(-2 * h)
+    else:
+        assert failure is not None
+        raise InputError(f"{t.name} refuses {parameter} = {x + h!r} and {x - h!r}, so nothing can be differenced: "
+                         f"{failure}", code="RP113", param="bump", hint="Use a smaller bump.")
+    outputs: Dict[str, dict] = {}
+    for path, f0 in base.items():
+        if scheme == "central":
+            if path not in up or path not in down:
+                continue
+            first = (up[path] - down[path]) / (2.0 * h)
+            second = (up[path] - 2.0 * f0 + down[path]) / (h * h)
+        else:
+            near = up if scheme == "forward" else down
+            if path not in near or path not in far:
+                continue
+            sign = 1.0 if scheme == "forward" else -1.0
+            first = sign * (-3.0 * f0 + 4.0 * near[path] - far[path]) / (2.0 * h)
+            second = (f0 - 2.0 * near[path] + far[path]) / (h * h)
+        outputs[path] = {
+            "base": f0, "down": None if down is None else down.get(path), "up": None if up is None else up.get(path),
+            "derivative": first, "second_derivative": second,
+            "elasticity": first * x / f0 if f0 != 0.0 else None,
+        }
+    return {"tool": t.name, "parameter": parameter, "value": x, "bump": h, "scheme": scheme, "outputs": outputs}
+
+
+@tool()
+def scenario_table(tool: str, arguments: dict, scenarios: dict) -> dict:
+    """Run any calculator under a set of named what-if scenarios and tabulate each result against the base case: the change and the relative change of every numeric output.
+
+    tool: the calculator to run, e.g. "black_scholes" or "basel_irb_capital"
+    arguments: the base-case arguments for that calculator, as an object
+    scenarios: an object mapping each scenario's label to the arguments it overrides, e.g. {"rates +100bp": {"r": 0.06}, "vol 30%": {"sigma": 0.3}}
+    """
+    t, base_args = _inner_tool(tool, arguments)
+    if not scenarios:
+        raise InputError("scenarios is empty: give at least one {label: {argument: value}}", code="RP111",
+                         param="scenarios")
+    if len(scenarios) > LIMITS["scenarios"]:
+        raise InputError(f"scenarios has {len(scenarios)} entries; at most {LIMITS['scenarios']} are accepted",
+                         code="RP405", param="scenarios")
+    accepted = set(inspect.signature(t.fn).parameters)
+    for label, overrides in scenarios.items():
+        if not isinstance(overrides, dict):
+            raise ArgumentTypeError(f"scenario {label!r} must be an object of argument overrides, got "
+                                    f"{_json_name(overrides)}", code="RP404", param="scenarios",
+                                    hint='Each scenario is {"argument": new value}, e.g. {"r": 0.06}.')
+        unknown = sorted(set(overrides) - accepted)
+        if unknown:
+            guess = _suggest(unknown[0], accepted)
+            raise ArgumentTypeError(f"scenario {label!r} overrides {unknown}, which {t.name} does not take; "
+                                    f"accepted: {sorted(accepted)}", code="RP402", param="scenarios",
+                                    hint=(f"Did you mean {guess!r}? " if guess else "")
+                                    + f"`riskpy-tools schema {t.name}` lists them.")
+    _needs_seed(t, base_args, "arguments")
+    base_result = _run_inner(t, base_args)
+    base = _numeric_leaves(base_result)
+    table: Dict[str, dict] = {}
+    failed = 0
+    for label, overrides in scenarios.items():
+        try:
+            result = _run_inner(t, {**base_args, **overrides})
+        except RiskPyError as exc:
+            _rename_param(t.name, accepted, exc)
+            table[str(label)] = {"overrides": _jsonable(overrides), "error": exc.to_dict()}
+            failed += 1
+            continue
+        leaves = _numeric_leaves(result)
+        shared = [path for path in base if path in leaves]
+        table[str(label)] = {
+            "overrides": _jsonable(overrides), "result": result,
+            "change": {path: leaves[path] - base[path] for path in shared},
+            "relative_change": {path: ((leaves[path] - base[path]) / abs(base[path]) if base[path] != 0.0 else None)
+                                for path in shared},
+        }
+    return {"tool": t.name, "base": {"arguments": base_args, "result": base_result}, "scenarios": table,
+            "failed": failed}
+
+
+# ---------------------------------------------------------------------------
 # Introspection: what an agent calls when something goes wrong
 
 
@@ -1323,6 +1759,49 @@ _EXPLAIN: Dict[str, Dict[str, Any]] = {
         "conventions": ["'annual' = effective annual = 1 period a year", "'continuous' is what black_scholes, "
                         "merton and cds_par_spread take"],
     },
+    "capital_aggregate": {
+        "formula": "total = √(c′·R·c); contribution_i = c_i·(R·c)_i / total (Euler: the contributions add up to total)",
+        "conventions": ["standalone figures are positive amounts at one confidence level", "correlations are "
+                        "decimals; the matrix must be positive semi-definite (nearest_correlation repairs one)",
+                        "exact for jointly elliptical risks; an approximation for skewed or tail-dependent ones — "
+                        "use capital_allocation for those"],
+    },
+    "capital_allocation": {
+        "formula": "simulate lines X_i = F_i⁻¹(U_i) with (U_1..U_n) from the copula; S = ΣX_i; TVaR = expected "
+                   "shortfall of S (Acerbi–Tasche); Euler contribution_i = E[X_i | S in the worst (1 − level)]",
+        "conventions": ["means and sds are on the money scale; losses are positive (bigger is worse)",
+                        "correlation is the copula's latent correlation, not a rank correlation",
+                        "pass a non-zero seed for a reproducible answer", "contributions add up to total; "
+                        "diversification_benefit = Σ standalone − total"],
+    },
+    "copula_dependence": {
+        "formula": "tau: gaussian/t 2/π·asin(ρ), clayton θ/(θ+2), gumbel 1 − 1/θ, frank 1 − 4/θ·(1 − D₁(θ)); upper "
+                   "tail dependence: t 2·t_{ν+1}(−√((ν+1)(1−ρ)/(1+ρ))), gumbel 2 − 2^(1/θ), clayton lower 2^(−1/θ); "
+                   "joint_exceedance = 1 − 2q + C(q, q)",
+        "conventions": ["rho for gaussian and t, copula_theta for clayton, gumbel and frank",
+                        "a gaussian copula has zero tail dependence at any correlation below 1",
+                        "survival_clayton / survival_gumbel swap the tails"],
+    },
+    "nearest_correlation": {
+        "formula": "Higham (2002): alternating projections onto the positive semi-definite matrices and the "
+                   "unit-diagonal matrices, with Dykstra's correction; nearest in the Frobenius norm",
+        "conventions": ["a matrix that is already valid is returned unchanged (changed = false)"],
+    },
+    "sensitivity": {
+        "formula": "derivative = [f(x + h) − f(x − h)] / 2h; second_derivative = [f(x + h) − 2f(x) + f(x − h)] / h²; "
+                   "elasticity = derivative·x / f(x)",
+        "conventions": ["derivatives are per one unit of the parameter: per 1.00 of a rate (multiply by 0.0001 "
+                        "for one basis point), per 1.00 of volatility", "falls back to a three-point one-sided "
+                        "difference (scheme forward/backward) when one bumped value is refused",
+                        "a simulation needs a non-zero seed so both bumps share the same draws",
+                        "outputs are keyed by dotted path (\"price\", \"var.0.995\", \"result\" for a bare number)"],
+    },
+    "scenario_table": {
+        "formula": "result_k = tool(arguments with scenario k's overrides); change = result_k − base; "
+                   "relative_change = change / |base|",
+        "conventions": ["a scenario the calculator refuses is reported under its label with the error, and the "
+                        "rest still run", "overrides replace arguments; they are not added to them"],
+    },
 }
 
 
@@ -1360,6 +1839,17 @@ def riskpy_explain(topic: str) -> dict:
     raise UnknownNameError(f"{topic!r} is neither an error code (RPnnn) nor a tool name", code="RP401", param="topic",
                            hint=(f"Did you mean {' or '.join(map(repr, close))}? " if close else "")
                            + "riskpy-explain --list shows the codes; riskpy-tools lists the tools.")
+
+
+@tool(kind="introspection")
+def riskpy_audit(check: bool = False) -> dict:
+    """The audit ledger: whether calls are being recorded in full, the file, how many entries, and the SHA-256 head digest to quote with your numbers; optionally replay them.
+
+    check: true to recompute every recorded call and report any result that no longer matches
+    """
+    from . import audit
+
+    return audit.status(check=check)
 
 
 # ---------------------------------------------------------------------------

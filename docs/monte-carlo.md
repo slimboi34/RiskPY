@@ -164,10 +164,23 @@ correlation lands within 0.01 of the target at 100k trials.
 A set of pairwise correlations can be jointly impossible; the error names the
 smallest eigenvalue rather than letting a Cholesky failure surface later.
 
-For tail dependence a correlation cannot express, `simulate` accepts
-`copula=` — any object with `.dim` and `.uniforms(n, rng)` returning an
-`(n, dim)` array of correlated uniforms, which are then pushed through each
-distribution's `ppf`.
+For tail dependence a correlation cannot express, `run`, `sample` and
+`simulate` accept `copula=`. [`riskpy.capital`](capital.md) has five — Gaussian,
+Student t, Clayton, Gumbel and Frank — each with its closed-form Kendall's tau
+and tail dependence:
+
+```python
+from riskpy.capital import StudentTCopula
+
+result = model.run(100_000, seed=42, copula=StudentTCopula(0.3, df=4))
+```
+
+The copula's uniforms are pushed through each distribution's `ppf`, in the
+order the variables were declared. A variable with no quantile function (a
+`Compound`) is simulated and reordered to the copula's ranks instead. Any object
+with `.dim` and `.uniforms(n, rng)` returning an `(n, dim)` array works. Note
+that a copula's correlation is that of its latent variables, not the Spearman
+correlation `correlate` takes; `GaussianCopula(rho).spearman_rho()` converts.
 
 ![Scatter](assets/scatter.png)
 
@@ -256,6 +269,20 @@ Spearman **rank** correlation by default — the relationship between an input
 and a total is usually monotonic and rarely linear. `method="pearson"` for the
 linear case and `method="contribution"` for each input's share of explained
 variance. Plot it with `result.plot("tornado")`.
+
+## What if? Stress and reverse stress
+
+`model.stress({...})` re-evaluates the formula under named scenarios on the
+same random draws as the base run, and `result.reverse_stress(0.995)` reports
+what the inputs looked like in the worst trials. Both are covered in
+[Stress and scenario testing](stress.md).
+
+```python
+stress = model.stress({"inflation 8%": {"inflation": 0.08}}, trials=100_000, seed=42)
+stress.delta("inflation 8%", "var", 0.995)
+
+result.reverse_stress(0.995).scenario      # {'claims': …, 'inflation': …}
+```
 
 ## Exporting
 

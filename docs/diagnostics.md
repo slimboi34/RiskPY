@@ -17,10 +17,10 @@ riskpy-doctor --json     # {"ok", "version", "summary", "checks": [{id, status, 
 ```
 
 ```text
-riskpy-doctor — RiskPY 0.6.0
+riskpy-doctor — RiskPY 0.7.0
 
   ok    python            Python 3.12.13 (CPython) at /…/bin/python
-  ok    riskpy_version    open-riskpy 0.6.0 (riskpy at /…/site-packages/riskpy)
+  ok    riskpy_version    open-riskpy 0.7.0 (riskpy at /…/site-packages/riskpy)
   ok    core_import       compiled core loaded from /…/riskpy/cpp_underwriter.cpython-312-darwin.so
   ok    core_compute      the core simulates correctly (Poisson mean 3.0064 ≈ 3)
   ok    core_hardening    the core refuses non-finite parameters (0.4.1+ build)
@@ -29,8 +29,8 @@ riskpy-doctor — RiskPY 0.6.0
                           → pip install pandas
   …
   ok    selfcheck         68 identities verified in 0.16s (core, special, quant, life, rates, credit)
-  ok    tools             27 of 27 calculators available
-  ok    mcp_server        the MCP server builds and lists 30 tools; command /…/bin/riskpy-mcp
+  ok    tools             33 of 33 calculators available
+  ok    mcp_server        the MCP server builds and lists 37 tools; command /…/bin/riskpy-mcp
   ok    platform          Darwin 25.1.0 arm64
 
 14 ok, 1 warn, 0 fail — works, with warnings

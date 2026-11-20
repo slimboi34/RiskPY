@@ -63,7 +63,7 @@ result.describe()          # the lot, as a dict
 
     Twenty distributions with a full analytic layer (`pdf`, `cdf`, `ppf`,
     `moments`), mixtures and truncation, Latin hypercube sampling, rank
-    correlation by Iman–Conover, and a copula hook.
+    correlation by Iman–Conover, copulas, and stress tests.
 
 - **[Visualisation](visualisation.md)**
 
@@ -98,6 +98,22 @@ result.describe()          # the lot, as a dict
 
     Merton, hazard rates and CDS, the Vasicek / Basel ASRF model with IRB
     capital, a one-factor copula portfolio simulation, rating transitions.
+
+- **[Economic capital](capital.md)**
+
+    Five copulas with closed-form tail dependence, a nearest-correlation
+    repair, variance–covariance aggregation, and Euler allocation of TVaR or
+    VaR to lines of business, with contributions that add up.
+
+- **[Stress and scenario testing](stress.md)**
+
+    Scenarios on shared random draws, reverse stress tests, and
+    bump-and-revalue sensitivities and scenario tables for any calculator.
+
+- **[The audit ledger](audit.md)**
+
+    Every tool call recorded in full and hash-chained. Verify that nothing
+    was altered, replay it after an upgrade, write the calculation record.
 
 - **[Verification](verification.md)**
 
@@ -165,4 +181,6 @@ See [How it works](HOW_IT_WORKS.md), [Architecture](ARCHITECTURE.md) and the
 
 - [Monte Carlo](monte-carlo.md) — the full distribution list and the `Result` API
 - [Visualisation](visualisation.md) — every chart, and the rules they follow
+- [Economic capital](capital.md) — copulas, aggregation and Euler allocation
+- [Stress and scenario testing](stress.md) — scenarios, reverse stress tests, sensitivities
 - [Verification](verification.md) — what is checked, and the latest report

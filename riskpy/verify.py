@@ -65,6 +65,7 @@ MODULES: Tuple[str, ...] = (
     "reserving",
     "rates",
     "credit",
+    "capital",
     "viz",
 )
 
@@ -500,6 +501,7 @@ _SOURCES: Dict[str, Callable[[], List[Raw]]] = {
     "reserving": lambda: _module_checks("reserving"),
     "rates": lambda: _module_checks("rates"),
     "credit": lambda: _module_checks("credit"),
+    "capital": lambda: _module_checks("capital"),
     "viz": _viz_checks,
 }
 
@@ -544,7 +546,7 @@ def checks(modules: Optional[Iterable[str]] = None, oracle: bool = True) -> List
 # Which extra enables which module, for the hint printed next to a skip.
 _EXTRA_FOR_MODULE: Dict[str, str] = {
     "core": "sim", "special": "sim", "mc": "sim", "quant": "sim", "life": "sim",
-    "reserving": "sim", "rates": "sim", "credit": "sim", "viz": "viz",
+    "reserving": "sim", "rates": "sim", "credit": "sim", "capital": "sim", "viz": "viz",
 }
 
 

@@ -1,3 +1,228 @@
+# RiskPY v0.7.0 — Release Notes
+
+**Release date:** 2026-11-20  
+**Type:** Minor release — economic capital, stress testing, an audit ledger, MCP resources and prompts. No existing result changes  
+**Install:** `pip install -U open-riskpy`
+
+---
+
+## TL;DR
+
+0.4.0 made RiskPY callable by agents, 0.5.0 made its errors actionable, and 0.6.0 made its
+numbers right in the corners. 0.7.0 adds the layer that sits on top of single-risk
+calculations: how risks combine, what a stress does to them, and how to prove afterwards
+what was computed.
+
+- **`riskpy.capital`** — five copulas with closed-form Kendall's tau and tail dependence,
+  a nearest-correlation repair, variance–covariance aggregation, and Euler allocation of
+  TVaR or VaR to lines of business. `riskpy.mc` has had a `copula=` argument since 0.3 with
+  nothing in the library to pass to it; now there is.
+- **Stress testing** — `Model.stress` runs scenarios on the base run's own random draws,
+  and `Result.reverse_stress` reports the scenario behind the worst outcomes. For agents,
+  `sensitivity` and `scenario_table` bump and revalue *any* calculator.
+- **`riskpy.audit`** — every tool call recorded in full to a SHA-256 hash-chained ledger
+  that can be verified, replayed against the installed version, and written up as a
+  calculation record (`riskpy-audit`).
+- **MCP resources and prompts** — the conventions, the error catalogue and the context pack
+  as resources; four step-by-step procedures as prompts.
+
+Six new calculators are tools (33 in all) and there is one new introspection tool. The
+suite goes from 857 to 935 tests and `riskpy-verify` from 111 to 125 checks (139 with
+SciPy).
+
+---
+
+## New
+
+### Economic capital (`riskpy.capital`)
+
+```python
+from riskpy.capital import GumbelCopula, StudentTCopula, aggregate_capital, allocate, nearest_correlation
+
+StudentTCopula(0.5, df=4).tail_dependence()       # TailDependence(lower=0.2532, upper=0.2532)
+GumbelCopula(2.0).joint_exceedance(0.995)         # 0.00294: both beyond their 1-in-200, 117× independence
+
+losses = book.sample(400_000, seed=1, copula=GumbelCopula(1.5, dim=3))    # any riskpy.mc Model
+alloc = allocate(losses, level=0.995)             # Euler (co-TVaR) contributions; they add up to the total
+```
+
+- **Copulas:** `GaussianCopula`, `StudentTCopula`, `ClaytonCopula`, `GumbelCopula`,
+  `FrankCopula`.
+  - Each has `sample`, `kendall_tau`, `tail_dependence`, `cdf`, `joint_exceedance` and
+    `from_kendall_tau`. `GaussianCopula` also has `spearman_rho`.
+  - Gaussian and t take a correlation or a full matrix. The Archimedean ones take `dim`, and
+    Clayton and Gumbel take `survival=True` to swap the tails.
+  - All of them plug into `Model.run(copula=...)`, `Model.sample` and `simulate`.
+  - `empirical_tail_dependence(x, y, level)` measures it on data.
+- **`nearest_correlation(matrix)`:** Higham's (2002) alternating projections. It reproduces
+  his published example to four decimals and returns a valid matrix unchanged. The error
+  `riskpy.mc` raises for a non-positive-semi-definite matrix has pointed at this function
+  since 0.3; it now exists.
+- **`aggregate_capital(standalone, correlation)`:** total = √(c′Rc), with the
+  diversification benefit and each risk's Euler contribution. Pure Python.
+- **`allocate(losses, level, measure, method)`:** capital for simulated losses, split
+  between lines.
+  - `measure` is `"tvar"` or `"var"`; `method` is `"euler"`, `"covariance"` or
+    `"standalone"`.
+  - The total equals `Result.tvar(level)` on the same sample, and the contributions add up
+    to it to rounding error (measured: at most 5e-14 on four million trials).
+  - A point mass at the quantile is counted only for the part of it in the tail.
+  - `Allocation.plot()` and `Aggregation.plot()` draw the existing `viz.allocation` chart.
+
+How much the copula matters, for three lognormal lines (means 100 / 60 / 40) at the same
+seed and 400,000 trials: the 99.5% TVaR is 446.7 under a Gaussian copula with correlations
+0.5 / 0.25 / 0.25, 482.9 under a t copula with that matrix and 4 degrees of freedom, and
+533.8 under a Gumbel copula with θ = 1.5.
+
+### Stress and scenario testing
+
+```python
+stress = model.stress({
+    "inflation 8%": {"inflation": 0.08},                       # a number pins the input
+    "claims +20%":  {"claims": lambda x: 1.2 * x},             # a callable transforms the draws
+    "heavier tail": {"claims": Compound(Poisson(120), LogNormal(8.5, 1.4))},   # a distribution, at the same ranks
+}, trials=100_000, seed=42)
+stress.delta("inflation 8%", "var", 0.995)
+
+result.reverse_stress(0.995).scenario      # {input: its mean in the worst 0.5% of trials}
+```
+
+- **`Model.stress(scenarios, ...)`** returns a `StressResult`: the base `Result`, one
+  `Result` per scenario, `delta`, `worst`, `summary`, `to_dict`, `to_frame`.
+  - Every scenario shares the base run's draws. Measured over 20 seeds of 100,000 trials,
+    for a one-point inflation shock: the estimated change in the mean had a standard
+    deviation of 1,215 from two independent runs and 8.5 from `stress`.
+  - A `Distribution` shock redraws the input at the base draw's ranks, so correlations and
+    copulas are preserved.
+- **`Result.reverse_stress(level, threshold, tail)`** returns a `ReverseStress`: each
+  input's mean in the tail, its shift in standard deviations, and where that sits in the
+  input's own distribution.
+
+### `sensitivity` and `scenario_table`: tools that drive other tools
+
+```bash
+riskpy-tools call sensitivity '{"tool": "black_scholes", "parameter": "S",
+    "arguments": {"S": 100, "K": 100, "T": 1, "r": 0.05, "sigma": 0.2}}'
+# derivative 0.63683 (the delta), second_derivative 0.018762 (the gamma), elasticity 6.09
+```
+
+- **`sensitivity`** returns the first and second derivative and the elasticity of every
+  numeric output with respect to one input, by central differences.
+  - It falls back to a three-point one-sided difference when a bumped value is refused.
+  - A whole-number parameter is bumped by 1.
+  - A simulation without a seed is refused (RP113), because the differences would be noise.
+- **`scenario_table`** runs a calculator under named sets of overrides and gives the change
+  and relative change of every output. A scenario the calculator refuses is reported under
+  its label with the coded error, and the others still run.
+- The inner call is checked exactly as a direct call is, so `sigma: 20` is still RP105.
+
+### The audit ledger (`riskpy.audit`, `riskpy-audit`)
+
+```bash
+RISKPY_AUDIT_FILE=run.jsonl riskpy-tools call black_scholes '{...}'
+riskpy-mcp --audit run.jsonl
+riskpy-audit verify run.jsonl      # intact: 12 entries, head 9c1f0b52…
+riskpy-audit replay run.jsonl      # 11 matched, 0 drifted, 1 skipped
+riskpy-audit report run.jsonl -o record.md --check
+```
+
+- Each line is one call: tool, full arguments, the result or the error, timing, the RiskPY
+  and Python versions, the previous entry's digest and its own.
+- **`verify_chain`** detects an edited argument or result, and a removed, inserted or
+  reordered entry, and names the first entry affected.
+- **`replay`** recomputes every call and lists what matched, what drifted (with the path
+  and both values) and what could not be recomputed. Use it before signing off a report, and
+  after an upgrade to see which reported numbers changed.
+- **`report`** writes a Markdown calculation record.
+- In Python: `audit.record(path)` (a context manager), `audit.start` / `audit.stop`,
+  `audit.status`.
+- The **`riskpy_audit`** tool gives an agent the head digest to quote with its numbers.
+- Recording `black_scholes` to a ledger file takes about 80 µs a call against 20 µs without
+  (measured, `benchmarks/capital/RESULTS.md`). A ledger that cannot be written never fails
+  the calculation; the failure is counted.
+
+Limits, stated in the docs: a simulation run with `seed=0` is recorded but cannot be
+replayed; the chain proves internal consistency, so keep the head somewhere else; one
+writer at a time.
+
+### MCP resources and prompts
+
+- **Resources:** `riskpy://context`, `riskpy://conventions`, `riskpy://errors`,
+  `riskpy://tools`, `riskpy://audit`, and the template `riskpy://explain/{topic}`.
+- **Prompts:** `capital_model`, `reserve_review`, `stress_test`, `audit_trail`. Each is a
+  numbered procedure naming the tools to call, and a test checks that every tool a prompt
+  names exists.
+- Both are available without MCP: `mcp_server.read_resource(uri)` and
+  `mcp_server.render_prompt(name, ...)`.
+- `riskpy-mcp --audit FILE` records the session.
+
+### Six new calculators, one new introspection tool
+
+| tool | what it does | needs |
+|---|---|---|
+| `capital_aggregate` | standalone capital + correlation matrix → diversified total and contributions | — |
+| `capital_allocation` | lognormal or normal lines joined by a copula → TVaR or VaR, allocated | NumPy |
+| `copula_dependence` | Kendall's tau, tail dependence and joint exceedance of a copula | — |
+| `nearest_correlation` | repair a correlation matrix | NumPy |
+| `sensitivity` | derivatives and elasticities of any calculator | — |
+| `scenario_table` | any calculator under named what-ifs | — |
+| `riskpy_audit` | the ledger's status and head digest; optionally a replay | — |
+
+`riskpy_explain` knows the formula and conventions of each. New limits in `tools.LIMITS`:
+100 risks, 2 × 10⁷ simulated cells (trials × lines), 100 scenarios.
+
+---
+
+## Changed
+
+- **A `Compound` input now works with `copula=`.** It has no quantile
+  function, so it is simulated and its values are placed in the order of the copula's
+  column. In 0.6.0 this raised `NotImplementedError`.
+- **The context pack** (`riskpy-context`) lists `riskpy.capital` and `riskpy.audit` and has
+  four more conventions: the two ways of declaring dependence and what number each takes,
+  the sign and additivity conventions of capital, shared draws in stress tests, and quoting
+  the ledger head.
+- **`riskpy-verify`** has a `capital` module: 14 checks, 9 of which run without NumPy.
+- **`tools.status()`** (and `riskpy_status`) reports `audit_file`.
+- Tool arguments typed as objects are now checked: a non-object is RP404.
+
+No existing calculator, distribution or tool changes its results. `riskpy.mc` was compared
+with 0.6.0 on seven sampling configurations (random and Latin hypercube, with and without
+correlations, looped formulas, a user-supplied copula) and returns identical arrays.
+
+---
+
+## Verified
+
+Every new number is checked against a source the library had no hand in
+(`tests/test_capital.py`, `tests/test_stress.py`, `tests/test_audit.py`, 78 tests):
+
+- the Gaussian copula CDF against SciPy's bivariate normal and Sheppard's formula; the t
+  copula CDF against a chi-square mixture integral;
+- the Clayton and Frank CDFs against 700-digit decimal arithmetic, for θ from 1e-9 to 5,000;
+- all thirteen sampler configurations: uniform marginals, Kendall's tau against its closed
+  form, joint probabilities against the copula CDF;
+- `nearest_correlation` against Higham's published matrix;
+- `allocate` on a ten-trial sample worked by hand, on a sample with an atom, and against
+  the closed form for jointly normal losses (worst error 0.021 on contributions of 15.04
+  and 7.01 at a million trials, over ten seeds);
+- `reverse_stress` against the conditional mean of a normal input given a normal total;
+- `sensitivity` against the Black–Scholes delta, gamma, vega, volga and rho, and against a
+  bond's price differentiated by hand;
+- the ledger's digests against `hashlib` on the documented canonical form.
+
+`benchmarks/capital/run.py` regenerates the accuracy and timing tables in
+`benchmarks/capital/RESULTS.md`.
+
+---
+
+## Upgrading
+
+Nothing to change. To start recording an agent's session, add `--audit FILE` to the
+`riskpy-mcp` command in the client configuration, or set `RISKPY_AUDIT_FILE`.
+
+---
+
 # RiskPY v0.6.0 — Release Notes
 
 **Release date:** 2026-10-21  

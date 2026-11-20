@@ -20,12 +20,17 @@ from typing import Any, Dict, List, Optional
 __all__ = ["CONVENTIONS", "describe", "build", "main"]
 
 MODULES = (
-    ("mc", "Monte Carlo: any formula, twenty distributions, correlation, a Result that answers VaR/TVaR", "sim"),
+    ("mc", "Monte Carlo: any formula, twenty distributions, correlation and copulas, stress and reverse stress "
+           "tests, a Result that answers VaR/TVaR", "sim"),
     ("quant", "Black–Scholes and Greeks (pure Python), paths, VaR, Heston", ""),
     ("life", "life tables, insurances, annuities, premiums, reserves (pure Python)", ""),
     ("reserving", "chain ladder, Mack, Bornhuetter–Ferguson, Cape Cod, bootstrap", "sim"),
     ("rates", "yield curves, bonds, Vasicek and CIR (curves are pure Python; paths need NumPy)", ""),
     ("credit", "Merton, CDS, Basel IRB, portfolio simulation, transitions (pure Python; simulation needs NumPy)", ""),
+    ("capital", "economic capital: copulas (Gaussian, t, Clayton, Gumbel, Frank), variance–covariance aggregation, "
+                "Euler allocation of TVaR/VaR, nearest correlation matrix (closed forms are pure Python; sampling "
+                "and allocation need NumPy)", ""),
+    ("audit", "the audit ledger: record tool calls in full, hash-chained; verify, replay, report", ""),
     ("viz", "twenty-two charts on one theme", "viz"),
     ("verify", "the verification suite: every identity the library claims, checked", ""),
     ("errors", "the error catalogue: stable codes, the parameter at fault, the fix", ""),
@@ -52,7 +57,23 @@ CONVENTIONS = [
     "**The compiled core has zero dependencies.** `riskpy.mc`, `riskpy.reserving` and the path simulators need "
     "NumPy (`pip install \"open-riskpy[sim]\"`); `riskpy.viz` needs Matplotlib (`[viz]`). A missing extra is an "
     "`ImportError` that says which one; the tool manifest marks such tools `available: false`.",
-    "**Check, don't trust:** `riskpy-verify` runs 111 identities (125 with SciPy) against published tables and "
+    "**Two ways to declare dependence, two different numbers.** `Model.correlate(a, b, rho)` takes a *Spearman "
+    "rank* correlation and imposes it by reordering (no tail dependence). A copula from `riskpy.capital`, passed as "
+    "`run(copula=...)`, takes its own parameter: for `GaussianCopula` / `StudentTCopula` the correlation of the "
+    "latent variables (`.spearman_rho()` and `.kendall_tau()` convert), for `ClaytonCopula` / `GumbelCopula` / "
+    "`FrankCopula` a `theta`. Columns follow the order the model's variables were declared. Use one or the other, "
+    "not both.",
+    "**Losses are positive; capital adds up.** In `riskpy.capital` a bigger number is a worse outcome, TVaR means "
+    "expected shortfall (the same definition as `Result.tvar`), and Euler `contributions` add up to `total` "
+    "exactly. `aggregate_capital` (the √(c′Rc) formula) needs standalone figures at one confidence level; "
+    "`allocate` needs arrays from one joint simulation, trial for trial.",
+    "**Stress tests share the base run's draws.** `Model.stress({label: {variable: shock}})` re-evaluates the "
+    "same trials under each scenario, so differences are the shock, not noise. The `sensitivity` tool's "
+    "derivatives are per one whole unit of the input: multiply by 0.0001 for a basis point.",
+    "**Quote the ledger head.** With `RISKPY_AUDIT_FILE` set (or `riskpy.audit.start(path)`), every tool call is "
+    "recorded in full and hash-chained; `riskpy_audit` returns the head digest, `riskpy-audit replay FILE` "
+    "recomputes the calls. A simulation run with `seed=0` cannot be replayed.",
+    "**Check, don't trust:** `riskpy-verify` runs 125 identities (139 with SciPy) against published tables and "
     "closed forms; the `verify` tool does the same and returns data. On a lean install, modules whose extra is "
     "missing are reported as skipped, not failed.",
     "**Every tool is a wrapper over a verified public function.** If a calculation is not a tool, the module "
@@ -143,6 +164,8 @@ def describe() -> dict:
             "riskpy-doctor": "check the installation (core, extras, self-check, MCP); --json; exit 1 on a failure",
             "riskpy-explain": "explain an error code: `riskpy-explain RP105`; `--list [--json]` for the catalogue",
             "riskpy-tools trace": "recent tool calls with durations and error codes (RISKPY_TRACE_FILE keeps them)",
+            "riskpy-audit": "check (`verify`), recompute (`replay`) or write up (`report`) an audit ledger — the "
+                            "JSON-lines file every tool call is recorded to when RISKPY_AUDIT_FILE is set",
         },
         "errors": [{"family": f, "meaning": m} for f, m in ERROR_FAMILIES],
         "conventions": CONVENTIONS,

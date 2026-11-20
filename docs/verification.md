@@ -42,10 +42,12 @@ Some of what is checked, by module:
 | `reserving` | GenIns factors, total reserve and Mack standard errors against Mack (1993); `se² = process² + parameter²`; agreement with the compiled `LossTriangle`; Bornhuetter–Ferguson collapsing to the chain ladder |
 | `rates` | par at par; `ytm(price(y)) = y`; the bootstrap round trip; Nelson–Siegel limits; both short-rate bonds at `σ = 0`; Vasicek against Monte Carlo |
 | `credit` | `equity + debt = assets`; equity as a Black–Scholes call; the ASRF at `ρ = 0`; the credit triangle; the Basel correlation limits; the BCBS risk-weight table |
+| `capital` | Kendall's tau and tail dependence of each copula against the closed forms; Sheppard's formula for the Gaussian and t copula at the median; `C(u, u) = u^(2^(1/θ))` for Gumbel; Higham's nearest-correlation example; 3-4-5 aggregation; the Euler TVaR contribution of a normal line; the Gumbel sampler's Kendall's tau |
 | `viz` | every palette colour clears 3:1 contrast on its surface; the sequential ramps are monotone in lightness; eight categorical slots and no more |
 
-Without SciPy the suite runs 111 checks; with it, the 14 oracle checks bring it
-to 125. NumPy is required for the `mc`, `quant` and `reserving` checks and
+Without SciPy the suite runs 125 checks; with it, the 14 oracle checks bring it
+to 139. NumPy is required for the `mc`, `quant` and `reserving` checks (and for
+five of the fourteen `capital` checks) and
 Matplotlib for `viz`. On an install without them those modules are reported as
 **skipped**, with the extra that enables them (`pip install "open-riskpy[sim]"`),
 and the run still passes: a missing extra is a fact about the environment, not a

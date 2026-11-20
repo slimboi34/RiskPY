@@ -47,6 +47,8 @@ from .errors import ArgumentTypeError, InputError, MissingDependencyError
 __all__ = [
     "Model",
     "Result",
+    "ReverseStress",
+    "StressResult",
     "simulate",
     "Distribution",
     "Moments",
@@ -1354,9 +1356,10 @@ class Compound(Distribution):
     comes out far too heavy. Sampling here draws the counts, then one severity
     per claim, and sums them per trial — vectorised, on the run's own seed.
 
-    Moments are exact (Wald). There is no closed-form CDF, so it works with
-    ``sampling="lhs"`` (the counts are stratified) and with ``correlation=``,
-    but not with a copula, which needs a quantile function.
+    Moments are exact (Wald). There is no closed-form CDF, so
+    ``sampling="lhs"`` stratifies the counts, and under ``correlation=`` or
+    ``copula=`` the simulated totals are reordered to follow the dependence
+    rather than read off a quantile function.
     """
 
     _CHUNK = 1 << 21   # claims drawn per block, so memory stays bounded
@@ -1796,6 +1799,80 @@ class Result:
         scores.sort(key=lambda pair: abs(pair[1]), reverse=True)
         return scores
 
+    def reverse_stress(self, level: float = 0.995, threshold: Optional[float] = None,
+                       tail: str = "upper") -> "ReverseStress":
+        """Reverse stress test: what do the inputs look like in the trials where the output is extreme?
+
+        level: the tail starts at this quantile of the output, as a decimal (0.995 looks at
+            the worst 0.5% of trials); ignored when ``threshold`` is given
+        threshold: an output value instead of a level — "the trials where the loss exceeds
+            50 million"
+        tail: "upper" (outputs at or above the threshold, the default — losses) or "lower"
+            (at or below — profits, solvency ratios)
+
+        A stress test asks what the output is under a scenario. A reverse stress test asks
+        the opposite: given that the output breached the threshold, what scenario was it?
+        The answer is each input's mean over the breaching trials — the conditional
+        expectation ``E[input | output beyond threshold]`` — reported next to its
+        unconditional mean, as a shift in standard deviations, and as the percentile of the
+        input's own distribution that the conditional mean sits at.
+
+        Returns a :class:`ReverseStress`. Needs the inputs, so the run must have kept them.
+
+        Example::
+
+            rs = result.reverse_stress(0.995)
+            rs.scenario          # {'claims': 6.1e6, 'inflation': 0.047} — the average ruin scenario
+            rs.drivers[0]        # the input that moved furthest from its mean, in sd units
+            print(rs.summary())
+        """
+        if not self.inputs:
+            raise InputError(
+                "This run kept no inputs, so a reverse stress test cannot be computed. "
+                "Re-run with keep_inputs=True (the default).", code="RP113", param="keep_inputs"
+            )
+        if tail not in ("upper", "lower"):
+            raise InputError(f"tail must be 'upper' or 'lower', got {tail!r}", code="RP108", param="tail")
+        np = _numpy()
+        if threshold is None:
+            _check_level(level)
+            # The same lower empirical quantile that tvar() uses, mirrored for the lower tail.
+            ordered = self._ordered()
+            n = ordered.size
+            if tail == "upper":
+                k = min(max(int(math.ceil(n * level - 1e-9)) - 1, 0), n - 1)
+            else:
+                k = min(max(int(math.floor(n * (1.0 - level) + 1e-9)), 0), n - 1)
+            cut = float(ordered[k])
+            used_level: Optional[float] = float(level)
+        else:
+            cut = _check_finite("threshold", threshold)
+            used_level = None
+        mask = self.values >= cut if tail == "upper" else self.values <= cut
+        count = int(mask.sum())
+        if count == 0:
+            side = "at or above" if tail == "upper" else "at or below"
+            raise InputError(
+                f"no trial has an output {side} {cut:g} (the output ranges from "
+                f"{float(self.values.min()):g} to {float(self.values.max()):g})", code="RP111", param="threshold",
+                hint="Choose a threshold inside the simulated range, or run more trials."
+            )
+        rows = {}
+        for name, column in self.inputs.items():
+            column = np.asarray(column, dtype=float)
+            mean, sd = float(column.mean()), float(column.std())
+            tail_mean = float(column[mask].mean())
+            rows[name] = {
+                "mean": mean,
+                "tail_mean": tail_mean,
+                "shift_sd": (tail_mean - mean) / sd if sd > 0.0 else 0.0,
+                "percentile": float(np.mean(column <= tail_mean)),
+            }
+        return ReverseStress(
+            label=self.label, tail=tail, level=used_level, threshold=cut, trials=self.trials,
+            tail_trials=count, output_mean=float(self.values[mask].mean()), inputs=rows,
+        )
+
     # -- presentation -------------------------------------------------------
 
     def describe(self) -> Dict[str, float]:
@@ -1871,6 +1948,177 @@ class Result:
             f"<Result {self.label}: {self.trials:,} trials, "
             f"mean {self.mean:,.2f}, p99.5 {self.var(0.995):,.2f}>"
         )
+
+
+@dataclass(frozen=True)
+class ReverseStress:
+    """The inputs behind the extreme outputs of a run — see :meth:`Result.reverse_stress`.
+
+    Fields: ``label`` (the output's name); ``tail`` ("upper" or "lower"); ``level`` (the
+    quantile the tail starts at, or None when a threshold was given); ``threshold`` (the
+    output value the tail starts at); ``trials``; ``tail_trials`` (how many trials are in
+    the tail); ``output_mean`` (the mean output over those trials — the TVaR when
+    ``tail="upper"`` and there are no ties at the threshold); ``inputs`` — per input,
+    ``{"mean", "tail_mean", "shift_sd", "percentile"}``: its unconditional mean, its mean
+    in the tail, the difference in units of its standard deviation, and the share of its
+    own draws at or below the tail mean (a decimal).
+    """
+
+    label: str
+    tail: str
+    level: Optional[float]
+    threshold: float
+    trials: int
+    tail_trials: int
+    output_mean: float
+    inputs: Dict[str, Dict[str, float]]
+
+    @property
+    def probability(self) -> float:
+        """The share of trials in the tail, as a decimal."""
+        return self.tail_trials / self.trials
+
+    @property
+    def scenario(self) -> Dict[str, float]:
+        """``{input: tail mean}`` — the average scenario that produces the extreme output."""
+        return {name: row["tail_mean"] for name, row in self.inputs.items()}
+
+    @property
+    def drivers(self) -> List[Tuple[str, float]]:
+        """``[(input, shift_sd), …]``, the input furthest from its own mean first."""
+        return sorted(((name, row["shift_sd"]) for name, row in self.inputs.items()),
+                      key=lambda pair: abs(pair[1]), reverse=True)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Everything as plain JSON-able data."""
+        return {
+            "label": self.label, "tail": self.tail, "level": self.level, "threshold": self.threshold,
+            "trials": self.trials, "tail_trials": self.tail_trials, "probability": self.probability,
+            "output_mean": self.output_mean, "inputs": {k: dict(v) for k, v in self.inputs.items()},
+            "drivers": [[name, shift] for name, shift in self.drivers],
+        }
+
+    def summary(self) -> str:
+        """A text table of the inputs, the one that moved furthest first."""
+        side = ">=" if self.tail == "upper" else "<="
+        where = f"{self.label} {side} {self.threshold:,.6g}"
+        if self.level is not None:
+            where += f" (the {'worst' if self.tail == 'upper' else 'lowest'} {1.0 - self.level:.3%})"
+        rows = [
+            f"Reverse stress — {where}",
+            f"  trials in tail  {self.tail_trials:,} of {self.trials:,}   mean output there {self.output_mean:,.6g}",
+            "",
+            f"  {'input':<18}{'mean':>14}{'in the tail':>14}{'shift (sd)':>12}{'percentile':>12}",
+        ]
+        for name, _ in self.drivers:
+            row = self.inputs[name]
+            rows.append(f"  {name:<18}{row['mean']:>14,.6g}{row['tail_mean']:>14,.6g}{row['shift_sd']:>+12.2f}"
+                        f"{row['percentile']:>12.1%}")
+        return "\n".join(rows)
+
+    def __repr__(self) -> str:
+        lead = self.drivers[0][0] if self.inputs else None
+        return (f"<ReverseStress {self.label} tail={self.tail} threshold={self.threshold:.6g} "
+                f"tail_trials={self.tail_trials:,} lead={lead!r}>")
+
+
+@dataclass
+class StressResult:
+    """A base run and the same trials re-evaluated under each scenario — see :meth:`Model.stress`.
+
+    ``base`` is the unstressed :class:`Result`; ``scenarios`` is ``{label: Result}``. Every
+    scenario uses the same random draws as the base, so a difference between two of them is
+    the effect of the shock and not sampling noise.
+    """
+
+    base: Result
+    scenarios: Dict[str, Result]
+
+    def _stat(self, result: Result, statistic: str, level: float) -> float:
+        if statistic == "mean":
+            return result.mean
+        if statistic == "std":
+            return result.std
+        if statistic == "var":
+            return result.var(level)
+        if statistic == "tvar":
+            return result.tvar(level)
+        raise InputError(f"statistic must be 'mean', 'std', 'var' or 'tvar', got {statistic!r}", code="RP108",
+                         param="statistic")
+
+    def delta(self, scenario: str, statistic: str = "mean", level: float = 0.995) -> float:
+        """The change in a statistic from the base to a scenario: ``scenario − base``.
+
+        scenario: the scenario's label
+        statistic: "mean", "std", "var" or "tvar"
+        level: confidence level for "var" and "tvar", as a decimal
+
+        Example::
+
+            stress.delta("inflation 8%", "var", 0.995)     # extra 1-in-200 loss under the scenario
+        """
+        if scenario not in self.scenarios:
+            raise InputError(f"unknown scenario {scenario!r}; known: {list(self.scenarios)}", code="RP108",
+                             param="scenario")
+        return self._stat(self.scenarios[scenario], statistic, level) - self._stat(self.base, statistic, level)
+
+    def worst(self, statistic: str = "tvar", level: float = 0.995) -> str:
+        """The label of the scenario with the highest value of ``statistic``.
+
+        Example::
+
+            stress.worst("var", 0.995)     # 'inflation 8%'
+        """
+        return max(self.scenarios, key=lambda label: self._stat(self.scenarios[label], statistic, level))
+
+    def to_dict(self, level: float = 0.995) -> Dict[str, Any]:
+        """Base and scenarios as plain data: mean, std, VaR and TVaR at ``level``, and each
+        scenario's change from the base (absolute, and relative as a decimal)."""
+        _check_level(level)
+
+        def stats(result: Result) -> Dict[str, float]:
+            return {"mean": result.mean, "std": result.std, "var": result.var(level), "tvar": result.tvar(level)}
+
+        base = stats(self.base)
+        out: Dict[str, Any] = {"level": level, "trials": self.base.trials, "seed": self.base.seed, "base": base,
+                               "scenarios": {}}
+        for label, result in self.scenarios.items():
+            row = stats(result)
+            out["scenarios"][label] = {
+                **row,
+                "change": {k: row[k] - base[k] for k in row},
+                "relative_change": {k: ((row[k] - base[k]) / abs(base[k]) if base[k] != 0.0 else None) for k in row},
+            }
+        return out
+
+    def to_frame(self, level: float = 0.995):
+        """A pandas DataFrame: one row for the base and one per scenario; columns mean, std, var, tvar."""
+        try:
+            import pandas  # noqa: WPS433
+        except ImportError as exc:  # pragma: no cover - environment dependent
+            raise MissingDependencyError("to_frame() needs pandas: pip install pandas", code="RP203") from exc
+        data = self.to_dict(level)
+        rows = {"base": data["base"], **{k: {s: v[s] for s in ("mean", "std", "var", "tvar")}
+                                         for k, v in data["scenarios"].items()}}
+        return pandas.DataFrame.from_dict(rows, orient="index")
+
+    def summary(self, level: float = 0.995) -> str:
+        """A text table: mean, VaR and TVaR at ``level`` for the base and each scenario, with
+        the change in the mean and in the VaR."""
+        data = self.to_dict(level)
+        width = max([len("base"), *(len(str(k)) for k in data["scenarios"])]) + 2
+        head = f"Stress test — {self.base.label}, {self.base.trials:,} trials, level {level:g}"
+        rows = [head, "",
+                f"  {'scenario':<{width}}{'mean':>16}{'VaR':>16}{'TVaR':>16}{'Δ mean':>16}{'Δ VaR':>16}",
+                f"  {'base':<{width}}{data['base']['mean']:>16,.2f}{data['base']['var']:>16,.2f}"
+                f"{data['base']['tvar']:>16,.2f}"]
+        for label, row in data["scenarios"].items():
+            rows.append(f"  {str(label):<{width}}{row['mean']:>16,.2f}{row['var']:>16,.2f}{row['tvar']:>16,.2f}"
+                        f"{row['change']['mean']:>+16,.2f}{row['change']['var']:>+16,.2f}")
+        return "\n".join(rows)
+
+    def __repr__(self) -> str:
+        return f"<StressResult base={self.base.label!r} scenarios={list(self.scenarios)}>"
 
 
 def _check_level(level: float) -> None:
@@ -1981,6 +2229,104 @@ class Model:
             self.variables[name] = original
         return results
 
+    def stress(
+        self,
+        scenarios: Mapping[str, Mapping[str, Any]],
+        trials: int = 10_000,
+        seed: Optional[int] = None,
+        fn: Optional[Callable[..., Any]] = None,
+        vectorised: bool = True,
+        sampling: str = "random",
+        copula: Any = None,
+    ) -> "StressResult":
+        """Stress test: re-evaluate the formula with shocked inputs, on the same random draws.
+
+        scenarios: ``{label: {variable: shock, …}, …}``. A shock is one of
+
+            - a number — the variable is fixed at that value in every trial
+              (``{"inflation": 0.08}``: "what if inflation is 8%");
+            - a callable taking and returning an array — the draws are transformed
+              (``{"claims": lambda x: 1.2 * x}``: "claims 20% worse");
+            - a :class:`Distribution` — the variable is redrawn from it *at the same ranks*
+              as the base draw, so the trial that had the worst claims still has the worst
+              claims and every correlation and copula is preserved.
+        trials: number of trials
+        seed: random seed; pass one so the numbers can be reproduced
+        fn: the formula, if one is not registered with ``@model.formula``
+        vectorised: as for :meth:`run`
+        sampling: "random" or "lhs"
+        copula: a copula from :mod:`riskpy.capital`, as for :meth:`run`
+
+        Returns a :class:`StressResult` holding the base :class:`Result` and one per
+        scenario. Because every scenario shares the base run's draws (common random
+        numbers), ``stress.delta(...)`` is the effect of the shock with the sampling noise
+        cancelled; two separate ``run`` calls would bury a small effect in noise.
+
+        Example::
+
+            stress = model.stress({
+                "inflation 8%":   {"inflation": 0.08},
+                "claims +20%":    {"claims": lambda x: 1.2 * x},
+                "heavier tail":   {"claims": Compound(Poisson(120), LogNormal(8.5, 1.4))},
+            }, trials=100_000, seed=42)
+            print(stress.summary(level=0.995))
+            stress.delta("inflation 8%", "var", 0.995)
+        """
+        np = _numpy()
+        formula = fn or self._formula
+        if formula is None:
+            raise InputError(
+                "No formula registered. Decorate one with @model.formula, or "
+                "pass fn= to stress().", code="RP113", param="fn"
+            )
+        if not isinstance(scenarios, Mapping) or not scenarios:
+            raise InputError("scenarios must be a non-empty {label: {variable: shock}} mapping", code="RP111",
+                             param="scenarios")
+        for label, shocks in scenarios.items():
+            if not isinstance(shocks, Mapping):
+                raise ArgumentTypeError(f"scenario {label!r} must be a {{variable: shock}} mapping, got "
+                                        f"{type(shocks).__name__}", code="RP404", param="scenarios")
+            for name in shocks:
+                if name not in self.variables:
+                    raise InputError(f"scenario {label!r} shocks unknown variable {name!r}; known: "
+                                     f"{list(self.variables)}", code="RP108", param="scenarios")
+        if isinstance(trials, bool) or trials < 1:
+            raise InputError(f"trials must be >= 1, got {trials!r}", code="RP107", param="trials")
+
+        rng = np.random.default_rng(seed)
+        samples = _draw(self.variables, trials, rng, sampling, self.correlations or None, copula)
+        base_label = getattr(formula, "__name__", "output")
+        base = Result(values=_evaluate(formula, samples, trials, vectorised), inputs=samples, trials=trials,
+                      seed=seed, label=base_label)
+        results: Dict[str, Result] = {}
+        for label, shocks in scenarios.items():
+            shocked = dict(samples)
+            for name, shock in shocks.items():
+                column = np.asarray(samples[name], dtype=float)
+                if isinstance(shock, Distribution):
+                    fresh = np.sort(np.asarray(shock.sample(trials, rng), dtype=float))
+                    ranks = np.argsort(np.argsort(column, kind="mergesort"), kind="mergesort")
+                    new = fresh[ranks]
+                elif callable(shock):
+                    new = np.asarray(shock(column), dtype=float)
+                    if new.shape != (trials,):
+                        raise InputError(
+                            f"scenario {label!r}: the shock for {name!r} returned shape {new.shape}, expected "
+                            f"({trials},)", code="RP100", param="scenarios",
+                            hint="A callable shock takes the array of draws and returns an array of the same length."
+                        )
+                elif isinstance(shock, (int, float)) and not isinstance(shock, bool):
+                    new = np.full(trials, _check_finite(f"scenario {label!r}: {name}", shock))
+                else:
+                    raise ArgumentTypeError(
+                        f"scenario {label!r}: the shock for {name!r} must be a number, a callable or a "
+                        f"Distribution, got {type(shock).__name__}", code="RP404", param="scenarios"
+                    )
+                shocked[name] = new
+            results[str(label)] = Result(values=_evaluate(formula, shocked, trials, vectorised), inputs=shocked,
+                                         trials=trials, seed=seed, label=str(label))
+        return StressResult(base=base, scenarios=results)
+
     def __repr__(self) -> str:
         names = ", ".join(self.variables)
         return f"<Model({names})>"
@@ -2002,7 +2348,17 @@ def _draw(variables: Mapping[str, Distribution], trials: int, rng, sampling: str
         u = np.asarray(copula.uniforms(trials, rng), dtype=float)
         if u.shape != (trials, len(names)):
             raise InputError(f"copula.uniforms must return shape ({trials}, {len(names)}), got {u.shape}", code="RP109", param="copula")
-        return {name: variables[name].ppf(u[:, j]) for j, name in enumerate(names)}
+        samples = {}
+        for j, name in enumerate(names):
+            try:
+                samples[name] = variables[name].ppf(u[:, j])
+            except NotImplementedError:
+                # No quantile function (a Compound): draw the marginal and put
+                # its sorted values in the order of the copula's column. The marginal is
+                # the simulated one and the ranks are exactly the copula's.
+                drawn = np.sort(np.asarray(variables[name].sample(trials, rng), dtype=float))
+                samples[name] = drawn[np.argsort(np.argsort(u[:, j], kind="mergesort"), kind="mergesort")]
+        return samples
 
     if sampling == "lhs":
         samples = {name: dist.sample_lhs(trials, rng) for name, dist in variables.items()}
@@ -2021,6 +2377,33 @@ def _draw(variables: Mapping[str, Distribution], trials: int, rng, sampling: str
                 )
         samples = iman_conover(samples, matrix, rng)
     return samples
+
+
+def _evaluate(fn: Callable[..., Any], samples: Mapping[str, Any], trials: int, vectorised: bool):
+    """Apply the formula to the drawn inputs and check what comes back."""
+    np = _numpy()
+    if vectorised:
+        values = np.asarray(fn(**samples), dtype=float)
+        if values.shape != (trials,):
+            raise InputError(
+                f"The formula returned shape {values.shape}, expected ({trials},). "
+                f"A vectorised formula must operate elementwise on its inputs — "
+                f"use np.where instead of if/else, np.minimum instead of min(), "
+                f"and so on. Or pass vectorised=False to loop instead.", code="RP100", param="fn", hint="A vectorised formula must work elementwise: use np.where, np.minimum, np.maximum; or pass vectorised=False."
+            )
+    else:
+        values = np.empty(trials, dtype=float)
+        for i in range(trials):
+            values[i] = fn(**{name: column[i] for name, column in samples.items()})
+
+    if not np.all(np.isfinite(values)):
+        bad = int((~np.isfinite(values)).sum())
+        raise InputError(
+            f"{bad:,} of {trials:,} trials produced NaN or infinity. Usually a "
+            f"division by a variable that can reach zero, or a log of a variable "
+            f"that can go negative.", code="RP305", param="fn", hint="Look for a division by a variable that can reach zero, or a log of one that can go negative."
+        )
+    return values
 
 
 def simulate(
@@ -2065,27 +2448,7 @@ def simulate(
     rng = np.random.default_rng(seed)
     samples = _draw(variables, trials, rng, sampling, correlation, copula)
 
-    if vectorised:
-        values = np.asarray(fn(**samples), dtype=float)
-        if values.shape != (trials,):
-            raise InputError(
-                f"The formula returned shape {values.shape}, expected ({trials},). "
-                f"A vectorised formula must operate elementwise on its inputs — "
-                f"use np.where instead of if/else, np.minimum instead of min(), "
-                f"and so on. Or pass vectorised=False to loop instead.", code="RP100", param="fn", hint="A vectorised formula must work elementwise: use np.where, np.minimum, np.maximum; or pass vectorised=False."
-            )
-    else:
-        values = np.empty(trials, dtype=float)
-        for i in range(trials):
-            values[i] = fn(**{name: column[i] for name, column in samples.items()})
-
-    if not np.all(np.isfinite(values)):
-        bad = int((~np.isfinite(values)).sum())
-        raise InputError(
-            f"{bad:,} of {trials:,} trials produced NaN or infinity. Usually a "
-            f"division by a variable that can reach zero, or a log of a variable "
-            f"that can go negative.", code="RP305", param="fn", hint="Look for a division by a variable that can reach zero, or a log of one that can go negative."
-        )
+    values = _evaluate(fn, samples, trials, vectorised)
 
     return Result(
         values=values,

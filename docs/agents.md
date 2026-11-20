@@ -6,10 +6,13 @@ generated from the calculators' own signatures and docstrings, plus a descriptio
 library written for the model that is about to use it. Since 0.5.0 it also tells the agent
 exactly what went wrong when a call fails — a stable error code, the parameter, the fix, as
 JSON — and lets it look at what has been happening ([Diagnostics](diagnostics.md)).
+Since 0.7.0 it can drive any calculator through a stress test with one call, the MCP server
+offers resources and prompts as well as tools, and every call can be recorded to a
+tamper-evident ledger ([The audit ledger](audit.md)).
 
 ```bash
 pip install open-riskpy              # the core: most tools run with no dependencies
-pip install "open-riskpy[sim]"       # + NumPy: the claims-triangle and VaR tools
+pip install "open-riskpy[sim]"       # + NumPy: the claims-triangle, VaR and capital-allocation tools
 pip install "open-riskpy[mcp]"       # + the MCP SDK: riskpy-mcp
 ```
 
@@ -23,6 +26,7 @@ riskpy-tools schema aggregate_loss
 riskpy-tools trace                   # recent calls, durations, error codes
 riskpy-doctor                        # is this installation healthy?
 riskpy-explain RP104                 # what an error code means
+riskpy-audit replay run.jsonl        # recompute every call in an audit ledger (RISKPY_AUDIT_FILE writes one)
 ```
 
 ```python
@@ -47,8 +51,12 @@ tools.call("black_scholes", {"S": 100, "K": 100, "T": 1, "r": 5, "sigma": 0.2}, 
 | `term_insurance`, `endowment_insurance`, `temporary_annuity_due`, `life_premium` | n-year contracts and net premiums — *new in 0.5.0* |
 | `aggregate_loss` | a year of claims simulated by the compiled core: Poisson frequency, lognormal severity, VaR and TVaR out |
 | `chain_ladder`, `mack_chain_ladder`, `bornhuetter_ferguson` | claims triangles (need NumPy; BF new in 0.5.0) |
+| `capital_aggregate`, `capital_allocation` | diversified capital from standalone figures and a correlation matrix; simulated lines joined by a copula with TVaR or VaR allocated to them ([Economic capital](capital.md); allocation needs NumPy) — *new in 0.7.0* |
+| `copula_dependence`, `nearest_correlation` | what a copula implies (Kendall's tau, tail dependence, joint exceedance); repair a correlation matrix that is not positive semi-definite (NumPy) — *new in 0.7.0* |
+| `sensitivity`, `scenario_table` | bump-and-revalue any calculator: derivatives and elasticities of every output; any calculator under named what-ifs ([Stress and scenario testing](stress.md)) — *new in 0.7.0* |
 | `verify` | the verification suite, as data |
 | `riskpy_status`, `riskpy_doctor`, `riskpy_explain` | introspection: recent calls and error counts, the installation check, an error code or a tool's formula and conventions — *new in 0.5.0* |
+| `riskpy_audit` | introspection: whether calls are being recorded to the audit ledger, the head digest to quote, and optionally a replay — *new in 0.7.0* |
 
 Every tool is a thin wrapper over a public function that [the verification suite](verification.md)
 checks. Arguments are plain numbers, strings and lists: rates as decimals, times in years,
@@ -64,7 +72,8 @@ direct Python call): numbers must be finite numbers (no `NaN`, `Infinity`, `true
 whole numbers whole, and the work one call can ask for is bounded — `aggregate_loss` takes at
 most 1,000,000 trials and 10⁸ simulated claims (trials × expected frequency),
 `bond_analytics` and `cds_par_spread` at most 100,000 payment periods (maturity × frequency),
-the triangle tools at most 300 × 300. The limits are in `riskpy.tools.LIMITS`; a call over one
+the triangle tools at most 300 × 300, the capital tools at most 100 risks and 2 × 10⁷ simulated cells
+(trials × lines), `scenario_table` at most 100 scenarios. The limits are in `riskpy.tools.LIMITS`; a call over one
 fails at once with code RP405 and a message naming it. The tools also refuse percentages where
 decimals belong — a rate above 100% (RP104), a volatility above 500% (RP105), an LGD above 1
 (RP103), an expected loss ratio above 500% (RP104) — because the library would compute a confident wrong answer from them
@@ -101,6 +110,65 @@ refused (RP404) rather than silently coerced, and every failure is a JSON error 
 agent can act on. `riskpy_status`, `riskpy_doctor` and `riskpy_explain` let it look at the
 recent calls, the installation and the meaning of a code without leaving the session.
 
+### Tools that drive other tools
+
+`sensitivity` and `scenario_table` take the name of another calculator and its arguments as an
+object:
+
+```python
+tools.call("sensitivity", {"tool": "bond_analytics", "parameter": "ytm",
+                           "arguments": {"face": 100, "coupon": 0.05, "maturity": 10, "ytm": 0.04}})
+# outputs.price: base 108.1757, derivative −857.02 per 1.00 of yield (−0.0857 per basis point),
+#                second_derivative 8164.3
+```
+
+The inner call is checked exactly as a direct call is, so a percentage where a decimal belongs
+is still refused with the same code. An agent no longer needs three calls and its own
+arithmetic to get a duration or a delta, and cannot get the finite difference wrong.
+
+### Resources and prompts
+
+Besides tools, `riskpy-mcp` serves reference text as MCP **resources**, which a client can
+attach to the conversation without a tool call:
+
+| resource | what it is |
+|---|---|
+| `riskpy://context` | the context pack (Markdown) |
+| `riskpy://conventions` | the conventions that bite (Markdown) |
+| `riskpy://errors` | the error catalogue (JSON) |
+| `riskpy://tools` | the tool manifest (JSON) |
+| `riskpy://audit` | the audit ledger's status and head digest (JSON) |
+| `riskpy://explain/{topic}` | an error code or a tool explained (JSON) |
+
+and **prompts**, which are step-by-step procedures for jobs that take several tools in the
+right order:
+
+| prompt | arguments | what it walks through |
+|---|---|---|
+| `capital_model` | `lines`, `level` | repair the correlation matrix, aggregate, allocate with Euler contributions, compare copulas |
+| `reserve_review` | `triangle` | chain ladder, Mack standard errors, Bornhuetter–Ferguson, sensitivity to the tail factor |
+| `stress_test` | `tool`, `base_case` | sensitivities to each input, named scenarios, where the linear estimate breaks down |
+| `audit_trail` | — | the ledger head, the chain check and the replay for this conversation's numbers |
+
+Every prompt ends by asking for the ledger head. The same text is available without MCP:
+
+```python
+from riskpy import mcp_server
+
+mcp_server.read_resource("riskpy://conventions")
+mcp_server.render_prompt("capital_model", lines="motor, property, liability", level="0.995")
+```
+
+### Recording a session
+
+```bash
+riskpy-mcp --audit session.jsonl     # or set RISKPY_AUDIT_FILE in the client's server configuration
+```
+
+Every calculator call the agent makes is then written in full to a hash-chained ledger.
+`riskpy_audit` gives the agent the head digest to quote, and `riskpy-audit replay
+session.jsonl` lets anyone recompute the session afterwards. See [The audit ledger](audit.md).
+
 ## The context pack
 
 ```bash
@@ -113,5 +181,5 @@ riskpy-context -o AGENTS.md          # write it for the agent working in your pr
 It is generated from the installed package, so the signatures are the ones that will run.
 The "conventions that bite" section is the part to read first: rates are decimals, `i` is
 effective annual while `r` is continuous, `LogNormal(mu, sigma)` takes the underlying
-normal's parameters, seeds make runs reproducible, and `riskpy-verify` is how to check
-rather than trust.
+normal's parameters, seeds make runs reproducible, a copula's correlation is not a Spearman
+correlation, losses are positive, and `riskpy-verify` is how to check rather than trust.

@@ -171,6 +171,7 @@ viz.reserve_profile(profile) # a policy reserve over its life
 ```python
 viz.curve(yield_curve)                   # zero and one-year forward rates
 viz.allocation({"Motor": 41.2e6, ...})   # capital by unit, shares labelled
+capital.allocate(losses, level=0.995).plot()   # the same chart from an Euler allocation
 viz.waterfall({"gross": 53e6, "reinsurance": -12.4e6, ...})
 ```
 
