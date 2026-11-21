@@ -470,10 +470,11 @@ def test_portfolio_loss_accepts_a_zero_dimensional_rho():
     assert np.array_equal(a.values, c.values)
     with pytest.raises(InputError):
         credit.credit_portfolio_loss(*args, True, trials=10, seed=1)
-    # A string is a scalar like every other numeric argument here, never
-    # iterated character by character.
-    d = credit.credit_portfolio_loss(*args, "0.1", trials=2000, seed=3)
-    assert np.array_equal(a.values, d.values)
+    # A string is never iterated character by character. Since 0.8.0 it is not
+    # coerced to a number either: like every numeric argument, it is RP101.
+    with pytest.raises(InputError) as info:
+        credit.credit_portfolio_loss(*args, "0.1", trials=2000, seed=3)
+    assert info.value.code == "RP101" and info.value.param == "rho"
 
 
 def test_portfolio_loss_mean_matches_expected_loss():

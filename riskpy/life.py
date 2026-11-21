@@ -51,6 +51,7 @@ import warnings
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import _special
+from ._validate import _check_finite
 from .errors import ArgumentTypeError, InputError
 
 __all__ = [
@@ -101,16 +102,6 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
-
-
-def _check_finite(name: str, value: float) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        raise InputError(f"{name} must be a number, got {value!r}", code="RP101", param=name) from None
-    if not math.isfinite(out):
-        raise InputError(f"{name} must be finite, got {value!r}", code="RP101", param=name)
-    return out
 
 
 def _check_int(name: str, value: int, minimum: Optional[int] = None) -> int:

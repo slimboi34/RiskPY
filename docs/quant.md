@@ -20,6 +20,11 @@ pip install "open-riskpy[sim]" # + paths, VaR, Heston
 Conventions throughout: `T` is in **years**, rates and volatilities are
 annualised decimals (`0.05`, not `5`), and `q` is the continuous dividend yield.
 
+Numeric arguments must be numbers: Python or NumPy ints and floats (a 0-d array
+counts). A numeric string such as `"100"`, a bool, `None` or an int too large
+for a double raises `RiskPyError` RP101 naming the parameter — they used to be
+coerced (`True` priced as a spot of 1.0) or fail with a bare `TypeError`.
+
 ---
 
 ## Black–Scholes
@@ -93,6 +98,12 @@ jumps = quant.merton_jump_paths(
 The drift carries the usual compensator, so the process keeps expected return
 `mu` — without it the jumps quietly add drift and nothing prices sensibly.
 
+`steps` and `trials` must be whole numbers of at least 1 (`2.5`, `True` and
+`None` are RP107), and `seed` is `None`, a non-negative integer, or a NumPy
+`Generator`/`SeedSequence` (a negative seed is RP102, `1.5` is RP107). The same
+checks apply to `rates.vasicek_paths`, `rates.cir_paths`,
+`credit.credit_portfolio_loss` and `reserving.bootstrap_chain_ladder`.
+
 Feed either straight to [`viz.fan`](visualisation.md).
 
 ![Jump diffusion](assets/jump_fan.png)
@@ -105,7 +116,10 @@ quant.parametric_var(returns, level=0.99)      # normal assumption
 quant.expected_shortfall(returns, level=0.99)  # mean loss beyond VaR
 ```
 
-All three return a **positive number for a loss**.
+All three return a **positive number for a loss**. `returns` is one series —
+a flat sequence or 1-D array. A 2-D array (several assets, or a `(n, 1)`
+column) raises RP100 instead of being pooled into one sample; form the
+portfolio's return series first, or call once per column.
 
 `historical_var` makes no distributional assumption, which is its strength and
 its limit: it can never report a loss worse than the worst one in your sample.
@@ -157,8 +171,19 @@ characteristic function.
 quant.black_scholes(S=100, K=100, T=1, r=0.03, sigma=0.2)
 quant.heston_price(S=100, K=100, T=1, r=0.03,
                    v0=0.04, kappa=2.0, theta=0.04, xi=1e-6, rho=0.0)
-# agree to ~1e-3
+# agree to ~1e-10 (the quadrature error), all the way down to xi = 1e-12
 ```
+
+The limit holds in floating point too, because the characteristic function never
+forms a quantity of order `xi²` by subtracting two nearly equal numbers. Before
+0.8.0 it did, and the agreement got *worse* below `xi ≈ 1e-6`: `xi = 1e-9`
+priced that call at 38.65 instead of 9.41.
+
+!!! note "Positive correlation with a large vol of vol"
+    `heston_price` needs `kappa > rho·xi` and raises RP113 otherwise. Under the
+    share measure the variance then drifts away instead of reverting, and the
+    Simpson grid cannot integrate the transform reliably (0.7.0 divided by zero
+    there). Only `rho > 0` can trigger it; for those parameters, simulate.
 
 `upper` and `nodes` control the integration range and resolution. Raise `nodes`
 for very short maturities, where the integrand oscillates fastest.
