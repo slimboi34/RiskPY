@@ -114,16 +114,21 @@ print(rs.summary())
 
 ```text
 Reverse stress — annual_loss >= 2.06231e+06 (the worst 0.500%)
-  trials in tail  501 of 100,000   mean output there 2.2438e+06
+  trials in tail  500 of 100,000   mean output there 2.24416e+06
 
   input                       mean   in the tail  shift (sd)  percentile
-  claims               1.21123e+06   2.13627e+06       +4.07       99.8%
-  inflation              0.0399921     0.0503727       +1.04       85.0%
+  claims               1.21123e+06   2.13658e+06       +4.07       99.8%
+  inflation              0.0399921      0.050392       +1.04       85.1%
 ```
 
-- `reverse_stress(level=0.995)` looks at the worst `1 − level` of trials;
-  `threshold=` takes an output value instead; `tail="lower"` looks at the low
-  end (profits, solvency ratios).
+- `reverse_stress(level=0.995)` looks at the worst `1 − level` of trials:
+  500 of 100,000. The tail is weighted the way `Result.tvar` weights it.
+  Trials beyond the 99.5% quantile count in full. Trials tied *at* the quantile
+  (a loss that is often exactly zero, or capped at a limit) share whatever
+  weight is left. So the mean output in the tail is `result.tvar(level)`.
+  `threshold=` takes an output value instead, and counts every trial at or
+  beyond it in full. `tail="lower"` looks at the low end (profits, solvency
+  ratios).
 - `rs.scenario` is `{input: mean in the tail}`, the average scenario behind the
   extreme outcomes.
 - `rs.drivers` lists the inputs by how far they moved from their own mean, in

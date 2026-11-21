@@ -1903,12 +1903,12 @@ class Result:
                        tail: str = "upper") -> "ReverseStress":
         """Reverse stress test: what do the inputs look like in the trials where the output is extreme?
 
-        level: the tail starts at this quantile of the output, as a decimal (0.995 looks at
-            the worst 0.5% of trials); ignored when ``threshold`` is given
+        level: the tail is the worst ``1 - level`` of trials, as a decimal (0.995 looks at
+            the worst 0.5%: 500 of 100,000 trials); ignored when ``threshold`` is given
         threshold: an output value instead of a level — "the trials where the loss exceeds
-            50 million"
-        tail: "upper" (outputs at or above the threshold, the default — losses) or "lower"
-            (at or below — profits, solvency ratios)
+            50 million"; every trial at or beyond it counts in full
+        tail: "upper" (the highest outputs, the default — losses) or "lower" (the lowest —
+            profits, solvency ratios)
 
         A stress test asks what the output is under a scenario. A reverse stress test asks
         the opposite: given that the output breached the threshold, what scenario was it?
@@ -1916,6 +1916,12 @@ class Result:
         expectation ``E[input | output beyond threshold]`` — reported next to its
         unconditional mean, as a shift in standard deviations, and as the percentile of the
         input's own distribution that the conditional mean sits at.
+
+        With a ``level`` the tail is weighted exactly as :meth:`tvar` weights it: trials beyond
+        the ``level`` quantile count in full, and trials tied *at* the quantile share whatever
+        weight is left, so the tail holds ``n·(1 − level)`` trials' worth and ``output_mean``
+        (upper tail) equals ``tvar(level)``. The quantile trial itself is not in the tail when
+        ``n·level`` is a whole number and nothing ties with it.
 
         Returns a :class:`ReverseStress`. Needs the inputs, so the run must have kept them.
 
@@ -1934,34 +1940,53 @@ class Result:
         if tail not in ("upper", "lower"):
             raise InputError(f"tail must be 'upper' or 'lower', got {tail!r}", code="RP108", param="tail")
         np = _numpy()
+        # beyond: trials in the tail in full; at/share: trials tied at the cut, and the total
+        # weight they share (zero for a threshold, which counts every tied trial in full).
+        values = self.values
         if threshold is None:
-            _check_level(level)
-            # The same lower empirical quantile that tvar() uses, mirrored for the lower tail.
-            ordered = self._ordered()
+            level = _check_level(level)
+            # The lower empirical quantile tvar() uses; the lower tail is the upper tail of -values.
+            signed = values if tail == "upper" else -values
+            ordered = self._ordered() if tail == "upper" else -self._ordered()[::-1]
             n = ordered.size
-            if tail == "upper":
-                k = min(max(int(math.ceil(n * level - 1e-9)) - 1, 0), n - 1)
-            else:
-                k = min(max(int(math.floor(n * (1.0 - level) + 1e-9)), 0), n - 1)
-            cut = float(ordered[k])
-            used_level: Optional[float] = float(level)
+            k = min(max(int(math.ceil(n * level - 1e-9)) - 1, 0), n - 1)
+            q = float(ordered[k])
+            size = n * (1.0 - level)       # the tail, in trials: 500.0 for 100,000 at 0.995
+            nearest = round(size)
+            if nearest >= 1 and abs(size - nearest) <= 1e-9 * size:
+                size = float(nearest)      # 10 * (1 - 0.8) is 1.9999999999999996
+            beyond, at = signed > q, signed == q
+            n_at = int(at.sum())
+            # At most size trials lie beyond q and at least one sits at it, so share > 0 whenever
+            # nothing lies beyond: the tail is never empty.
+            share = min(max(size - int(beyond.sum()), 0.0), float(n_at))
+            cut = (q if tail == "upper" else -q) + 0.0   # never report -0.0
+            used_level: Optional[float] = level
         else:
             cut = _check_finite("threshold", threshold)
             used_level = None
-        mask = self.values >= cut if tail == "upper" else self.values <= cut
+            beyond = values >= cut if tail == "upper" else values <= cut
+            at, n_at, share = None, 0, 0.0
+        mask = beyond | at if share > 0.0 else beyond
         count = int(mask.sum())
         if count == 0:
             side = "at or above" if tail == "upper" else "at or below"
             raise InputError(
                 f"no trial has an output {side} {cut:g} (the output ranges from "
-                f"{float(self.values.min()):g} to {float(self.values.max()):g})", code="RP111", param="threshold",
+                f"{float(values.min()):g} to {float(values.max()):g})", code="RP111", param="threshold",
                 hint="Choose a threshold inside the simulated range, or run more trials."
             )
+
+        def tail_mean_of(column) -> float:
+            if share <= 0.0:
+                return float(column[beyond].mean())
+            return float((column[beyond].sum() + share / n_at * column[at].sum()) / (int(beyond.sum()) + share))
+
         rows = {}
         for name, column in self.inputs.items():
             column = np.asarray(column, dtype=float)
             mean, sd = float(column.mean()), float(column.std())
-            tail_mean = float(column[mask].mean())
+            tail_mean = tail_mean_of(column)
             rows[name] = {
                 "mean": mean,
                 "tail_mean": tail_mean,
@@ -1970,7 +1995,7 @@ class Result:
             }
         return ReverseStress(
             label=self.label, tail=tail, level=used_level, threshold=cut, trials=self.trials,
-            tail_trials=count, output_mean=float(self.values[mask].mean()), inputs=rows,
+            tail_trials=count, output_mean=tail_mean_of(values), inputs=rows,
         )
 
     # -- presentation -------------------------------------------------------
@@ -2056,9 +2081,12 @@ class ReverseStress:
 
     Fields: ``label`` (the output's name); ``tail`` ("upper" or "lower"); ``level`` (the
     quantile the tail starts at, or None when a threshold was given); ``threshold`` (the
-    output value the tail starts at); ``trials``; ``tail_trials`` (how many trials are in
-    the tail); ``output_mean`` (the mean output over those trials — the TVaR when
-    ``tail="upper"`` and there are no ties at the threshold); ``inputs`` — per input,
+    output value the tail starts at: the ``level`` quantile, or the threshold given);
+    ``trials``; ``tail_trials`` (how many trials are in the tail: with a level and no ties at
+    the quantile, ``n·(1 − level)`` rounded up — 500 of 100,000 at 0.995 — and when trials
+    tie at the quantile, all of them, sharing the weight the tail has left);
+    ``output_mean`` (the mean output over the tail — with a level and ``tail="upper"``,
+    exactly :meth:`Result.tvar`); ``inputs`` — per input,
     ``{"mean", "tail_mean", "shift_sd", "percentile"}``: its unconditional mean, its mean
     in the tail, the difference in units of its standard deviation, and the share of its
     own draws at or below the tail mean (a decimal).

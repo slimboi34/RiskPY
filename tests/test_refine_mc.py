@@ -231,6 +231,56 @@ def test_lhs_under_a_copula_cuts_the_noise():
 
 
 # ---------------------------------------------------------------------------
+# Result.reverse_stress: the tail is the worst 1 - level, weighted as tvar() weights it
+
+
+def test_reverse_stress_takes_exactly_the_worst_share():
+    vals = np.arange(1.0, 11.0)
+    res = Result(values=vals, inputs={"x": 10.0 * vals}, trials=10, seed=None)
+    up = res.reverse_stress(0.8)
+    assert up.tail_trials == 2 and up.output_mean == pytest.approx(9.5, rel=1e-15)
+    assert up.output_mean == pytest.approx(res.tvar(0.8), rel=1e-14)
+    assert up.inputs["x"]["tail_mean"] == pytest.approx(95.0, rel=1e-15) and up.threshold == 8.0
+    low = res.reverse_stress(0.8, tail="lower")
+    assert low.tail_trials == 2 and low.output_mean == pytest.approx(1.5, rel=1e-15)
+    assert low.inputs["x"]["tail_mean"] == pytest.approx(15.0, rel=1e-15)
+    # a tail that is not a whole number of trials: the quantile trial carries the fraction
+    part = res.reverse_stress(0.75)                   # 2.5 trials: 9, 10 and half of 8
+    assert part.tail_trials == 3 and part.output_mean == pytest.approx(res.tvar(0.75), rel=1e-14)
+    assert part.output_mean == pytest.approx((9 + 10 + 0.5 * 8) / 2.5, rel=1e-14)
+
+
+def test_reverse_stress_shares_the_weight_among_trials_tied_at_the_quantile():
+    # 94 distinct values, three tied at 100, then 200, 300, 400. The worst 5% is five trials'
+    # worth: the three above 100 in full and the three at 100 with two-thirds each.
+    vals = np.concatenate([np.arange(1.0, 95.0), [100.0, 100.0, 100.0], [200.0, 300.0, 400.0]])
+    rng = np.random.default_rng(0)
+    noise = rng.normal(size=vals.size)
+    res = Result(values=vals, inputs={"a": vals - noise, "b": noise}, trials=vals.size, seed=None)
+    rs = res.reverse_stress(0.95)
+    assert rs.threshold == 100.0 and rs.tail_trials == 6
+    assert rs.output_mean == pytest.approx(220.0, rel=1e-14)
+    assert rs.output_mean == pytest.approx(res.tvar(0.95), rel=1e-14)
+    at = vals == 100.0
+    above = vals > 100.0
+    expected_b = (noise[above].sum() + 2.0 / 3.0 * noise[at].sum()) / 5.0
+    assert rs.inputs["b"]["tail_mean"] == pytest.approx(expected_b, rel=1e-12)
+    # additive formula: the tail means add up to the tail mean of the output (an Euler allocation)
+    assert sum(rs.scenario.values()) == pytest.approx(rs.output_mean, rel=1e-12)
+    # an explicit threshold still counts every trial at or beyond it in full
+    by_threshold = res.reverse_stress(threshold=100.0)
+    assert by_threshold.tail_trials == 6 and by_threshold.output_mean == pytest.approx(1200.0 / 6.0)
+
+
+def test_reverse_stress_output_mean_is_tvar_on_a_simulation_with_atoms():
+    # A loss that is zero in most years: the 95% quantile can sit on the atom.
+    result = Model(n=Poisson(0.4), x=Normal(0, 1)).run(10_000, seed=3, fn=lambda n, x: 10.0 * n + 0.0 * x)
+    for level in (0.9, 0.95, 0.99, 0.995):
+        rs = result.reverse_stress(level)
+        assert rs.output_mean == pytest.approx(result.tvar(level), rel=1e-12), level
+
+
+# ---------------------------------------------------------------------------
 # Correlation matrices
 
 
