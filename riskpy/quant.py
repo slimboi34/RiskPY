@@ -23,7 +23,7 @@ import cmath
 import math
 
 from . import _special
-from ._validate import _check_finite, _check_non_negative, _check_positive
+from ._validate import _check_finite, _check_non_negative, _check_number, _check_positive, _check_seed, _check_trials
 from .errors import ConvergenceError, InputError
 from .mc import _numpy
 from dataclasses import dataclass
@@ -47,17 +47,31 @@ __all__ = [
 _SQRT_2 = math.sqrt(2.0)
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
 _EPS = 2.220446049250313e-16
+_PLAIN = frozenset({float, int})
+
+
+def _norm_cdf(x: float) -> float:
+    return 0.5 * math.erfc(-x / _SQRT_2)
+
+
+def _norm_pdf(x: float) -> float:
+    return math.exp(-0.5 * x * x) / _SQRT_2PI
 
 
 def norm_cdf(x: float) -> float:
     """Standard normal CDF, via ``math.erfc`` — no SciPy, full relative precision
     in the lower tail (``erf`` rounds to -1 below x ≈ -8, which priced a far
-    out-of-the-money put at exactly 0 and a 3×-strike call 8% wrong)."""
-    return 0.5 * math.erfc(-x / _SQRT_2)
+    out-of-the-money put at exactly 0 and a 3×-strike call 8% wrong).
+
+    ``x`` must be a number (``±inf`` give 1 and 0, NaN gives NaN); ``None``, a
+    string or a bool raises RP101 rather than a bare ``TypeError``.
+    """
+    return _norm_cdf(_check_number("x", x))
 
 
 def norm_pdf(x: float) -> float:
-    return math.exp(-0.5 * x * x) / _SQRT_2PI
+    """Standard normal density; ``x`` is checked as in :func:`norm_cdf`."""
+    return _norm_pdf(_check_number("x", x))
 
 
 def _check_option(kind: str) -> str:
@@ -73,7 +87,9 @@ def _check_option(kind: str) -> str:
 
 def _d1_d2(S: float, K: float, T: float, r: float, sigma: float, q: float):
     vol_sqrt_t = sigma * math.sqrt(T)
-    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / vol_sqrt_t
+    # ln S − ln K, not ln(S/K): the quotient of two valid prices (1e-200 and 1e200)
+    # underflows to 0 and its logarithm is a bare "math domain error".
+    d1 = (math.log(S) - math.log(K) + (r - q + 0.5 * sigma * sigma) * T) / vol_sqrt_t
     return d1, d1 - vol_sqrt_t
 
 
@@ -102,13 +118,17 @@ def black_scholes(
     """
     kind = _check_option(kind)
     try:
-        finite = (math.isfinite(S) and math.isfinite(K) and math.isfinite(T) and math.isfinite(r)
+        # Exact float/int types only: bool is an int subclass that math.isfinite accepts, and
+        # anything else (NumPy scalars, strings, None) takes the checked path below.
+        finite = (type(S) in _PLAIN and type(K) in _PLAIN and type(T) in _PLAIN and type(r) in _PLAIN
+                  and type(sigma) in _PLAIN and type(q) in _PLAIN
+                  and math.isfinite(S) and math.isfinite(K) and math.isfinite(T) and math.isfinite(r)
                   and math.isfinite(sigma) and math.isfinite(q))
-    except TypeError:
+    except (TypeError, OverflowError):
         finite = False
     if not finite:
         # The slow path names the bad argument; the fast one above keeps a pricing loop at
-        # the cost of six isfinite calls.
+        # the cost of a few type and isfinite checks.
         S, K, T, r, sigma, q = (_check_finite(name, value) for name, value in
                                 (("S", S), ("K", K), ("T", T), ("r", r), ("sigma", sigma), ("q", q)))
     if S <= 0 or K <= 0:
@@ -135,8 +155,8 @@ def black_scholes(
     # Far out of the money the two terms are nearly equal and rounding can
     # leave a difference of -1e-323; an option is never worth less than 0.
     if kind == "call":
-        return max(discount_s * norm_cdf(d1) - discount_k * norm_cdf(d2), 0.0)
-    return max(discount_k * norm_cdf(-d2) - discount_s * norm_cdf(-d1), 0.0)
+        return max(discount_s * _norm_cdf(d1) - discount_k * _norm_cdf(d2), 0.0)
+    return max(discount_k * _norm_cdf(-d2) - discount_s * _norm_cdf(-d1), 0.0)
 
 
 @dataclass(frozen=True)
@@ -176,6 +196,8 @@ def greeks(
     """Price and the five first-order Greeks for a European option."""
     kind = _check_option(kind)
     price = black_scholes(S, K, T, r, sigma, q, kind)
+    # black_scholes has validated every input; work in floats from here on.
+    S, K, T, r, sigma, q = float(S), float(K), float(T), float(r), float(sigma), float(q)
 
     if T == 0:
         # Every Greek is either zero or undefined at the kink; report zeros
@@ -211,20 +233,22 @@ def greeks(
     sqrt_t = math.sqrt(T)
     disc_q = math.exp(-q * T)
     disc_r = math.exp(-r * T)
-    pdf_d1 = norm_pdf(d1)
+    pdf_d1 = _norm_pdf(d1)
 
-    gamma = disc_q * pdf_d1 / (S * sigma * sqrt_t)
+    # Divided by S last: a spot of 5e-324 makes S·σ·√T underflow to 0, and the density
+    # (which is 0 there too) would then raise ZeroDivisionError instead of giving gamma 0.
+    gamma = disc_q * pdf_d1 / (sigma * sqrt_t) / S
     vega = S * disc_q * pdf_d1 * sqrt_t
     common_theta = -(S * disc_q * pdf_d1 * sigma) / (2.0 * sqrt_t)
 
     if kind == "call":
-        delta = disc_q * norm_cdf(d1)
-        theta = common_theta - r * K * disc_r * norm_cdf(d2) + q * S * disc_q * norm_cdf(d1)
-        rho = K * T * disc_r * norm_cdf(d2)
+        delta = disc_q * _norm_cdf(d1)
+        theta = common_theta - r * K * disc_r * _norm_cdf(d2) + q * S * disc_q * _norm_cdf(d1)
+        rho = K * T * disc_r * _norm_cdf(d2)
     else:
-        delta = -disc_q * norm_cdf(-d1)
-        theta = common_theta + r * K * disc_r * norm_cdf(-d2) - q * S * disc_q * norm_cdf(-d1)
-        rho = -K * T * disc_r * norm_cdf(-d2)
+        delta = -disc_q * _norm_cdf(-d1)
+        theta = common_theta + r * K * disc_r * _norm_cdf(-d2) - q * S * disc_q * _norm_cdf(-d1)
+        rho = -K * T * disc_r * _norm_cdf(-d2)
 
     return Greeks(
         price=price,
@@ -266,6 +290,11 @@ def implied_vol(
     """
     kind = _check_option(kind)
     price = _check_finite("price", price)
+    # Checked before T is compared with 0, so None or a string is RP101, not a TypeError.
+    S, K, T, r, q = (_check_finite(name, value) for name, value in
+                     (("S", S), ("K", K), ("T", T), ("r", r), ("q", q)))
+    tolerance = _check_positive("tolerance", tolerance)
+    max_iterations = _check_trials("max_iterations", max_iterations)
     if price < 0:
         raise InputError(f"price must be >= 0, got {price!r}", code="RP102", param="price",
                          hint="An option price is a non-negative amount of money per unit.")
@@ -360,8 +389,9 @@ def gbm_paths(
     Feed the output straight to :func:`riskpy.viz.fan`.
     """
     np = _numpy()
-    if steps < 1 or trials < 1:
-        raise InputError("steps and trials must both be >= 1", code="RP107", param="steps" if steps < 1 else "trials")
+    steps = _check_trials("steps", steps)
+    trials = _check_trials("trials", trials)
+    seed = _check_seed(seed)
     S0 = _check_positive("S0", S0)
     mu = _check_finite("mu", mu)
     sigma = _check_non_negative("sigma", sigma)
@@ -397,8 +427,9 @@ def merton_jump_paths(
     the jumps quietly add drift and the model prices nothing sensibly.
     """
     np = _numpy()
-    if steps < 1 or trials < 1:
-        raise InputError("steps and trials must both be >= 1", code="RP107", param="steps" if steps < 1 else "trials")
+    steps = _check_trials("steps", steps)
+    trials = _check_trials("trials", trials)
+    seed = _check_seed(seed)
     S0 = _check_positive("S0", S0)
     mu = _check_finite("mu", mu)
     sigma = _check_non_negative("sigma", sigma)
@@ -428,16 +459,54 @@ def merton_jump_paths(
 # ---------------------------------------------------------------------------
 
 
+def _check_level(level: float) -> float:
+    level = _check_finite("level", level)
+    if not (0.0 < level < 1.0):
+        raise InputError(f"level must be in (0, 1), got {level!r}", code="RP110", param="level")
+    return level
+
+
+def _returns_array(np, returns, name: str = "returns"):
+    """``returns`` as a 1-D float array: one return per period, numbers only.
+
+    A 2-D array (several assets, or a column vector of shape (n, 1) from pandas) used
+    to be flattened into one pooled sample without a word, which is a different
+    question from the VaR of any one series or of the portfolio.
+    """
+    if isinstance(returns, (str, bytes)):
+        raise InputError(f"{name} must be a sequence of numbers, got {returns!r}", code="RP101", param=name)
+    try:
+        data = np.asarray(returns if hasattr(returns, "__array__") else list(returns))
+    except (TypeError, ValueError):
+        raise InputError(f"{name} must be a flat sequence of numbers, got {type(returns).__name__}",
+                         code="RP101", param=name) from None
+    if data.ndim != 1:
+        raise InputError(
+            f"{name} must be one-dimensional (one return per period), got shape {data.shape}", code="RP100",
+            param=name, hint="Pass one series. For several assets, form the portfolio's return series first "
+                             "(weights @ returns), or call once per column.")
+    if data.dtype.kind not in "iuf":
+        try:
+            if data.dtype.kind != "O":  # text, booleans, complex, dates
+                raise TypeError
+            data = data.astype(float)   # Decimal and friends convert; None does not
+        except (TypeError, ValueError):
+            raise InputError(f"{name} must contain numbers only, got {data.dtype} values", code="RP101",
+                             param=name, hint="Strings, booleans and None are not returns.") from None
+    return data.astype(float, copy=False)
+
+
 def historical_var(returns: Sequence[float], level: float = 0.99) -> float:
     """VaR from the empirical distribution of returns, as a positive loss.
 
     No distributional assumption, which is the point — and the limitation, since
     it can never report a loss worse than the worst one in your sample.
+    ``returns`` is one series (a 1-D sequence); a 2-D array raises RP100 rather
+    than being flattened.
     """
     np = _numpy()
-    if not (0.0 < level < 1.0):
-        raise InputError(f"level must be in (0, 1), got {level!r}", code="RP110", param="level")
-    data = np.asarray(list(returns), dtype=float)
+    level = _check_level(level)
+    data = _returns_array(np, returns)
     if data.size == 0:
         raise InputError("returns is empty", code="RP111", param="returns")
     if not np.all(np.isfinite(data)):
@@ -459,11 +528,10 @@ def parametric_var(
     alone.
     """
     np = _numpy()
-    if not (0.0 < level < 1.0):
-        raise InputError(f"level must be in (0, 1), got {level!r}", code="RP110", param="level")
+    level = _check_level(level)
 
     if mean is None or sd is None:
-        data = np.asarray(list(returns), dtype=float)
+        data = _returns_array(np, returns)
         if data.size < 2:
             raise InputError("need at least two returns, or explicit mean and sd", code="RP111", param="returns")
         mean = float(data.mean()) if mean is None else mean
@@ -478,9 +546,8 @@ def parametric_var(
 def expected_shortfall(returns: Sequence[float], level: float = 0.99) -> float:
     """Mean loss in the worst ``1 - level`` of outcomes, as a positive number."""
     np = _numpy()
-    if not (0.0 < level < 1.0):
-        raise InputError(f"level must be in (0, 1), got {level!r}", code="RP110", param="level")
-    data = np.asarray(list(returns), dtype=float)
+    level = _check_level(level)
+    data = _returns_array(np, returns)
     if data.size == 0:
         raise InputError("returns is empty", code="RP111", param="returns")
     if not np.all(np.isfinite(data)):
@@ -497,6 +564,22 @@ def expected_shortfall(returns: Sequence[float], level: float = 0.99) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _cexpm1(z: complex) -> complex:
+    """``e^z − 1`` for complex ``z`` without cancellation near 0 (``cmath`` has no ``expm1``)."""
+    x, y = z.real, z.imag
+    half_sin = math.sin(0.5 * y)
+    return complex(math.expm1(x) * math.cos(y) - 2.0 * half_sin * half_sin, math.exp(x) * math.sin(y))
+
+
+def _clog1p(z: complex) -> complex:
+    """Principal ``ln(1 + z)`` for complex ``z``, accurate relative to ``z`` near 0."""
+    x, y = z.real, z.imag
+    if abs(x) < 0.5 and abs(y) < 0.5:
+        # ln|1 + z| = ½·ln(1 + 2x + x² + y²): log1p keeps the digits ln(1 + tiny) loses.
+        return complex(0.5 * math.log1p(x * (2.0 + x) + y * y), math.atan2(y, 1.0 + x))
+    return cmath.log(1.0 + z)
+
+
 def _heston_cf(u: complex, T: float, r: float, q: float, v0: float,
                kappa: float, theta: float, xi: float, rho: float) -> complex:
     """Characteristic function of the log-price under Heston.
@@ -505,16 +588,45 @@ def _heston_cf(u: complex, T: float, r: float, q: float, v0: float,
     ``D/C`` so the complex logarithm stays on its principal branch for long
     maturities. The textbook form is algebraically identical and numerically
     wrong past a couple of years.
+
+    With ``b = κ − ρξiu`` and ``d = √(b² + ξ²(iu + u²))``, the two quantities
+    ``b ± d`` multiply to ``−ξ²(iu + u²)``. The larger is formed by addition and
+    the smaller from that product, never by subtracting nearly equal numbers: as
+    ``ξ → 0``, ``b − d`` is O(ξ²) and was divided by ``ξ²``, so its rounding error
+    came out O(1) and a vol-of-vol of 1e-9 priced an at-the-money call at 38.6
+    instead of Black–Scholes' 9.41. For the same reason the logarithm in ``C`` is
+    taken as ``log1p`` of a quantity proportional to ``ξ²`` and divided by ``ξ²`` in
+    closed form, so the limit ``ξ → 0`` is Black–Scholes to rounding.
     """
     i = 1j
-    d = cmath.sqrt((rho * xi * i * u - kappa) ** 2 + xi * xi * (i * u + u * u))
-    g = (kappa - rho * xi * i * u - d) / (kappa - rho * xi * i * u + d)
+    a = i * u + u * u
+    if a == 0:
+        # u = 0 or u = −i: the variance terms vanish identically.
+        return cmath.exp((r - q) * i * u * T)
+    xi2 = xi * xi
+    b = kappa - rho * xi * i * u
+    d = cmath.sqrt(b * b + xi2 * a)
+    s, t = b + d, b - d          # s·t = −ξ²·a
+    if abs(s) >= abs(t):
+        m = -a / s               # (b − d)/ξ², without dividing by ξ²
+        g = xi2 * m / s          # (b − d)/(b + d)
+        g_over_xi2 = m / s
+    else:                        # b + d is the smaller: the share-measure (P1) integrand
+        m = t / xi2              # when κ − ρξ is small; ξ is not small there
+        s = -xi2 * a / t
+        g = t / s
+        g_over_xi2 = g / xi2
 
     exp_dt = cmath.exp(-d * T)
-    C = (r - q) * i * u * T + (kappa * theta / (xi * xi)) * (
-        (kappa - rho * xi * i * u - d) * T - 2.0 * cmath.log((1.0 - g * exp_dt) / (1.0 - g))
-    )
-    D = ((kappa - rho * xi * i * u - d) / (xi * xi)) * ((1.0 - exp_dt) / (1.0 - g * exp_dt))
+    one_minus_exp = -_cexpm1(-d * T)
+    D = m * one_minus_exp / (1.0 - g * exp_dt)
+    # ln[(1 − g·e^{−dT}) / (1 − g)] = ln(1 + z) with z = g·w, w = (1 − e^{−dT}) / (1 − g),
+    # and 1 − g = 2d/s exactly. Divided by ξ²: (g/ξ²)·w·ln(1 + z)/z.
+    w = one_minus_exp * s / (2.0 * d)
+    z = g * w
+    log_ratio = _clog1p(z) / z if z != 0 else 1.0
+    log_over_xi2 = g_over_xi2 * w * log_ratio
+    C = (r - q) * i * u * T + kappa * theta * (m * T - 2.0 * log_over_xi2)
     return cmath.exp(C + D * v0)
 
 
@@ -544,7 +656,14 @@ def heston_price(
     mean-reversion speed, ``theta`` long-run variance, ``xi`` vol-of-vol,
     ``rho`` spot/vol correlation (negative for equities). The Feller condition
     ``2·kappa·theta > xi²`` keeps variance away from zero; it is warned about,
-    not enforced, because real calibrations violate it routinely.
+    not enforced, because real calibrations violate it routinely. ``kappa`` must
+    exceed ``rho·xi`` (RP113 otherwise): only a positive correlation with a large
+    vol-of-vol breaks that, and the transform does not converge there.
+
+    As ``xi → 0`` with ``v0 = theta`` the price tends to Black–Scholes at
+    ``sigma = sqrt(theta)``, and it gets there: the characteristic function is
+    written so that nothing of order ``xi²`` is formed by cancellation, so a
+    vol-of-vol of 1e-12 prices like 1e-4 does.
 
     Integration is Simpson's rule on ``[0, upper]``. Raise ``nodes`` if you are
     pricing very short maturities, where the integrand oscillates fastest.
@@ -562,10 +681,25 @@ def heston_price(
     if not -1.0 <= rho <= 1.0:
         raise InputError(f"rho must be in [-1, 1], got {rho!r}", code="RP102", param="rho",
                          hint="rho is the correlation between spot and variance shocks (about -0.7 for equities).")
+    upper = _check_positive("upper", upper)
+    nodes = _check_trials("nodes", nodes, minimum=2)
     if T == 0:
         # At expiry the option is its intrinsic value; the transform's
         # quadrature error would otherwise leave a small negative price.
         return float(max(S - K, 0.0) if kind == "call" else max(K - S, 0.0))
+
+    if kappa <= rho * xi:
+        # Under the share measure (the P1 integral) variance mean-reverts at κ − ρξ. At or
+        # below zero it drifts away instead, the log-price spreads over a range too wide for
+        # a fixed Simpson grid, and the integral returns nonsense (call prices thousands of
+        # times the spot at T = 20). 0.7.0 divided by zero here; refuse it by name.
+        raise InputError(
+            f"heston_price needs kappa > rho·xi, got kappa = {kappa!r} and rho·xi = {rho * xi!r}: below that the "
+            f"variance has no mean reversion under the share measure and the transform integral does not "
+            f"converge reliably", code="RP113", param="kappa",
+            hint="This needs a positive rho with a large vol-of-vol. Raise kappa, or lower rho or xi; for these "
+                 "parameters, price by simulation instead.",
+        )
 
     if 2.0 * kappa * theta <= xi * xi:
         import warnings
@@ -584,8 +718,12 @@ def heston_price(
 
     u = np.linspace(1e-10, upper, nodes + 1)
     # The characteristic function above is of the log *return* ln(S_T/S), so
-    # the strike enters as log-moneyness, not as log(K).
-    log_k = math.log(K / S)
+    # the strike enters as log-moneyness, not as log(K). (A difference of logs:
+    # the quotient of two valid prices can underflow.)
+    log_k = math.log(K) - math.log(S)
+    # φ(−i) = E[S_T/S] = e^{(r−q)T} exactly: the discounted price is a martingale.
+    # Evaluating the transform there divided 0 by 0 whenever κ < ρξ.
+    forward_growth = math.exp((r - q) * T)
 
     # Gil-Pelaez inversion: two probabilities, P1 under the share measure and
     # P2 under the risk-neutral one.
@@ -593,9 +731,7 @@ def heston_price(
         out = np.empty(u.shape, dtype=float)
         for idx, ui in enumerate(u):
             if shift == 1:
-                numerator = _heston_cf(ui - 1j, T, r, q, v0, kappa, theta, xi, rho)
-                denominator = _heston_cf(-1j, T, r, q, v0, kappa, theta, xi, rho)
-                phi = numerator / denominator
+                phi = _heston_cf(ui - 1j, T, r, q, v0, kappa, theta, xi, rho) / forward_growth
             else:
                 phi = _heston_cf(ui, T, r, q, v0, kappa, theta, xi, rho)
             out[idx] = (cmath.exp(-1j * ui * log_k) * phi / (1j * ui)).real

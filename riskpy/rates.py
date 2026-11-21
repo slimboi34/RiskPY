@@ -30,7 +30,7 @@ import numbers
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from ._validate import _check_finite, _check_non_negative, _check_positive
+from ._validate import _check_finite, _check_non_negative, _check_positive, _check_seed, _check_trials
 from .errors import ConvergenceError, InputError
 from .mc import _numpy
 
@@ -831,6 +831,29 @@ def _check_horizon(t: float, T: float) -> float:
     return T - t
 
 
+# The largest x with a finite math.exp(x).
+_MAX_EXP = 709.782712893384
+
+_SIGMA_HINT = ("sigma is the absolute volatility of the short rate, as a decimal (0.01 is 1 percentage point a "
+               "year, not 1%), and its convexity term grows like sigma²·τ³: check its units and the horizon.")
+_RATE_HINT = "Rates are decimals (5% is 0.05); check r and theta and the horizon in years."
+
+
+def _short_rate_price(model: str, exponent: float, culprit: str) -> float:
+    """``exp(exponent)`` for a short-rate bond price, with overflow reported by name.
+
+    ``culprit`` is the parameter whose term made the exponent large: a sigma that is
+    a percentage (or a vol of 30 points over 50 years) makes the convexity term
+    explode; a hugely negative rate does the same through ``−B·r``.
+    """
+    if exponent > _MAX_EXP:
+        raise InputError(
+            f"{model} bond price is e^{exponent:.4g}, beyond what a double holds", code="RP304", param=culprit,
+            hint=_SIGMA_HINT if culprit == "sigma" else _RATE_HINT,
+        )
+    return math.exp(exponent)
+
+
 def vasicek_zero_bond(r: float, t: float, T: float, kappa: float, theta: float, sigma: float) -> float:
     """Price at ``t`` of a zero-coupon bond paying 1 at ``T`` under Vasicek (1977).
 
@@ -845,11 +868,16 @@ def vasicek_zero_bond(r: float, t: float, T: float, kappa: float, theta: float, 
     The one thing people get wrong: the ``σ²`` terms mean the yield curve is
     *not* ``θ`` at long maturities. It converges to ``θ − σ²/(2κ²)``.
     """
+    return _short_rate_price("Vasicek", *_vasicek_log_price(r, t, T, kappa, theta, sigma))
+
+
+def _vasicek_log_price(r: float, t: float, T: float, kappa: float, theta: float, sigma: float) -> Tuple[float, str]:
+    """``ln P`` under Vasicek, validated, and the parameter whose term dominates it."""
     r = _check_finite("r", r)
     kappa, theta, sigma = _check_short_rate(kappa, theta, sigma)
     tau = _check_horizon(t, T)
     if tau == 0.0:
-        return 1.0
+        return 0.0, "sigma"
     x = kappa * tau
     B = -math.expm1(-x) / kappa
     # The σ² part of ln A is −σ²/(2κ²)·[(B − τ) + κB²/2]. Each term inside the
@@ -860,8 +888,12 @@ def vasicek_zero_bond(r: float, t: float, T: float, kappa: float, theta: float, 
         bracket_over_k2 = tau ** 3 * (-1.0 / 3.0 + x * (1.0 / 4.0 + x * (-7.0 / 60.0 + x / 24.0)))
     else:
         bracket_over_k2 = ((B - tau) + 0.5 * kappa * B * B) / (kappa * kappa)
-    log_A = (B - tau) * theta - 0.5 * sigma * sigma * bracket_over_k2
-    return math.exp(log_A - B * r)
+    mean_term = (B - tau) * theta
+    convexity = -0.5 * sigma * sigma * bracket_over_k2
+    rate_term = -B * r
+    # Which term would make e^(ln P) overflow: a percentage sigma, or a hugely negative r or theta.
+    culprit = max((convexity, "sigma"), (rate_term, "r"), (mean_term, "theta"))[1]
+    return mean_term + convexity + rate_term, culprit
 
 
 def cir_zero_bond(r: float, t: float, T: float, kappa: float, theta: float, sigma: float) -> float:
@@ -874,18 +906,27 @@ def cir_zero_bond(r: float, t: float, T: float, kappa: float, theta: float, sigm
     here in terms of ``e^{−γτ}`` so long maturities cannot overflow. At
     ``σ = 0`` the exponent ``2κθ/σ²`` blows up while its base tends to 1; the
     limit is taken analytically and equals the deterministic
-    ``exp(−∫ r dt)``, the same as Vasicek's.
+    ``exp(−∫ r dt)``, the same as Vasicek's. It is also used once ``σ²`` is
+    below 1e-300 (or negligible against ``κ²``): there ``σ²`` is subnormal or
+    zero, and the general form returned 0.0 or divided by zero.
 
     Unlike Vasicek, rates stay non-negative when the Feller condition
     ``2κθ > σ²`` holds — and the *price* is valid either way, it is the
     simulation that misbehaves (see :func:`cir_paths`).
     """
+    # With r, θ >= 0 the price is at most 1, so ln P <= 0 in exact arithmetic; the guard
+    # keeps any rounding excursion a coded error rather than a bare OverflowError.
+    return _short_rate_price("CIR", _cir_log_price(r, t, T, kappa, theta, sigma), "sigma")
+
+
+def _cir_log_price(r: float, t: float, T: float, kappa: float, theta: float, sigma: float) -> float:
+    """``ln P`` under CIR, validated; see :func:`_vasicek_log_price`."""
     r = _check_non_negative("r", r)
     kappa, theta, sigma = _check_short_rate(kappa, theta, sigma)
     theta = _check_non_negative("theta", theta)
     tau = _check_horizon(t, T)
     if tau == 0.0:
-        return 1.0
+        return 0.0
     gamma = math.sqrt(kappa * kappa + 2.0 * sigma * sigma)
     total = gamma + kappa
     # gamma - kappa, computed without cancellation: it is O(sigma²), and the
@@ -894,7 +935,10 @@ def cir_zero_bond(r: float, t: float, T: float, kappa: float, theta: float, sigm
     decay = math.exp(-gamma * tau)
     denominator = total * (1.0 - decay) + 2.0 * gamma * decay
     B = 2.0 * (1.0 - decay) / denominator
-    if sigma == 0.0:
+    # σ² below 1e-300 is subnormal or zero (σ < 1.5e-154 squares to nothing useful), and
+    # gap/total that small has lost its digits too; the σ → 0 limit is exact to far
+    # better than double precision long before either happens.
+    if sigma * sigma < 1e-300 or gap < 1e-300 * total:
         log_A = -theta * (tau - B)
     else:
         # ln A = (2κθ/σ²)·ln[2γ·e^{(κ−γ)τ/2} / denominator]. Written as a
@@ -904,7 +948,7 @@ def cir_zero_bond(r: float, t: float, T: float, kappa: float, theta: float, sigm
         # term is a log1p of something small and the precision survives.
         log_base = math.log1p(gap / total) - 0.5 * gap * tau - math.log1p(gap * decay / total)
         log_A = (2.0 * kappa * theta / (sigma * sigma)) * log_base
-    return math.exp(log_A - B * r)
+    return log_A - B * r
 
 
 def vasicek_curve(
@@ -944,11 +988,7 @@ def cir_curve(
 
 def _check_simulation(T: float, steps: int, trials: int) -> Tuple[float, int, int]:
     T = _check_positive("T", T)
-    if isinstance(steps, bool) or not isinstance(steps, numbers.Integral) or steps < 1:
-        raise InputError(f"steps must be a positive integer, got {steps!r}", code="RP107", param="steps")
-    if isinstance(trials, bool) or not isinstance(trials, numbers.Integral) or trials < 1:
-        raise InputError(f"trials must be a positive integer, got {trials!r}", code="RP107", param="trials")
-    return T, int(steps), int(trials)
+    return T, _check_trials("steps", steps), _check_trials("trials", trials)
 
 
 def vasicek_paths(
@@ -978,6 +1018,7 @@ def vasicek_paths(
     r0 = _check_finite("r0", r0)
     kappa, theta, sigma = _check_short_rate(kappa, theta, sigma)
     T, steps, trials = _check_simulation(T, steps, trials)
+    seed = _check_seed(seed)
 
     dt = T / steps
     decay = math.exp(-kappa * dt)
@@ -1022,6 +1063,7 @@ def cir_paths(
     kappa, theta, sigma = _check_short_rate(kappa, theta, sigma)
     theta = _check_non_negative("theta", theta)
     T, steps, trials = _check_simulation(T, steps, trials)
+    seed = _check_seed(seed)
 
     if 2.0 * kappa * theta <= sigma * sigma:
         import warnings

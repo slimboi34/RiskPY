@@ -61,6 +61,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import _special
+from ._validate import _check_seed
 from .errors import ConvergenceError, InputError, MissingDependencyError
 from .mc import _numpy
 
@@ -1424,6 +1425,7 @@ def bootstrap_chain_ladder(
     tail = _check_tail(tail)
     if not _is_int(n) or n < 2:
         raise InputError(f"n must be an integer >= 2 (1000 is a sensible default), got {n!r}", code="RP107", param="n")
+    seed = _check_seed(seed)
     process = process.lower() if isinstance(process, str) else process
     if process not in ("odp", "gamma", "none"):
         raise InputError(f"process must be 'odp', 'gamma' or 'none', got {process!r}", code="RP108", param="process")

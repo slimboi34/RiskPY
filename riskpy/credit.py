@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple, Union
 
 from . import _special
-from ._validate import _check_finite, _check_non_negative, _check_positive
+from ._validate import _check_finite, _check_non_negative, _check_positive, _check_seed, _check_trials
 from .errors import InputError, MissingDependencyError
 from .mc import _numpy
 from .quant import black_scholes
@@ -281,7 +281,9 @@ def merton(
     # Black-Scholes in the package, degenerate cases included.
     equity = black_scholes(S=assets, K=debt, T=T, r=r, sigma=sigma, kind="call")
 
-    moneyness = math.log(assets / debt)
+    # ln V − ln D, not ln(V/D): the quotient of two valid amounts (1e-200 and 1e200)
+    # underflows to 0 and its logarithm is a bare "math domain error".
+    moneyness = math.log(assets) - math.log(debt)
     vol = sigma * math.sqrt(T)
     if vol == 0.0:
         # Deterministic assets (or a volatility so small that σ√T underflows):
@@ -1072,8 +1074,8 @@ def credit_portfolio_loss(
                 f"{len(rho_list)} for {n} exposures", code="RP109", param="rho"
             )
 
-    if not isinstance(trials, numbers.Integral) or isinstance(trials, bool) or trials < 1:
-        raise InputError(f"trials must be a positive integer, got {trials!r}", code="RP107", param="trials")
+    trials = _check_trials("trials", trials)
+    seed = _check_seed(seed)
 
     thresholds = _special.norm_ppf_vec(np.asarray(pd_list, dtype=float))
     rho_array = np.asarray(rho_list, dtype=float)
