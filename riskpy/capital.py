@@ -116,8 +116,13 @@ def _correlation_rows(correlation: Any) -> List[List[float]]:
             if not _is_number(value):
                 raise ArgumentTypeError(f"correlation entries must be numbers, got {value!r}", code="RP404",
                                         param="correlation")
+            # Same wording as riskpy.mc._check_correlation, which checks the NumPy path.
+            if math.isnan(value):
+                raise InputError("correlation matrix contains NaN", code="RP101", param="correlation",
+                                 hint="Every entry must be a number in [-1, 1]; check for a missing value in the data.")
             if not math.isfinite(value):
-                raise InputError("correlation must be finite", code="RP101", param="correlation")
+                raise InputError("correlation matrix entries must be finite, got an infinite entry", code="RP101",
+                                 param="correlation", hint="Correlations are decimals in [-1, 1].")
     return [[float(v) for v in row] for row in rows]
 
 
