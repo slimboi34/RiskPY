@@ -428,3 +428,24 @@ def test_a_copula_of_the_wrong_dimension_says_how_to_build_one():
     err = _code(lambda: m.run(100, seed=1, copula=GumbelCopula(2.0)))
     assert err.code == "RP109" and err.param == "copula"
     assert "dim=3" in err.hint and "3x3" in err.hint and "list" not in err.hint
+
+
+@pytest.mark.parametrize("df", [4.0, 9999.0, 1e8, 1e12, 1e17, 1e20])
+def test_student_t_cdf_matches_mpmath_at_any_df(df):
+    # The textbook ½·I(ν/(ν+t²); ν/2, ½) rounds its argument to 1 at large ν: 3e-5 out at
+    # ν = 1e12 and 0.5 everywhere from ν ≈ 1e17. Oracle: 60-digit mpmath, relative to the tail.
+    mp = pytest.importorskip("mpmath")
+    mp.mp.dps = 60
+    ts = [-30.0, -3.0, -0.1, 0.1, 1.0, 3.0, 30.0]
+
+    def exact(t):
+        t, nu = mp.mpf(t), mp.mpf(df)
+        half_ib = mp.betainc(nu / 2, mp.mpf(1) / 2, 0, nu / (nu + t * t), regularized=True) / 2
+        return float(1 - half_ib if t > 0 else half_ib)
+
+    got = mc.StudentT(df, loc=1.0, scale=2.0).cdf(np.array([1.0 + 2.0 * t for t in ts]))
+    for t, value in zip(ts, got):
+        ref = exact(t)
+        assert abs(value - ref) <= 1e-12 * min(ref, 1.0 - ref), (df, t, value, ref)
+    assert mc.StudentT(df).cdf(np.array([np.inf, -np.inf, np.nan]))[:2].tolist() == [1.0, 0.0]
+    assert np.isnan(mc.StudentT(df).cdf(np.nan))

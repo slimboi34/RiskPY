@@ -1017,11 +1017,10 @@ class StudentT(Distribution):
         return np.exp(log_norm - 0.5 * (nu + 1.0) * np.log1p(t * t / nu)) / self.scale
 
     def cdf(self, x):
-        np = _numpy()
         t = (_as_array(x) - self.loc) / self.scale
-        nu = self.df
-        ib = _special.betainc_vec(0.5 * nu, 0.5, nu / (nu + t * t))
-        return np.where(t > 0.0, 1.0 - 0.5 * ib, 0.5 * ib)
+        # Not ½·I(ν/(ν+t²); ν/2, ½): that argument rounds to 1 at large ν (every value 0.5 from
+        # ν ≈ 1e17, 3e-5 out at 1e12) and t² overflows past 1.3e154. t_cdf_vec forms it from |t|/√ν.
+        return _special.t_cdf_vec(t, self.df)
 
     def ppf(self, q):
         """Quantile by inverting the beta, not by Newton on the t itself.
