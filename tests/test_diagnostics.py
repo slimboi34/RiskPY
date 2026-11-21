@@ -662,14 +662,25 @@ def test_missing_numpy_message_puts_the_quoted_pip_line_first(monkeypatch):
     assert first.startswith("riskpy.mc needs NumPy, which is not installed") and 'pip install "open-riskpy[sim]"' in first
 
 
-def test_the_wheel_installs_only_the_extension_and_the_upload_waits_for_every_wheel():
+def test_the_wheel_builds_the_rust_core_as_cpp_underwriter_and_the_upload_waits_for_every_wheel():
+    # 0.9.0: maturin builds rust/python into riskpy/cpp_underwriter (the module path the C++
+    # core had), the crate's version is the package's (the extension reports it, and the
+    # publish guard compares them), and publish still waits for the best-effort wheels.
     root = pathlib.Path(__file__).resolve().parents[1]
-    cmake, pyproject = root / "CMakeLists.txt", root / "pyproject.toml"
+    pyproject, cargo = root / "pyproject.toml", root / "rust" / "Cargo.toml"
     workflow = root / ".github" / "workflows" / "publish.yml"
-    if not (cmake.exists() and pyproject.exists() and workflow.exists()):
+    if not (pyproject.exists() and cargo.exists() and workflow.exists()):
         pytest.skip("not a source checkout")
-    assert re.search(r"install\(TARGETS cpp_underwriter DESTINATION riskpy COMPONENT riskpy\)", cmake.read_text())
-    assert 'install.components = ["riskpy"]' in pyproject.read_text()
+    # Regular expressions rather than tomllib, which Python 3.10 lacks.
+    text, crate_text = pyproject.read_text(encoding="utf-8"), cargo.read_text(encoding="utf-8")
+    assert re.search(r'^build-backend = "maturin"$', text, re.M)
+    assert re.search(r'^module-name = "riskpy\.cpp_underwriter"$', text, re.M)
+    manifest = re.search(r'^manifest-path = "([^"]+)"$', text, re.M).group(1)
+    assert (root / manifest).exists()
+    version = re.search(r'^version = "([^"]+)"$', text, re.M).group(1)
+    crate = re.search(r'\[workspace\.package\][^\[]*?^version = "([^"]+)"$', crate_text, re.M | re.S).group(1)
+    assert crate == version
+    assert not (root / "CMakeLists.txt").exists() and not list((root / "src").glob("*.cpp"))
     needs = re.search(r"\n  publish:\n(?:.*\n)*?    needs: \[([^\]]*)\]", workflow.read_text()).group(1)
     assert "build-wheels-extra" in needs
 

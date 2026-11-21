@@ -191,7 +191,8 @@ def test_concurrent_calls_match_serial():
 
 def test_simulation_releases_the_gil():
     core = pytest.importorskip("riskpy.cpp_underwriter")
-    sim = core.MonteCarloSimulator(400_000, 3)
+    # 1.2M trials: long enough (about 0.75 s on an Apple M4) to tell, now the Rust core is faster.
+    sim = core.MonteCarloSimulator(1_200_000, 3)
     done = {}
 
     def slow():

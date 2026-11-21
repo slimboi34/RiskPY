@@ -132,8 +132,8 @@ def test_a_simulation_is_bumped_by_one_per_cent_by_default():
     assert out["bump"] == pytest.approx(0.1)                    # 1% of 10, stated in the result
     assert out["outputs"]["mean"]["derivative"] == pytest.approx(1000.0, rel=0.15)   # d(λ·E[X])/dλ = E[X]
     # 0.7.0's default, 0.0001 × λ, differenced sampling noise: about −10,000 on macOS. How far a tiny
-    # bump drifts depends on the C++ standard library's Poisson sampler (libc++, libstdc++ and MSVC
-    # differ), so only the 1% default is pinned here.
+    # bump drifts is sampling noise (and, before 0.9.0, depended on the C++ standard library's
+    # Poisson sampler), so only the 1% default is pinned here.
     # a closed form keeps the fine default
     assert tools.call("sensitivity", {"tool": "black_scholes", "arguments": BS, "parameter": "S"})["bump"] == 0.01
 
