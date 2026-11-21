@@ -26,20 +26,32 @@ except ImportError as exc:  # pragma: no cover
 
 from .cpp_underwriter import RiskEngine, ExcelExporter, Field, FactorModel, MonteCarloSimulator
 
+_PREMIUM = "premium_output"
+
+
 class UnderwritingApp:
     def __init__(self, title="Actuarial Underwriter", excel_template="corporate_layout.xlsx"):
         self.title = title
         self.engine = RiskEngine()
+        self._excel_template = excel_template
         self.exporter = ExcelExporter(template=excel_template)
         self.engine.attach_exporter(self.exporter)
         
         self.fields_config = [] # stores dicts: {name, label, col, choices}
+        # Excel column letter -> (field name, header label), in the order they were mapped.
+        # The C++ exporter's map is keyed by letter and has no unmap, so this is what lets
+        # set_premium_column move the premium instead of adding a second column.
+        self._columns = {}
+
+    def _map_column(self, excel_col, name, label):
+        self.exporter.map_column(excel_col, name, label)
+        self._columns[excel_col] = (name, label)
 
     def add_field(self, name, label, excel_col, choices=None):
         """Adds a parameter to the UI, connects it to C++ Engine, and maps it to Excel"""
         field_type = "string" if choices else "float"
         self.engine.add_field(Field(name=name, label=label, type=field_type))
-        self.exporter.map_column(excel_col, name, label)
+        self._map_column(excel_col, name, label)
         self.fields_config.append({"name": name, "label": label, "choices": choices})
 
     def set_logic(self, logic_func):
@@ -51,8 +63,24 @@ class UnderwritingApp:
         self.engine.set_math_logic(factor_model.calculate)
 
     def set_premium_column(self, excel_col, label="Final Premium"):
-        """Defines where the final calculated answer is exported in Excel"""
-        self.exporter.map_column(excel_col, "premium_output", label)
+        """Defines where the final calculated answer is exported in Excel.
+
+        Calling it again moves the premium column (and takes the new label): the
+        workbook always has exactly one premium column. Before 0.8.0 a second call
+        added another premium column and kept the first.
+        """
+        stale = [col for col, (name, _) in self._columns.items() if name == _PREMIUM and col != excel_col]
+        if stale:
+            for col in stale:
+                del self._columns[col]
+            # The compiled exporter cannot forget a column, so start a fresh one with the
+            # mappings that survive and attach it in place of the old.
+            exporter = ExcelExporter(template=self._excel_template)
+            for col, (name, header) in self._columns.items():
+                exporter.map_column(col, name, header)
+            self.engine.attach_exporter(exporter)
+            self.exporter = exporter
+        self._map_column(excel_col, _PREMIUM, label)
 
     def calculate_headless(self, inputs: dict) -> float:
         """Runs calculation directly without GUI"""

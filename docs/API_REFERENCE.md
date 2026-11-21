@@ -346,8 +346,11 @@ print(f"${premium:,.2f}")
 #### `set_premium_column(excel_col, label="Final Premium")`
 Maps the calculated premium to an Excel column. Without it, exports contain the input columns but no premium.
 
+Calling it again **moves** the premium column and takes the new label: the workbook always has exactly one premium column. (Before 0.8.0 a second call added a second premium column.) Moving it gives the app a fresh `app.exporter` carrying the columns mapped with `add_field` and `set_premium_column`; a mapping made directly on the old `app.exporter` is not carried over.
+
 ```python
 app.set_premium_column("E", "Premium")
+app.set_premium_column("F", "Premium")   # the premium is now in F only
 ```
 
 | Parameter | Type | Description |
