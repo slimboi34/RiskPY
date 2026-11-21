@@ -5,13 +5,20 @@ name: Publish to PyPI
 #   make release          # bumps nothing — tags v$(version from pyproject) and pushes
 #
 # Pushing the tag runs this workflow, which:
-#   1. guard        — refuses to build if the tag disagrees with pyproject version
-#   2. build-sdist  — builds the sdist AND installs from it (proves it is self-contained)
-#   3. build-wheels — cp310–cp314 on linux/x86_64, macos/arm64, windows/AMD64  (required)
-#   4. build-wheels-extra — linux/aarch64, macos/x86_64                       (best effort)
+#   1. guard        — refuses to build if the tag disagrees with the pyproject version,
+#                     or rust/Cargo.toml's version disagrees with pyproject's
+#   2. build-sdist  — `maturin sdist`, then installs from it (proves it builds from source
+#                     with a Rust toolchain alone)
+#   3. build-wheels — linux/x86_64 (manylinux), macos/arm64, windows/AMD64   (required)
+#   4. build-wheels-extra — linux/aarch64 (manylinux), macos/x86_64          (best effort)
 #   5. check-dist   — twine check --strict on every artifact (no publishing rights)
 #   6. publish      — PyPI via Trusted Publishing + attestations
 #   7. github-release — publishes the GitHub Release with all artifacts attached
+#
+# The core is Rust (PyO3, built by maturin) on the stable ABI (abi3, CPython 3.10+), so
+# each platform needs ONE wheel, which serves every supported Python. The wheel matrix
+# lives in this file (build-wheels / build-wheels-extra): cibuildwheel and its
+# [tool.cibuildwheel] table in pyproject.toml are gone with the C++ core.
 #
 # The publish job holds the OIDC token (id-token: write), so it installs nothing:
 # it only downloads the artifacts and runs the SHA-pinned publish action. Anything
@@ -21,9 +28,6 @@ name: Publish to PyPI
 # Every action is pinned to a full commit SHA (the tag is in the trailing comment);
 # Dependabot proposes the bumps. Trusted Publishing is bound to this file's name,
 # so do not rename it.
-#
-# The wheel matrix itself lives in pyproject.toml [tool.cibuildwheel] so that
-# `pipx run cibuildwheel` locally reproduces CI exactly.
 #
 # One-time PyPI setup (Trusted Publisher) — no API tokens:
 #   https://pypi.org/manage/project/open-riskpy/settings/publishing/
@@ -76,6 +80,15 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "pyproject version: $version"
 
+          # The extension reports the Rust crate's version as riskpy.cpp_underwriter.__version__,
+          # and riskpy-doctor warns when it differs from the package's: keep the two in step.
+          crate=$(python3 -c "import tomllib;print(tomllib.load(open('rust/Cargo.toml','rb'))['workspace']['package']['version'])")
+          echo "rust/Cargo.toml:   $crate"
+          if [ "$crate" != "$version" ]; then
+            echo "::error::rust/Cargo.toml version ${crate} does not match pyproject version ${version}."
+            exit 1
+          fi
+
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             tag="${GITHUB_REF_NAME#v}"
             echo "git tag:           ${GITHUB_REF_NAME}"
@@ -107,25 +120,32 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install build tooling
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++ cmake ninja-build
-          python -m pip install --upgrade pip build twine
-
       - name: Build sdist
-        run: python -m build --sdist
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          command: sdist
+          args: --out dist
+
+      # Installing from the sdist compiles the Rust core, exactly as pip does on a
+      # platform without a wheel.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
 
       - name: Install from the sdist and smoke-import
         # Run from a temp dir so the source tree cannot shadow the install.
         run: |
           set -euo pipefail
+          python -m pip install --upgrade pip
           python -m pip install dist/*.tar.gz
           cd "$RUNNER_TEMP"
-          python -c "import riskpy; from riskpy import FactorModel, FourierTransform; print('sdist OK', riskpy.__version__, riskpy.__file__)"
+          python -c "import riskpy, riskpy.cpp_underwriter; from riskpy import FactorModel, FourierTransform; print('sdist OK', riskpy.__version__, riskpy.__file__)"
 
       - name: twine check
-        run: twine check --strict dist/*
+        run: |
+          python -m pip install --upgrade twine
+          twine check --strict dist/*
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -133,7 +153,8 @@ jobs:
           path: dist/*.tar.gz
 
   # ---------------------------------------------------------------------------
-  # Required wheels — a failure here blocks the release.
+  # Required wheels — a failure here blocks the release. One abi3 wheel per
+  # platform (cp310-abi3) covers CPython 3.10 and every later version.
   # ---------------------------------------------------------------------------
   build-wheels:
     name: Wheels ${{ matrix.label }}
@@ -144,30 +165,52 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  arch: x86_64, label: "linux/x86_64" }
-          - { os: macos-latest,   arch: arm64,  label: "macos/arm64" }
-          - { os: windows-latest, arch: AMD64,  label: "windows/AMD64" }
+          - { os: ubuntu-latest,  target: x86_64,  label: "linux/x86_64" }
+          - { os: macos-latest,   target: aarch64, label: "macos/arm64" }
+          - { os: windows-latest, target: x64,     label: "windows/AMD64" }
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Build wheels
-        uses: pypa/cibuildwheel@adba99c781d3746d38b3a09b1cf797965bcb7fe6 # v4.3.0
+      # maturin needs an interpreter to name the wheel; abi3 means any 3.10+ will do.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         env:
-          CIBW_ARCHS: ${{ matrix.arch }}
+          # Oldest macOS the wheels claim support for (ignored off macOS).
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+          # No build cache: these are the files that get published, so they are built
+          # from source alone, never from a cache another run wrote.
+          sccache: "false"
+
+      - name: Install the wheel and smoke-import
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-index --find-links "$GITHUB_WORKSPACE/dist" open-riskpy
+          cd "$RUNNER_TEMP"
+          python -c "import riskpy, riskpy.cpp_underwriter as core; from riskpy import FactorModel, FourierTransform, LossTriangle, MonteCarloSimulator; print(riskpy.__version__, core.__file__)"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dist-wheels-${{ matrix.arch }}-${{ matrix.os }}
-          path: wheelhouse/*.whl
+          name: dist-wheels-${{ matrix.target }}-${{ matrix.os }}
+          path: dist/*.whl
 
   # ---------------------------------------------------------------------------
   # Extra architectures. Best effort: these are a bonus for users, not a reason
   # to hold back a release, so the job is allowed to fail without blocking.
-  # linux/aarch64 uses a native ARM runner (free on public repos) — QEMU
-  # emulation would take hours to build OpenXLSX five times.
+  # linux/aarch64 builds natively on an ARM runner (free on public repos) rather
+  # than under QEMU; macOS x86_64 is cross-compiled on the ARM runner, which
+  # Apple's toolchain does natively (GitHub has retired the Intel runners).
   # ---------------------------------------------------------------------------
   build-wheels-extra:
     name: Wheels ${{ matrix.label }} (best effort)
@@ -179,23 +222,42 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04-arm, arch: aarch64, label: "linux/aarch64" }
-          - { os: macos-latest,     arch: x86_64,  label: "macos/x86_64 (cross)" }
+          - { os: ubuntu-24.04-arm, target: aarch64, label: "linux/aarch64", cross: false }
+          - { os: macos-latest,     target: x86_64,  label: "macos/x86_64 (cross)", cross: true }
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Build wheels
-        uses: pypa/cibuildwheel@adba99c781d3746d38b3a09b1cf797965bcb7fe6 # v4.3.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         env:
-          CIBW_ARCHS: ${{ matrix.arch }}
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+          sccache: "false"
+
+      # A cross-compiled wheel cannot be installed on the machine that built it.
+      - name: Install the wheel and smoke-import
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-index --find-links "$GITHUB_WORKSPACE/dist" open-riskpy
+          cd "$RUNNER_TEMP"
+          python -c "import riskpy, riskpy.cpp_underwriter as core; print(riskpy.__version__, core.__file__)"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dist-wheels-${{ matrix.arch }}-${{ matrix.os }}
-          path: wheelhouse/*.whl
+          name: dist-wheels-${{ matrix.target }}-${{ matrix.os }}
+          path: dist/*.whl
 
   # ---------------------------------------------------------------------------
   # Metadata check on exactly what publish will upload, in a job with no

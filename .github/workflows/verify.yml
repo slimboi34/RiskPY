@@ -33,10 +33,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++ cmake ninja-build
+      # pip builds the Rust core from source (through maturin); no other toolchain needed.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
 
       - name: Install with the SciPy oracle
         run: |

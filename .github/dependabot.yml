@@ -18,7 +18,7 @@ updates:
       actions:
         patterns: ["*"]
 
-  # pyproject.toml: build requirements (scikit-build-core, pybind11) and the extras.
+  # pyproject.toml: the build requirement (maturin) and the extras.
   - package-ecosystem: pip
     directory: "/"
     schedule:
@@ -30,4 +30,18 @@ updates:
       prefix: "deps"
     groups:
       python:
+        patterns: ["*"]
+
+  # rust/Cargo.toml + Cargo.lock: the Rust core's crates (pyo3, libm, zip, getrandom).
+  - package-ecosystem: cargo
+    directory: "/rust"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "deps"
+    groups:
+      rust:
         patterns: ["*"]

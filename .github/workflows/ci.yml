@@ -15,11 +15,20 @@ concurrency:
   # Cancel superseded PR runs, but let every push to main finish its run.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts are useless on ephemeral runners and cost disk.
+  CARGO_INCREMENTAL: 0
+
+# Every action is pinned to a full commit SHA with the tag in the trailing comment;
+# Dependabot (.github/dependabot.yml) proposes the bumps. A tag can be moved to point
+# at different code; a SHA cannot.
+
 jobs:
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    # About 3 minutes on Windows today; the cap only stops a hung build burning 6 hours.
+    # A cold Rust build plus the suite; the cap only stops a hung build burning 6 hours.
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -42,65 +51,98 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install build tools (Ubuntu)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++ cmake ninja-build ccache
-
-      - name: Install build tools (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install ninja ccache || true
-
-      - name: Install build tools (Windows)
-        if: runner.os == 'Windows'
-        # cmake and MSVC ship on the runner image; ninja does not.
-        run: python -m pip install ninja
-
-      - name: Cache pip + ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
-          # ccache 4.x (Ubuntu ships 4.9) writes to ~/.cache/ccache; the legacy
-          # ~/.ccache is only used if it already exists, which it never does here.
-          path: |
-            ~/.cache/pip
-            ~/.cache/ccache
-            ~/Library/Caches/ccache
-          # src/** is in the key because an exact-key hit never re-saves: without
-          # it the compiler cache froze at the first build after a pyproject or
-          # CMakeLists change, however much the C++ moved on afterwards.
-          key: ${{ runner.os }}-py${{ matrix.python-version }}-pip-${{ hashFiles('pyproject.toml', 'CMakeLists.txt', 'src/**') }}
-          restore-keys: |
-            ${{ runner.os }}-py${{ matrix.python-version }}-pip-
+          toolchain: stable
 
-      - name: Install package (editable + dev)
-        env:
-          CMAKE_BUILD_PARALLEL_LEVEL: "4"
-          # ccache is not on the Windows image; an empty launcher is a no-op. (Written this
-          # way round because `cond && '' || x` always yields x: '' is falsy.)
-          CMAKE_CXX_COMPILER_LAUNCHER: ${{ runner.os != 'Windows' && 'ccache' || '' }}
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust
+          # Key on the manifests as well as the lock, and on the interpreter: pyo3's build
+          # script configures itself against the Python it builds with, and cargo's
+          # fingerprint does not include the interpreter (WebCortex lost a day to a cache
+          # shared across Python versions).
+          key: py${{ matrix.python-version }}-${{ hashFiles('rust/**/Cargo.toml', 'rust/Cargo.lock') }}
+
+      # Build the wheel exactly as a user's pip would get it (abi3, release profile) and
+      # install it: tests/conftest.py strips the repository root from sys.path, so the
+      # suite always runs against the installed package, never the source tree.
+      - name: Build the wheel
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          set -euo pipefail
+          python -m pip install --upgrade pip maturin
+          maturin build --release --out dist
+
+      - name: Install the wheel and the test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          python -m pip install "${wheel}[dev]" hypothesis mpmath
 
       - name: Import smoke test
+        # Outside the checkout, so the uncompiled riskpy/ source cannot shadow the install.
+        working-directory: ${{ runner.temp }}
         run: |
-          python -c "import riskpy; from riskpy import FactorModel, FourierTransform, LossTriangle; print(riskpy.__version__)"
+          python -c "import riskpy, riskpy.cpp_underwriter as core; from riskpy import FactorModel, FourierTransform, LossTriangle; print(riskpy.__version__, core.__file__)"
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        run: python -m pytest tests/ -v --tb=short
 
       # The verification suite: every identity the library claims, checked
       # against closed forms and published values. A wrong number fails CI.
       - name: Verify the mathematics
+        working-directory: ${{ runner.temp }}
         run: python -m riskpy.verify --no-oracle
+
+  # The Rust core on its own: unit tests and clippy, on every platform the wheels ship for.
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pyo3's build script needs an interpreter to configure against, even for clippy.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust
+          key: rust-${{ hashFiles('rust/**/Cargo.toml', 'rust/Cargo.lock') }}
+
+      # riskpy-core is plain Rust, so its tests need no Python at all.
+      - name: Unit tests (riskpy-core)
+        run: cargo test --manifest-path rust/Cargo.toml -p riskpy-core
+
+      # Warnings are errors: a warning nobody fails on is a warning nobody reads.
+      - name: Clippy
+        run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
 
   # Headless-friendly path: no Tk required for core APIs
   headless-import:
     name: Headless import (Ubuntu)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,11 +150,12 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++ cmake ninja-build
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
       - name: Install (no GUI)
+        # Builds the Rust core from source through maturin, as pip does from the sdist.
         run: |
           python -m pip install --upgrade pip
           pip install .

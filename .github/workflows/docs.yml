@@ -42,7 +42,13 @@ jobs:
 
       # The docs need the compiled extension only because riskpy/__init__.py
       # imports it eagerly. Building from source here keeps the site honest:
-      # if the wheel does not build, the docs do not publish.
+      # if the wheel does not build, the docs do not publish. The build is the
+      # Rust core through maturin, so the runner needs a Rust toolchain.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
