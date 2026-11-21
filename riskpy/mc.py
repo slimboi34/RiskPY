@@ -1645,16 +1645,23 @@ def iman_conover(samples: Dict[str, Any], target, rng, spearman: bool = True) ->
     ``2·sin(π·ρ_s/6)``, and that conversion is applied unless
     ``spearman=False``.
     """
+    return _iman_conover(samples, target, rng, spearman)[0]
+
+
+def _iman_conover(samples: Dict[str, Any], target, rng, spearman: bool = True):
+    """:func:`iman_conover`, also returning the score matrix whose column ``j`` orders variable
+    ``j`` (``None`` when there is nothing to reorder). :meth:`Model.stress` breaks ties in a
+    redrawn variable by its score, so a tie group keeps the dependence the scores carry."""
     np = _numpy()
     names = list(samples)
     k = len(names)
-    target = np.asarray(target, dtype=float)
+    target = _as_matrix(target, "target")
     if target.shape != (k, k):
         raise InputError(f"target must be {k}x{k} for {k} variables, got {target.shape}", code="RP109", param="target")
     _check_correlation(target)
     n = len(samples[names[0]])
     if n < 2:
-        return dict(samples)
+        return dict(samples), None
 
     pearson = 2.0 * np.sin(math.pi * target / 6.0) if spearman else target
     pearson = np.clip(pearson, -1.0, 1.0)
@@ -1678,7 +1685,7 @@ def iman_conover(samples: Dict[str, Any], target, rng, spearman: bool = True) ->
         ranked = np.empty(n, dtype=float)
         ranked[order] = np.sort(column)
         out[name] = ranked
-    return out
+    return out, T
 
 
 # ---------------------------------------------------------------------------
@@ -2373,10 +2380,17 @@ class Model:
             - a number — the variable is fixed at that value in every trial
               (``{"inflation": 0.08}``: "what if inflation is 8%");
             - a callable taking and returning an array — the draws are transformed
-              (``{"claims": lambda x: 1.2 * x}``: "claims 20% worse");
+              (``{"claims": lambda x: 1.2 * x}``: "claims 20% worse"). It is given a copy, so
+              changing the array in place cannot leak into the base or another scenario;
             - a :class:`Distribution` — the variable is redrawn from it *at the same ranks*
               as the base draw, so the trial that had the worst claims still has the worst
-              claims and every correlation and copula is preserved.
+              claims and every correlation and copula is preserved. Under ``copula=`` the new
+              values are the shock's quantiles at the copula's own uniforms — exactly the
+              column a re-run with the new marginal would draw. Otherwise a fresh sample is
+              sorted into the base ranks; trials that tie in the base (a default flag, a claim
+              count, a year with no claims) are ordered by the dependence that drew them — the
+              correlation's normal score, or an independent tie-break — and never by trial
+              number.
         trials: number of trials
         seed: random seed; pass one so the numbers can be reproduced
         fn: the formula, if one is not registered with ``@model.formula``
@@ -2387,7 +2401,11 @@ class Model:
         Returns a :class:`StressResult` holding the base :class:`Result` and one per
         scenario. Because every scenario shares the base run's draws (common random
         numbers), ``stress.delta(...)`` is the effect of the shock with the sampling noise
-        cancelled; two separate ``run`` calls would bury a small effect in noise.
+        cancelled; two separate ``run`` calls would bury a small effect in noise. The base is
+        the :meth:`run` of the same seed, trial for trial. A fresh sample for a Distribution
+        shock comes from a random stream of its own, one per variable, so a scenario's
+        numbers do not depend on which other scenarios are listed with it, or in what order,
+        and two scenarios that redraw a variable from the same distribution agree exactly.
 
         Example::
 
@@ -2413,42 +2431,44 @@ class Model:
             if not isinstance(shocks, Mapping):
                 raise ArgumentTypeError(f"scenario {label!r} must be a {{variable: shock}} mapping, got "
                                         f"{type(shocks).__name__}", code="RP404", param="scenarios")
-            for name in shocks:
+            for name, shock in shocks.items():
                 if name not in self.variables:
                     raise InputError(f"scenario {label!r} shocks unknown variable {name!r}; known: "
                                      f"{list(self.variables)}", code="RP108", param="scenarios")
-        if isinstance(trials, bool) or trials < 1:
-            raise InputError(f"trials must be >= 1, got {trials!r}", code="RP107", param="trials")
+                # Refuse a bad shock before the base run, not after it.
+                if _is_pinned(shock):
+                    _check_finite(f"scenario {label!r}: {name}", shock)
+                elif not (isinstance(shock, Distribution) or callable(shock)):
+                    raise ArgumentTypeError(
+                        f"scenario {label!r}: the shock for {name!r} must be a number, a callable or a "
+                        f"Distribution, got {type(shock).__name__}", code="RP404", param="scenarios"
+                    )
+        trials, seed = _check_trials(trials), _check_seed(seed)
 
         rng = np.random.default_rng(seed)
-        samples = _draw(self.variables, trials, rng, sampling, self.correlations or None, copula)
+        samples, latent, uniform = _draw_with_latent(self.variables, trials, rng, sampling,
+                                                     self.correlations or None, copula)
         base_label = getattr(formula, "__name__", "output")
         base = Result(values=_evaluate(formula, samples, trials, vectorised), inputs=samples, trials=trials,
                       seed=seed, label=base_label)
+        streams = _Streams(rng)
         results: Dict[str, Result] = {}
         for label, shocks in scenarios.items():
             shocked = dict(samples)
             for name, shock in shocks.items():
                 column = np.asarray(samples[name], dtype=float)
                 if isinstance(shock, Distribution):
-                    fresh = np.sort(np.asarray(shock.sample(trials, rng), dtype=float))
-                    ranks = np.argsort(np.argsort(column, kind="mergesort"), kind="mergesort")
-                    new = fresh[ranks]
+                    new = _redraw(shock, name, column, latent[name], uniform, trials, sampling, streams)
                 elif callable(shock):
-                    new = np.asarray(shock(column), dtype=float)
+                    new = np.asarray(shock(column.copy()), dtype=float)
                     if new.shape != (trials,):
                         raise InputError(
                             f"scenario {label!r}: the shock for {name!r} returned shape {new.shape}, expected "
                             f"({trials},)", code="RP100", param="scenarios",
                             hint="A callable shock takes the array of draws and returns an array of the same length."
                         )
-                elif isinstance(shock, (int, float)) and not isinstance(shock, bool):
-                    new = np.full(trials, _check_finite(f"scenario {label!r}: {name}", shock))
                 else:
-                    raise ArgumentTypeError(
-                        f"scenario {label!r}: the shock for {name!r} must be a number, a callable or a "
-                        f"Distribution, got {type(shock).__name__}", code="RP404", param="scenarios"
-                    )
+                    new = np.full(trials, _check_finite(f"scenario {label!r}: {name}", shock))
                 shocked[name] = new
             results[str(label)] = Result(values=_evaluate(formula, shocked, trials, vectorised), inputs=shocked,
                                          trials=trials, seed=seed, label=str(label))
@@ -2459,8 +2479,84 @@ class Model:
         return f"<Model({names})>"
 
 
+def _is_pinned(shock: Any) -> bool:
+    """A number that pins a stressed variable: any real number, NumPy scalars included, but not a bool."""
+    return isinstance(shock, numbers.Real) and not _is_bool(shock)
+
+
+class _Streams:
+    """Independent random streams for :meth:`Model.stress`, one per (purpose, variable).
+
+    Seeded from the run's generator *after* the base draws, so the base is untouched, and keyed
+    by the variable's name, so a stream does not depend on which scenarios use it or in what
+    order. Created on first use: a stress with no Distribution shock draws nothing extra.
+    """
+
+    def __init__(self, rng):
+        self._rng = rng
+        self._root = None
+        self._tiebreak: Dict[str, Any] = {}
+
+    def generator(self, purpose: int, name: str):
+        np = _numpy()
+        if self._root is None:
+            self._root = [int(x) for x in self._rng.integers(0, 2 ** 63, size=2)]
+        digest = hashlib.blake2b(str(name).encode("utf-8"), digest_size=16).digest()
+        words = [int.from_bytes(digest[i:i + 4], "little") for i in range(0, 16, 4)]
+        return np.random.default_rng(np.random.SeedSequence(self._root, spawn_key=(purpose, *words)))
+
+    def tiebreak(self, name: str, trials: int):
+        """Uniforms that order an independent variable's tied draws — the same in every scenario."""
+        if name not in self._tiebreak:
+            self._tiebreak[name] = self.generator(1, name).random(trials)
+        return self._tiebreak[name]
+
+
+def _redraw(shock: "Distribution", name: str, column, latent, uniform: bool, trials: int, sampling: str,
+            streams: _Streams):
+    """Values of ``shock`` in the same rank order as the base ``column`` — see :meth:`Model.stress`."""
+    np = _numpy()
+    if uniform:
+        # The copula's own uniforms: the base column is dist.ppf(latent) (or sorted into its
+        # ranks), so shock.ppf(latent) is the column a re-run with the new marginal draws.
+        try:
+            new = np.asarray(shock.ppf(latent), dtype=float)
+        except NotImplementedError:
+            new = None
+        if new is not None:
+            return np.broadcast_to(new, (trials,)).astype(float)
+    if latent is None:
+        latent = streams.tiebreak(name, trials)
+    # Sort by the base value, ties by the variable's latent ordering. A tie broken by trial
+    # number would assign the redrawn values independently of every other input, and the same
+    # index order across several tied variables would make them falsely comonotone.
+    order = np.lexsort((latent, column))
+    draw = shock.sample_lhs if sampling == "lhs" else shock.sample
+    fresh = np.sort(np.asarray(draw(trials, streams.generator(2, name)), dtype=float))
+    new = np.empty(trials, dtype=float)
+    new[order] = fresh
+    return new
+
+
+def _ranks(x):
+    """0-based ranks, ties in order of appearance."""
+    np = _numpy()
+    return np.argsort(np.argsort(x, kind="mergesort"), kind="mergesort")
+
+
 def _draw(variables: Mapping[str, Distribution], trials: int, rng, sampling: str,
           correlation, copula) -> Dict[str, Any]:
+    return _draw_with_latent(variables, trials, rng, sampling, correlation, copula)[0]
+
+
+def _draw_with_latent(variables: Mapping[str, Distribution], trials: int, rng, sampling: str, correlation, copula):
+    """Draw the inputs, and say for each what orders it.
+
+    Returns ``(samples, latent, uniform)``. ``latent[name]`` ranks the trials the way the
+    dependence does — the copula's uniform for that variable, or its Iman–Conover score — or is
+    ``None`` for an independent input; ``samples[name]`` is non-decreasing in it. ``uniform`` is
+    True when the latents are the copula's uniforms, to which a quantile function applies directly.
+    """
     np = _numpy()
     names = list(variables)
     if sampling not in ("random", "lhs"):
@@ -2470,40 +2566,58 @@ def _draw(variables: Mapping[str, Distribution], trials: int, rng, sampling: str
         if correlation is not None:
             raise InputError("pass either correlation= or copula=, not both", code="RP113", param="copula")
         dim = getattr(copula, "dim", None)
-        if dim is not None and dim != len(names):
-            raise InputError(f"copula has dimension {dim} but there are {len(names)} variables", code="RP109", param="copula")
+        k = len(names)
+        if dim is not None and dim != k:
+            raise InputError(
+                f"copula has dimension {dim} but there are {k} variables", code="RP109", param="copula",
+                hint=f"Build the copula with one dimension per variable ({k}, in the order {names}): an "
+                     f"Archimedean copula takes dim={k}, e.g. GumbelCopula(theta, dim={k}); GaussianCopula and "
+                     f"StudentTCopula take a {k}x{k} correlation matrix.")
         u = np.asarray(copula.uniforms(trials, rng), dtype=float)
-        if u.shape != (trials, len(names)):
-            raise InputError(f"copula.uniforms must return shape ({trials}, {len(names)}), got {u.shape}", code="RP109", param="copula")
-        samples = {}
+        if u.shape != (trials, k):
+            raise InputError(f"copula.uniforms must return shape ({trials}, {k}), got {u.shape}", code="RP109",
+                             param="copula", hint="copula.uniforms(n, rng) must return an (n, dim) array of "
+                                                  "uniforms, one column per variable.")
+        samples, latent = {}, {}
         for j, name in enumerate(names):
+            uj = u[:, j]
+            if sampling == "lhs":
+                # Latin hypercube inside the copula: keep each column's ranks, which are all the
+                # dependence there is, and put exactly one draw in each 1/n stratum.
+                uj = (_ranks(uj) + rng.random(trials)) / trials
             try:
-                samples[name] = variables[name].ppf(u[:, j])
+                samples[name] = variables[name].ppf(uj)
             except NotImplementedError:
                 # No quantile function (a Compound): draw the marginal and put
                 # its sorted values in the order of the copula's column. The marginal is
                 # the simulated one and the ranks are exactly the copula's.
-                drawn = np.sort(np.asarray(variables[name].sample(trials, rng), dtype=float))
-                samples[name] = drawn[np.argsort(np.argsort(u[:, j], kind="mergesort"), kind="mergesort")]
-        return samples
+                draw = variables[name].sample_lhs if sampling == "lhs" else variables[name].sample
+                drawn = np.sort(np.asarray(draw(trials, rng), dtype=float))
+                samples[name] = drawn[_ranks(uj)]
+            latent[name] = uj
+        return samples, latent, True
 
     if sampling == "lhs":
         samples = {name: dist.sample_lhs(trials, rng) for name, dist in variables.items()}
     else:
         samples = {name: dist.sample(trials, rng) for name, dist in variables.items()}
+    latent: Dict[str, Any] = {name: None for name in names}
 
     if correlation is not None:
         if isinstance(correlation, Mapping):
             matrix = correlation_matrix(names, correlation)
         else:
-            matrix = np.asarray(correlation, dtype=float)
+            matrix = _as_matrix(correlation)
             if matrix.shape != (len(names), len(names)):
                 raise InputError(
                     f"correlation matrix must be {len(names)}x{len(names)} in the order "
-                    f"{names}, got shape {matrix.shape}", code="RP109", param="correlation"
+                    f"{names}, got shape {matrix.shape}", code="RP109", param="correlation",
+                    hint=f"Give a {len(names)}x{len(names)} matrix, rows and columns in the order {names}."
                 )
-        samples = iman_conover(samples, matrix, rng)
-    return samples
+        samples, scores = _iman_conover(samples, matrix, rng)
+        if scores is not None:
+            latent = {name: scores[:, j] for j, name in enumerate(names)}
+    return samples, latent, False
 
 
 def _evaluate(fn: Callable[..., Any], samples: Mapping[str, Any], trials: int, vectorised: bool):
@@ -2558,6 +2672,9 @@ def simulate(
     Latin hypercube draws, which cuts the noise on the mean by a large factor
     at no cost. ``copula`` accepts any object with ``uniforms(n, rng)`` — see
     :mod:`riskpy.capital` — for tail dependence a correlation cannot express.
+    With both, each variable keeps the copula's ranks and its uniform is moved
+    into the stratum its rank points to, so the marginals are stratified and the
+    dependence is the copula's.
 
     ``trials`` is a whole number >= 1 and ``seed`` is None or a whole number >= 0
     (or a NumPy ``SeedSequence`` / ``Generator``); anything else is RP107 (RP102

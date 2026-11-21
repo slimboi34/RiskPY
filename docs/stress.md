@@ -43,7 +43,7 @@ Stress test — annual_loss, 100,000 trials, level 0.995
   base              1,260,374.29    2,062,312.36    2,244,163.57
   inflation 8%      1,308,130.02    2,121,149.59    2,308,773.17      +47,755.73      +58,837.23
   claims +20%       1,512,449.14    2,474,774.83    2,692,996.29     +252,074.86     +412,462.47
-  heavier tail      1,635,715.62    3,158,196.07    3,734,547.20     +375,341.33   +1,095,883.71
+  heavier tail      1,636,108.99    3,161,626.83    3,745,405.77     +375,734.70   +1,099,314.48
 ```
 
 `scenarios` maps each label to `{variable: shock}`. A shock is one of three
@@ -51,12 +51,36 @@ things:
 
 | Shock | Effect |
 |---|---|
-| a number | The variable is fixed at that value in every trial. |
-| a callable | The draws are transformed: it takes the array and returns an array of the same length. |
+| a number | The variable is fixed at that value in every trial. Python and NumPy numbers both work (`0.08`, `np.float32(0.08)`, `np.int64(2)`); `True` and `False` are refused. |
+| a callable | The draws are transformed: it takes the array and returns an array of the same length. It gets a copy, so a function that changes the array in place (`x *= 2`) cannot leak into the base or another scenario. |
 | a `Distribution` | The variable is redrawn from it at the same ranks as the base draw. The trial that had the worst claims still has the worst claims, so every correlation and copula is preserved. |
 
 The remaining arguments (`trials`, `seed`, `fn`, `vectorised`, `sampling`,
-`copula`) are those of `Model.run`.
+`copula`) are those of `Model.run`, and the base is the `Model.run` of the same
+seed, trial for trial.
+
+### How a distribution shock keeps the dependence
+
+Under `copula=`, the new values are the shock's quantiles at the copula's own
+uniforms. That is exactly the column a re-run with the new marginal, the same
+copula and the same seed would draw, so a stressed default flag, claim count or
+severity carries the copula's dependence value for value.
+
+Otherwise (independent inputs, or `correlate`), a fresh sample of the shock is
+sorted into the base ranks. Inputs with repeated values need care here: a
+default flag is 0 in most trials, a claim count repeats, a low-frequency line
+has many claim-free years. Trials that tie in the base are ordered by what drew
+them: the normal score that `correlate` paired them by, or an independent
+tie-break for an independent input. They are never ordered by trial number.
+Before 0.8.0 they were, which dropped the dependence inside every tie group and
+put all the extra defaults of a portfolio-wide PD shock on the same trials. With
+20 independent obligors stressed from a 2% to a 5% PD, the 99.5% VaR came out at
+20 defaults instead of 4.
+
+The fresh sample comes from a random stream of its own for each variable,
+derived from the seed. A scenario's numbers therefore do not depend on which
+other scenarios are listed with it, or in what order, and two scenarios that
+redraw a variable from the same distribution use the same values.
 
 The result is a `StressResult`:
 

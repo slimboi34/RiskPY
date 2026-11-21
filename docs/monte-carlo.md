@@ -197,6 +197,14 @@ marginal, far less noise: the standard deviation of the estimated mean falls
 by a factor of two to three for typical loss models, at no cost. Distributions
 without a quantile function fall back to plain sampling for that input.
 
+It combines with `correlate` (the stratified draws are re-paired) and, since
+0.8.0, with `copula=`. Under a copula each variable keeps the copula's ranks,
+which carry all of the dependence, and its uniform is moved into the stratum
+its rank points to: `(rank + V) / n` with `V` uniform. So the marginals are
+stratified and the dependence is exactly the copula's. A `Compound` is drawn
+with its own Latin hypercube method and put in the copula's order. Before
+0.8.0 `sampling="lhs"` was silently ignored when a copula was given.
+
 ## Reading the result
 
 ```python
