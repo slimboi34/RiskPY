@@ -37,7 +37,9 @@ install; this module is opt-in.
 
 from __future__ import annotations
 
+import hashlib
 import math
+import numbers
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -192,22 +194,84 @@ class Distribution:
         return f"{type(self).__name__}({args})"
 
 
+def _is_bool(value: Any) -> bool:
+    """True for Python and NumPy booleans, which are numbers to ``float()`` but never meant as one.
+    (NumPy's is ``numpy.bool`` in NumPy 2 and ``numpy.bool_`` before; neither subclasses ``bool``.)"""
+    return isinstance(value, bool) or type(value).__name__ in ("bool", "bool_")
+
+
+def _as_float(name: str, value: Any) -> float:
+    """``value`` as a float, or RP101. Refuses booleans, strings and bytes (``float("100")`` and
+    ``float(True)`` would otherwise coerce them), and turns the ``TypeError`` of ``None`` and the
+    ``OverflowError`` of an integer past the float range into the same coded error."""
+    if _is_bool(value) or isinstance(value, (str, bytes, bytearray)):
+        raise InputError(f"{name} must be a number, got {value!r}", code="RP101", param=name)
+    try:
+        return float(value)
+    except OverflowError:
+        raise InputError(f"{name} must be finite, got an integer too large for a float", code="RP101",
+                         param=name) from None
+    except (TypeError, ValueError):
+        raise InputError(f"{name} must be a number, got {value!r}", code="RP101", param=name) from None
+
+
 def _check_positive(name: str, value: float) -> float:
-    if not (value > 0) or not math.isfinite(value):
+    number = _as_float(name, value)
+    if not (number > 0) or not math.isfinite(number):
         raise InputError(f"{name} must be a finite number > 0, got {value!r}", code="RP102", param=name)
-    return float(value)
+    return number
 
 
 def _check_non_negative(name: str, value: float) -> float:
-    if not (value >= 0) or not math.isfinite(value):
+    number = _as_float(name, value)
+    if not (number >= 0) or not math.isfinite(number):
         raise InputError(f"{name} must be a finite number >= 0, got {value!r}", code="RP102", param=name)
-    return float(value)
+    # + 0.0 turns -0.0 into 0.0: NumPy refuses a scale whose sign bit is set, so Normal(0, -0.0)
+    # would pass here and then fail at sample time.
+    return number + 0.0
 
 
 def _check_finite(name: str, value: float) -> float:
-    if not math.isfinite(value):
+    number = _as_float(name, value)
+    if not math.isfinite(number):
         raise InputError(f"{name} must be finite, got {value!r}", code="RP101", param=name)
-    return float(value)
+    return number
+
+
+def _check_probability(name: str, value: Any, *, open_low: bool = False) -> float:
+    """A probability in [0, 1] (or (0, 1] with ``open_low``): RP101 if not a finite number, RP103 if outside."""
+    number = _check_finite(name, value)
+    if not ((0.0 < number) if open_low else (0.0 <= number)) or number > 1.0:
+        interval = "(0, 1]" if open_low else "[0, 1]"
+        raise InputError(f"{name} must be in {interval}, got {value!r}", code="RP103", param=name)
+    return number
+
+
+def _check_trials(trials: Any) -> int:
+    """The number of trials: a whole number >= 1 (an int or a NumPy integer, never a bool)."""
+    if _is_bool(trials) or not isinstance(trials, numbers.Integral):
+        raise InputError(f"trials must be a whole number >= 1, got {trials!r}", code="RP107", param="trials",
+                         hint="Pass an integer number of trials, e.g. 100_000 (not 1e5 or 2.5).")
+    if trials < 1:
+        raise InputError(f"trials must be >= 1, got {trials!r}", code="RP107", param="trials")
+    return int(trials)
+
+
+def _check_seed(seed: Any) -> Any:
+    """``None``, a whole number >= 0, or something NumPy already treats as a seed (a
+    ``SeedSequence``, ``BitGenerator`` or ``Generator``), which is passed through unchanged."""
+    if seed is None:
+        return None
+    np = _numpy()
+    if isinstance(seed, (np.random.SeedSequence, np.random.BitGenerator, np.random.Generator)):
+        return seed
+    if _is_bool(seed) or not isinstance(seed, numbers.Integral):
+        raise InputError(f"seed must be a whole number >= 0 or None, got {seed!r}", code="RP107", param="seed",
+                         hint="Pass an integer seed such as 42, or None for fresh draws on every run.")
+    if seed < 0:
+        raise InputError(f"seed must be >= 0, got {seed!r}", code="RP102", param="seed",
+                         hint="Pass a non-negative integer seed such as 42, or None for fresh draws on every run.")
+    return int(seed)
 
 
 def _as_array(x):
@@ -321,9 +385,10 @@ class Constant(Distribution):
 
 class Uniform(Distribution):
     def __init__(self, low: float, high: float):
-        if not (high > low):
+        lo, hi = _check_finite("low", low), _check_finite("high", high)
+        if not (hi > lo):
             raise InputError(f"high must exceed low, got low={low!r} high={high!r}", code="RP113", param="high")
-        self.low, self.high = _check_finite("low", low), _check_finite("high", high)
+        self.low, self.high = lo, hi
 
     def sample(self, n, rng):
         return rng.uniform(self.low, self.high, n)
@@ -457,11 +522,12 @@ class Triangular(Distribution):
     is a best guess and two bounds."""
 
     def __init__(self, low: float, mode: float, high: float):
+        low, mode, high = _check_finite("low", low), _check_finite("mode", mode), _check_finite("high", high)
         if not (low <= mode <= high):
             raise InputError(f"need low <= mode <= high, got {low!r}, {mode!r}, {high!r}", code="RP113", param="mode")
         if low == high:
             raise InputError("low and high must differ", code="RP113", param="high")
-        self.low, self.mode, self.high = float(low), float(mode), float(high)
+        self.low, self.mode, self.high = low, mode, high
 
     def sample(self, n, rng):
         return rng.triangular(self.low, self.mode, self.high, n)
@@ -508,11 +574,12 @@ class PERT(Distribution):
     """
 
     def __init__(self, low: float, mode: float, high: float, lam: float = 4.0):
+        low, mode, high = _check_finite("low", low), _check_finite("mode", mode), _check_finite("high", high)
         if not (low <= mode <= high):
             raise InputError(f"need low <= mode <= high, got {low!r}, {mode!r}, {high!r}", code="RP113", param="mode")
         if low == high:
             raise InputError("low and high must differ", code="RP113", param="high")
-        self.low, self.mode, self.high = float(low), float(mode), float(high)
+        self.low, self.mode, self.high = low, mode, high
         self.lam = _check_non_negative("lam", lam)
 
     def _ab(self) -> Tuple[float, float]:
@@ -1084,9 +1151,7 @@ class NegativeBinomial(_Discrete):
 
     def __init__(self, n_success: float, p: float):
         self.n_success = _check_positive("n_success", n_success)
-        if not (0.0 < p <= 1.0):
-            raise InputError(f"p must be in (0, 1], got {p!r}", code="RP103", param="p")
-        self.p = float(p)
+        self.p = _check_probability("p", p, open_low=True)
 
     @classmethod
     def from_mean_dispersion(cls, mean: float, dispersion: float) -> "NegativeBinomial":
@@ -1118,9 +1183,7 @@ class NegativeBinomial(_Discrete):
 
 class Bernoulli(_Discrete):
     def __init__(self, p: float):
-        if not (0.0 <= p <= 1.0):
-            raise InputError(f"p must be in [0, 1], got {p!r}", code="RP103", param="p")
-        self.p = float(p)
+        self.p = _check_probability("p", p)
 
     def sample(self, n, rng):
         return (rng.random(n) < self.p).astype(float)
@@ -1142,11 +1205,14 @@ class Bernoulli(_Discrete):
 
 class Binomial(_Discrete):
     def __init__(self, trials: int, p: float):
+        # A whole number, never truncated: Binomial(2.5, p) used to become Binomial(2, p) silently.
+        whole = isinstance(trials, numbers.Integral) or (
+            isinstance(trials, numbers.Real) and math.isfinite(trials) and float(trials).is_integer())
+        if _is_bool(trials) or not whole:
+            raise InputError(f"trials must be a whole number >= 0, got {trials!r}", code="RP107", param="trials")
         if trials < 0:
             raise InputError(f"trials must be >= 0, got {trials!r}", code="RP107", param="trials")
-        if not (0.0 <= p <= 1.0):
-            raise InputError(f"p must be in [0, 1], got {p!r}", code="RP103", param="p")
-        self.trials, self.p = int(trials), float(p)
+        self.trials, self.p = int(trials), _check_probability("p", p)
 
     def sample(self, n, rng):
         return rng.binomial(self.trials, self.p, n).astype(float)
@@ -1517,24 +1583,47 @@ def correlation_matrix(names: Sequence[str], pairs: Mapping[Tuple[str, str], flo
             raise InputError(f"correlation refers to unknown variable {unknown!r}; known: {list(names)}", code="RP108", param="correlation")
         if a == b:
             raise InputError(f"cannot set a variable's correlation with itself ({a!r})", code="RP113", param="correlation")
-        if not (-1.0 <= rho <= 1.0):
+        value = _as_float("correlation", rho)
+        if not (-1.0 <= value <= 1.0):
             raise InputError(f"correlation must be in [-1, 1], got {rho!r} for {(a, b)!r}", code="RP100", param="correlation", hint="Correlations are decimals in [-1, 1].")
-        matrix[index[a], index[b]] = matrix[index[b], index[a]] = float(rho)
+        matrix[index[a], index[b]] = matrix[index[b], index[a]] = value
     _check_correlation(matrix)
     return matrix
 
 
+def _as_matrix(value, param: str = "correlation"):
+    """``value`` as a float array, with a coded error for ragged rows or text entries."""
+    np = _numpy()
+    try:
+        return np.asarray(value, dtype=float)
+    except (TypeError, ValueError):
+        raise InputError(f"{param} must be a matrix of numbers (a list of equal-length rows)", code="RP100",
+                         param=param, hint="Give one row per variable, each with one number per variable.") from None
+
+
 def _check_correlation(matrix) -> None:
     np = _numpy()
-    matrix = np.asarray(matrix, dtype=float)
+    matrix = _as_matrix(matrix)
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
         raise InputError(f"correlation must be a square matrix, got shape {matrix.shape}", code="RP100", param="correlation")
+    # Finiteness first: np.allclose calls inf "close" to inf and NaN fails every comparison, so
+    # a matrix with an infinite entry passed the symmetry and eigenvalue tests and a NaN one was
+    # reported as asymmetric.
+    if np.any(np.isnan(matrix)):
+        raise InputError("correlation matrix contains NaN", code="RP101", param="correlation",
+                         hint="Every entry must be a number in [-1, 1]; check for a missing value in the data.")
+    if not np.all(np.isfinite(matrix)):
+        raise InputError("correlation matrix entries must be finite, got an infinite entry", code="RP101",
+                         param="correlation", hint="Correlations are decimals in [-1, 1].")
+    if np.any(np.abs(matrix) > 1.0 + 1e-12):
+        raise InputError(f"correlation matrix entries must be in [-1, 1], got {float(np.max(np.abs(matrix))):g}",
+                         code="RP100", param="correlation", hint="Correlations are decimals in [-1, 1].")
     if not np.allclose(matrix, matrix.T, atol=1e-12):
         raise InputError("correlation matrix must be symmetric", code="RP100", param="correlation")
     if not np.allclose(np.diag(matrix), 1.0, atol=1e-12):
         raise InputError("correlation matrix must have ones on the diagonal", code="RP100", param="correlation")
     eigen = np.linalg.eigvalsh(matrix)
-    if eigen.min() <= -1e-10:
+    if not np.all(np.isfinite(eigen)) or eigen.min() <= -1e-10:
         raise InputError(
             f"correlation matrix is not positive semi-definite (smallest eigenvalue "
             f"{eigen.min():.3g}). The pairwise correlations you asked for cannot all "
@@ -1671,9 +1760,11 @@ class Result:
     def percentile(self, q: float) -> float:
         """``q`` in percent, e.g. ``percentile(99.5)``. Linear interpolation
         between order statistics, identical to NumPy's default."""
-        np = _numpy()
-        if not (0.0 <= q <= 100.0):
-            raise InputError(f"q is a percentage in [0, 100], got {q!r}", code="RP110", param="q", hint="percentile() takes a percentage in [0, 100]; var() and tvar() take a decimal level such as 0.995.")
+        hint = "percentile() takes a percentage in [0, 100]; var() and tvar() take a decimal level such as 0.995."
+        value = _as_float("q", q)
+        if not (0.0 <= value <= 100.0):
+            raise InputError(f"q is a percentage in [0, 100], got {q!r}", code="RP110", param="q", hint=hint)
+        q = value
         ordered = self._ordered()
         n = ordered.size
         pos = (q / 100.0) * (n - 1)
@@ -1687,7 +1778,7 @@ class Result:
 
     def var(self, level: float = 0.995) -> float:
         """Value at Risk — the loss exceeded with probability ``1 - level``."""
-        _check_level(level)
+        level = _check_level(level)
         return self.percentile(level * 100.0)
 
     def tvar(self, level: float = 0.995) -> float:
@@ -1705,7 +1796,7 @@ class Result:
         Preferred to VaR for the same reason regulators prefer it: VaR tells you
         the threshold and nothing about how bad it gets past it.
         """
-        _check_level(level)
+        level = _check_level(level)
         np = _numpy()
         ordered = self._ordered()
         n = ordered.size
@@ -1748,11 +1839,13 @@ class Result:
         """Running mean and a ±1.96 standard-error band, for a convergence plot.
 
         Returns ``(n, running_mean, half_width)``. If the band is still visibly
-        narrowing at the right-hand edge, you have not run enough trials.
+        narrowing at the right-hand edge, you have not run enough trials. A one-trial run
+        gives a single point with a half-width of 0, as :attr:`standard_error` does.
         """
         np = _numpy()
         points = max(2, min(int(points), self.trials))
-        first = max(2, self.trials // points)
+        # Never past the last trial: with one trial the first checkpoint used to be trial 2.
+        first = min(max(2, self.trials // points), self.trials)
         idx = np.unique(np.linspace(first, self.trials, points).astype(int))
         cumulative = np.cumsum(self.values)
         running = cumulative[idx - 1] / idx
@@ -2074,7 +2167,7 @@ class StressResult:
     def to_dict(self, level: float = 0.995) -> Dict[str, Any]:
         """Base and scenarios as plain data: mean, std, VaR and TVaR at ``level``, and each
         scenario's change from the base (absolute, and relative as a decimal)."""
-        _check_level(level)
+        level = _check_level(level)
 
         def stats(result: Result) -> Dict[str, float]:
             return {"mean": result.mean, "std": result.std, "var": result.var(level), "tvar": result.tvar(level)}
@@ -2121,9 +2214,13 @@ class StressResult:
         return f"<StressResult base={self.base.label!r} scenarios={list(self.scenarios)}>"
 
 
-def _check_level(level: float) -> None:
-    if not (0.0 < level < 1.0):
+def _check_level(level: float) -> float:
+    """A confidence level strictly inside (0, 1), as a float: RP101 if it is not a number at all
+    (a string, None, a boolean), RP110 if it is outside the interval."""
+    value = _as_float("level", level)
+    if not (0.0 < value < 1.0):
         raise InputError(f"level must be a probability in (0, 1), e.g. 0.995 — got {level!r}", code="RP110", param="level")
+    return value
 
 
 def _rankdata(values, np):
@@ -2144,16 +2241,42 @@ def _rankdata(values, np):
 # ---------------------------------------------------------------------------
 
 
+def _not_a_distribution(name: str, value: Any, where: str) -> ArgumentTypeError:
+    """The error for a keyword of ``Model()`` or ``simulate()`` that is not a Distribution, with
+    advice that fits what was passed: a function is a formula, a number wants ``Constant``."""
+    if callable(value) and not isinstance(value, type):
+        if where == "Model":
+            message = (f"{name!r} is a function, but Model() takes only distributions. Register the formula "
+                       f"with @model.formula (or model.formula(fn)), or pass it to model.run(fn=...).")
+            hint = "Model(claims=LogNormal(8, 1), ...) takes the random inputs; the formula goes in @model.formula."
+        else:
+            message = (f"{name!r} is a function, but the keywords of simulate() are distributions. Pass the "
+                       f"formula as the first argument: simulate(fn, trials=..., x=Normal(0, 1)).")
+            hint = "simulate(fn, trials, seed, ..., name=Distribution): only the formula is a function."
+        return ArgumentTypeError(message, code="RP404", param=name, hint=hint)
+    if isinstance(value, type) and issubclass(value, Distribution):
+        return ArgumentTypeError(
+            f"{name!r} is the class {value.__name__}, not a distribution: call it with its parameters, "
+            f"e.g. {name}={value.__name__}(...).", code="RP404", param=name,
+            hint="Pass a distribution object such as Normal(0, 1), not the class Normal.")
+    if isinstance(value, numbers.Real) and not _is_bool(value):
+        return ArgumentTypeError(
+            f"{name!r} must be a Distribution, got {type(value).__name__}. Wrap a fixed number in "
+            f"Constant({value!r}).", code="RP404", param=name,
+            hint=f"A fixed input is a distribution too: {name}=Constant({value!r}).")
+    return ArgumentTypeError(
+        f"{name!r} must be a Distribution such as Normal(0, 1) or Poisson(3), got {type(value).__name__}.",
+        code="RP404", param=name,
+        hint="Every keyword is a random input: pass a riskpy.mc distribution (Normal, LogNormal, Poisson, ...).")
+
+
 class Model:
     """A set of named random inputs, optional dependence, and a formula."""
 
     def __init__(self, **variables: Distribution):
         for name, dist in variables.items():
             if not isinstance(dist, Distribution):
-                raise ArgumentTypeError(
-                    f"{name!r} must be a Distribution, got {type(dist).__name__}. "
-                    f"Wrap a fixed number in Constant({dist!r}).", code="RP404", param=name
-                )
+                raise _not_a_distribution(name, dist, "Model")
         self.variables: Dict[str, Distribution] = dict(variables)
         self.correlations: Dict[Tuple[str, str], float] = {}
         self._formula: Optional[Callable[..., Any]] = None
@@ -2168,8 +2291,11 @@ class Model:
         for name in (a, b):
             if name not in self.variables:
                 raise InputError(f"unknown variable {name!r}; known: {list(self.variables)}", code="RP108", param="name")
-        self.correlations[(a, b)] = float(rho)
-        correlation_matrix(list(self.variables), self.correlations)  # validate now
+        value = _as_float("rho", rho)
+        # Validate now, and keep the pair only if it is valid: a refused pair left on the model
+        # would make every later run fail.
+        correlation_matrix(list(self.variables), {**self.correlations, (a, b): value})
+        self.correlations[(a, b)] = value
         return self
 
     def sample(self, trials: int = 10_000, seed: Optional[int] = None, sampling: str = "random",
@@ -2177,6 +2303,7 @@ class Model:
         """Draw the inputs only, as ``{name: array}`` — for inspection or for
         feeding into something that is not a formula."""
         np = _numpy()
+        trials, seed = _check_trials(trials), _check_seed(seed)
         rng = np.random.default_rng(seed)
         return _draw(self.variables, trials, rng, sampling, self.correlations or None, copula)
 
@@ -2431,19 +2558,19 @@ def simulate(
     Latin hypercube draws, which cuts the noise on the mean by a large factor
     at no cost. ``copula`` accepts any object with ``uniforms(n, rng)`` — see
     :mod:`riskpy.capital` — for tail dependence a correlation cannot express.
+
+    ``trials`` is a whole number >= 1 and ``seed`` is None or a whole number >= 0
+    (or a NumPy ``SeedSequence`` / ``Generator``); anything else is RP107 (RP102
+    for a negative seed).
     """
     np = _numpy()
 
-    if trials < 1:
-        raise InputError(f"trials must be >= 1, got {trials!r}", code="RP107", param="trials")
+    trials, seed = _check_trials(trials), _check_seed(seed)
     if not variables:
         raise InputError("Nothing to simulate — pass at least one distribution.", code="RP111", param="variables")
     for name, dist in variables.items():
         if not isinstance(dist, Distribution):
-            raise ArgumentTypeError(
-                f"{name!r} must be a Distribution, got {type(dist).__name__}. "
-                f"Wrap a fixed number in Constant({dist!r}).", code="RP404", param=name
-            )
+            raise _not_a_distribution(name, dist, "simulate")
 
     rng = np.random.default_rng(seed)
     samples = _draw(variables, trials, rng, sampling, correlation, copula)

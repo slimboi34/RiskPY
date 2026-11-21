@@ -162,7 +162,9 @@ with any distribution and with Latin hypercube draws. The recovered rank
 correlation lands within 0.01 of the target at 100k trials.
 
 A set of pairwise correlations can be jointly impossible; the error names the
-smallest eigenvalue rather than letting a Cholesky failure surface later.
+smallest eigenvalue rather than letting a Cholesky failure surface later, and the
+refused pair is not kept on the model. A matrix with a NaN or infinite entry is
+refused with RP101.
 
 For tail dependence a correlation cannot express, `run`, `sample` and
 `simulate` accept `copula=`. [`riskpy.capital`](capital.md) has five — Gaussian,
@@ -305,6 +307,15 @@ negative. The count tells you how much of the tail is involved.
 **"claim_count must be a Distribution, got float"** — wrap fixed numbers in
 `Constant(...)`. This is deliberate: silently accepting a bare number makes it
 easy to freeze an input you meant to vary.
+
+**"'formula' is a function, but Model() takes only distributions"** — the
+keywords of `Model(...)` and `simulate(...)` are the random inputs. Register the
+formula with `@model.formula` (or `model.formula(fn)`), pass it to
+`model.run(fn=...)`, or give it to `simulate` as the first argument.
+
+**"trials must be a whole number >= 1"** (RP107) — `trials` is an integer:
+`100_000`, not `1e5`. `seed` is `None` or an integer `>= 0` (a NumPy
+`SeedSequence` or `Generator` also works); a negative seed is RP102.
 
 **"correlation matrix is not positive semi-definite"** — the pairwise
 correlations you asked for cannot all hold at once. Reduce the strongest ones.
