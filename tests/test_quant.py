@@ -228,19 +228,21 @@ def test_expected_shortfall_exceeds_var():
 # ---------------------------------------------------------------------------
 
 
-def test_heston_collapses_to_black_scholes_as_vol_of_vol_vanishes():
+@pytest.mark.parametrize("xi", [1e-6, 1e-8, 1e-10])
+def test_heston_collapses_to_black_scholes_as_vol_of_vol_vanishes(xi):
     """The strongest available check on the transform code.
 
     With xi -> 0 and v0 = theta, variance is deterministic and Heston must
     reproduce Black-Scholes at sigma = sqrt(theta). If the characteristic
     function or the inversion has a sign error, this is where it shows.
+    Before 0.8.0 the agreement got worse below xi ~ 1e-7 (38.65 at 1e-9).
     """
     bs = quant.black_scholes(S=100, K=100, T=1.0, r=0.03, sigma=0.2)
     heston = quant.heston_price(
         S=100, K=100, T=1.0, r=0.03,
-        v0=0.04, kappa=2.0, theta=0.04, xi=1e-6, rho=0.0,
+        v0=0.04, kappa=2.0, theta=0.04, xi=xi, rho=0.0,
     )
-    assert heston == pytest.approx(bs, abs=1e-3)
+    assert heston == pytest.approx(bs, abs=1e-6)
 
 
 # These parameters violate Feller on purpose; the warning itself is asserted by
