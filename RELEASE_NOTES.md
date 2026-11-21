@@ -1,3 +1,264 @@
+# RiskPY v0.9.0 — Release Notes
+
+**Release date:** not yet released (prepared 2026-11-21)  
+**Type:** Minor release — the compiled core is rewritten in Rust. Seeded Monte Carlo results change, and two inputs are now refused; see Changed  
+**Install:** `pip install -U open-riskpy`
+
+---
+
+## TL;DR
+
+The compiled core, about 1,400 lines of C++ bound with pybind11, is now Rust, bound with
+PyO3 and built by maturin. It is still the extension module `riskpy.cpp_underwriter`, with
+the same classes, methods, argument names, defaults, conversions and exceptions, so
+`import riskpy` and everything built on it work unchanged.
+
+- **Same answers.** A differential test sent 76,116 generated calls to the 0.8.0 C++ core
+  and to the Rust core. None differed beyond the changes listed below. Pure arithmetic is
+  bit-identical; results that go through pow, erfc, sin or cos differ by at most 4.9e-15
+  relative.
+- **New random numbers, the same on every platform.** The C++ core drew from the standard
+  library's distributions, which libc++, libstdc++ and MSVC implement differently, so a
+  seed gave different numbers on macOS, Linux and Windows. That is the CI failure of
+  2026-11-21. The Rust core draws from a PCG64-DXSM stream with its own samplers and
+  pure-Rust maths, so a seed gives the same numbers everywhere. **Seeded
+  `MonteCarloSimulator` results differ from 0.8.0.** All 32 sampler checks and all 14
+  simulation checks against closed forms and against 0.8.0 pass.
+- **The two deferred core fixes.** `present_value` and `future_value` keep their digits
+  for tiny rates: the worst `present_value` error for rates of ±1e-16 to ±1e-5 drops
+  from 100% to 3.7e-16 (4,000 random calls against a 50-digit evaluation).
+  They also refuse negative periods and NaN or infinite payments with `ValueError`.
+- **One wheel per platform.** The extension uses the stable ABI (abi3, CPython 3.10+), so
+  one wheel per platform serves every Python version. Building from source needs a Rust
+  toolchain instead of a C++ compiler, CMake, pybind11 and OpenXLSX.
+- **Speed.** Six of the eight measured workloads are faster, from 1.15× to 2.56×; two are
+  slower, at 0.82× and 0.87×. See Speed.
+
+Measurements, scripts and tables: `benchmarks/rust_core/` (RESULTS.md).
+
+---
+
+## Changed
+
+### The core is Rust
+
+- `rust/core` (`riskpy-core`) is the core in plain Rust, with no Python in it: rating,
+  triangles, credibility, exposure rating, rate analysis, the FFT, the Monte Carlo
+  simulator with its random stream and samplers, and the .xlsx writer.
+  `rust/python` (`riskpy-python`) holds the PyO3 bindings. Its dependencies are PyO3,
+  `libm`, `zip` (pure-Rust deflate) and `getrandom`.
+- Every argument check, its order and its `ValueError` message is ported one for one,
+  including the 0.4.1 and 0.6.0 hardening:
+  - NaN refused everywhere, so the NaN-frequency infinite loop is impossible;
+  - frequencies above 1e9 refused;
+  - negative-binomial claims as a true gamma–Poisson mixture, with the Poisson limit for
+    tiny dispersion;
+  - the FFT grid sized from λ, with wrap-around detection and the 2^24 cap;
+  - the exact lognormal loss elimination ratio;
+  - the zero-then-positive triangle column refused.
+- Arguments convert by pybind11 3's rules, so the same calls succeed and the same calls
+  fail.
+  - NumPy arrays, generators and sets are accepted for lists; plain iterators are not.
+  - `Decimal("5.7")` is the int 5, and a float for an int is a `TypeError`.
+  - Ints outside a C++ `int` are a `TypeError`, and so is a seed outside 0…2^32−1.
+  - `bytes` are accepted for strings.
+  - The text of a `TypeError` is new; its type is not.
+- All five `simulate_*` methods release the GIL, as in 0.6.0, and now so do the four
+  `FourierTransform` functions.
+- The extension has a `__version__` (the crate's version, kept equal to the package's).
+  `riskpy-doctor` reports it, and the publish guard checks the two match.
+- A Python callback that returns something other than a number still raises
+  `RuntimeError`, with new wording.
+- The classes have docstrings, and `inspect.signature` works on their methods.
+
+### Results that change
+
+- **Seeded `MonteCarloSimulator` results, all five methods**, and with them the
+  `aggregate_loss` tool's seeded output. Replaying a 0.8.0 audit ledger that holds seeded
+  `aggregate_loss` calls shows drift. Seed 0 still means a fresh seed. The stream:
+  - A non-zero 32-bit seed is spread over 256 bits by SplitMix64 and fed to
+    PCG64-DXSM's standard seeding. The output matches NumPy's `PCG64DXSM` given the same
+    state.
+  - The samplers are written in the core:
+    - uniform from the top 53 bits;
+    - normal by Marsaglia's polar method;
+    - gamma by Marsaglia–Tsang, with a cancellation-free log test for huge shapes;
+    - Poisson by inversion below λ = 10 and Hörmann's PTRS above, accepting with
+      Loader's saddle-point log-pmf (exact to ulps at λ = 1e9);
+    - binomial by inversion and BTPE.
+  - Every transcendental function comes from the pure-Rust `libm`, and Rust never fuses
+    a multiply-add, so the numbers do not depend on the platform.
+  - `tests/test_rust_core.py` pins seeded draws against an independent Python
+    implementation of the stream, on every CI platform.
+- **`ActuarialMath.present_value` / `future_value`** are computed as
+  `−expm1(−n·log1p(r))/r` and `expm1(n·log1p(r))/r`. For ordinary rates they move in the
+  last bits: the worst error against a 50-digit evaluation goes from 2.0e-12 to 1.0e-13.
+  For tiny rates the old forms lost every digit: at r = 5e-324 the present value of 1 for
+  one period was 0, and it is now 1.
+- **Last-bit differences** where the C++ called the C library: `increased_limits_factor`,
+  `layer_premium`, `loss_elimination_ratio`, `trend_factor`, the FFT functions and
+  zero-volatility economic paths. Measured: at most 4.9e-15 relative.
+- **The 0.8.0 macOS arm64 wheel fused multiply-adds.** clang contracted `a*b + c` into one
+  FMA by default, so `experience_mod_factor`, `credibility_weighted_rate` and the FFT
+  butterflies differed by an ulp between that wheel and the x86_64 Linux and Windows
+  wheels.
+  - In 20,000 random calls the arm64 wheel matched the fused value every time the two
+    evaluations differed: 2,283 times for `experience_mod_factor`, 3,443 for
+    `credibility_weighted_rate`.
+  - 0.9.0 computes the unfused value on every platform, as the x86_64 wheels did.
+
+### New refusals
+
+- `ActuarialMath.present_value` / `future_value` with negative `periods` raise
+  `ValueError("Periods must be non-negative")`. With a NaN or infinite `payment` they
+  raise `ValueError("Payment must be finite")`. These were 0.8.0's known limit.
+
+### ExcelExporter
+
+- **What the C++ core did with templates: nothing.** `ExcelExporter(template=...)` stored
+  the name and never opened the file. OpenXLSX's `XLDocument::create` started every
+  export from its own blank workbook with one sheet, "Sheet1". 0.9.0 keeps that, so the
+  default `UnderwritingApp(excel_template="corporate_layout.xlsx")`, which names a file
+  that does not exist, still works.
+- The cells are unchanged:
+  - labels in row 1 and values from row 2;
+  - numbers as numeric cells and strings as shared strings;
+  - NaN and ±inf as `#NUM!` error cells;
+  - a field missing from the inputs leaves its cell empty, and a batch row without a
+    premium gets 0.
+- Column strings follow OpenXLSX's address rules. "a", "AAAA", "XFE" or "A$" raise the
+  same `RuntimeError` with the same message, and "A1" as a column still means rows 11
+  and 12.
+- The differential test compared the cells of 2,000 exports read back with openpyxl. All
+  were identical.
+- Deliberate differences:
+  - Control characters in a string are escaped (`_x0001_`). 0.8.0 wrote them raw and
+    produced a file that neither Excel nor openpyxl can open.
+  - An empty file name, or a directory as the target, raises `RuntimeError`. 0.8.0
+    reported success, and either left a stray temporary file or replaced an empty
+    directory with the workbook.
+  - A failed write is still a `RuntimeError` that leaves an existing file untouched,
+    with new wording.
+  - The workbook is a minimal SpreadsheetML package. It no longer carries OpenXLSX's
+    template theme or document properties (author "Kenneth Balslev", 2019 dates).
+- The writer is about 500 lines, with its tests, on the `zip` crate. No maintained pure-Rust crate writes
+  `#NUM!` error cells and empty-string cells exactly as OpenXLSX did. rust_xlsxwriter
+  writes NaN as the text "NAN" and drops empty strings. umya-spreadsheet would bring
+  more than twenty dependencies to write one sheet, and it would only be needed for
+  reading templates, which nothing ever did.
+
+### Build, packaging and CI
+
+- `pyproject.toml` builds with maturin (module `riskpy.cpp_underwriter`, manifest
+  `rust/python/Cargo.toml`).
+- **Removed:**
+  - `CMakeLists.txt` and `src/*.cpp`, `src/*.hpp` (22 files, 1,422 lines);
+  - the scikit-build-core, pybind11 and OpenXLSX build dependencies;
+  - the `[tool.scikit-build]` and `[tool.cibuildwheel]` tables;
+  - the CMake and cibuildwheel bits of the Makefile.
+- Wheels: linux x86_64 and aarch64 (manylinux), macOS arm64 and x86_64, Windows AMD64.
+  Each is one `cp310-abi3` wheel, instead of five per platform.
+- The sdist holds `pyproject.toml`, `README.md`, `LICENSE`, `rust/` (with `Cargo.lock`) and
+  `riskpy/`, and builds from source with a Rust toolchain. Unlike 0.8.0's, it does not
+  carry the tests and docs.
+- `ci.yml` keeps its test matrix and builds and installs the wheel with maturin before
+  running the suite. A new Rust job runs `cargo test -p riskpy-core` and
+  `cargo clippy -- -D warnings` on Linux, macOS and Windows.
+- `publish.yml` keeps its file name, triggers and jobs:
+  - `guard` also checks that the `rust/Cargo.toml` version equals the pyproject version;
+  - the wheels and the sdist come from `PyO3/maturin-action`;
+  - `check-dist` runs twine without `id-token`;
+  - the token-holding `publish` job installs nothing;
+  - `github-release` is unchanged.
+- `verify.yml` and `docs.yml` set up a Rust toolchain instead of g++/cmake/ninja.
+- Dependabot also watches `rust/` (cargo).
+- Every action stays pinned to a full SHA. maturin-action v1.51.0, rust-toolchain and
+  rust-cache v2.9.2 are pinned to the SHAs WebCortex uses.
+- `verify.py`'s benchmark keys are renamed "Rust MonteCarloSimulator …" and
+  "Rust FourierTransform …", so the nightly JSON keys change.
+
+---
+
+## Verified
+
+- **Test suite:** 1,596 passed on CPython 3.12 with every extra, including the MCP SDK.
+  0.8.0 passes 1,568 in the same environment; the new 28 are in
+  `tests/test_rust_core.py`. In a fresh 3.13 venv with numpy, scipy, pandas, pytest,
+  hypothesis, mpmath and matplotlib (no MCP SDK), the same abi3 wheel passes 1,591 and
+  skips 5.
+- **Python 3.10:** 1,585 pass and 6 fail in `test_capital` / `test_refine_capital`.
+  Under NumPy 2.2.6 a matmul raises "divide by zero" warnings, which those tests turn into
+  errors. 0.8.0 fails the same 6 tests in the same venv, so the port did not cause them.
+- No test pinned a seeded value from the C++ core, so none needed a new number.
+- **`riskpy-verify`:** 139 / 139 with the SciPy oracle (125 / 125 with `--no-oracle`).
+- **Regression scenarios:** `benchmarks/user_workflows/cases.py` passes 52 / 52.
+- **Differential test:** 76,116 calls with no unexplained mismatch. The intended
+  differences are each checked against a 50-digit evaluation or a fused-multiply-add
+  reconstruction (RESULTS.md, section 1).
+- **Distributions:** 32 / 32 sampler checks pass, with KS or χ² and moment z-scores.
+  14 / 14 simulation checks pass against closed forms and against 0.8.0 with a two-sample
+  KS. Extreme parameters behave as they did in 0.8.0.
+- **Rust:** `cargo test -p riskpy-core` passes 26 tests, and `cargo clippy --all-targets
+  -- -D warnings` is clean.
+- **Packaging:** the sdist builds and installs from source in a clean venv, and
+  `twine check --strict` passes on the wheel and the sdist.
+
+## Speed
+
+On an Apple M4, `benchmarks/rust_core/throughput.py` takes the median of 7 rounds, each
+the best of 3 calls in a fresh interpreter, with the two cores alternating. Times include
+building the returned list.
+
+| workload | trials | 0.8.0 C++ | 0.9.0 Rust | speed-up |
+|---|---:|---:|---:|---:|
+| aggregate loss λ=5, lognormal | 200,000 | 31.6 ms | 25.5 ms | 1.24× |
+| aggregate loss λ=140 | 50,000 | 128.3 ms | 111.7 ms | 1.15× |
+| life portfolio n=1,000, shock 0.1 | 200,000 | 22.0 ms | 26.9 ms | 0.82× |
+| life portfolio n=50,000 | 200,000 | 28.0 ms | 16.5 ms | 1.70× |
+| economic path, 12 steps | 200,000 | 98.3 ms | 38.4 ms | 2.56× |
+| health claims λ=10, d=0.3 | 200,000 | 144.5 ms | 63.1 ms | 2.29× |
+| catastrophe p=0.05 | 1,000,000 | 21.4 ms | 17.2 ms | 1.24× |
+| compound_poisson_pmf, λ=50 | — | 0.70 ms | 0.80 ms | 0.87× |
+
+The two slower rows spend their time in `exp`/`log1p`, for a binomial set up per trial,
+and in `sin`/`cos`, for the FFT twiddles. The portable `libm` is slower than Apple's
+platform library, and that is the price of the same numbers on every platform. Only this
+machine was measured.
+
+---
+
+## Known limits
+
+- **Linux and Windows are untested here.** Everything above ran on macOS arm64; Linux and
+  Windows wait for CI. That a seed gives the same numbers there rests on the design:
+  integer RNG, the pure-Rust `libm`, no FMA contraction in Rust. The CI pin
+  `test_seeded_draws_are_the_documented_stream_bit_for_bit` will check it on each runner.
+  The x86_64 claim about the FMA difference could not be checked either: there is no
+  x86_64 machine or Rosetta here.
+- **The workflows have not run.** `ci.yml` and `publish.yml` have not run on GitHub
+  Actions yet, so the first tag should be watched, or rehearsed with `workflow_dispatch`
+  and TestPyPI.
+- **Excel itself was not tried.** Exported workbooks were checked with openpyxl and with
+  the standard-library XML parser, not opened in Microsoft Excel or LibreOffice.
+- **Templates are still ignored.** Reading a template, as the name suggests, would be new
+  behaviour, and it would need a decision on what to do when the file does not exist (the
+  app's default does not).
+- **Two workloads are slower:** the inversion-regime life portfolio (0.82×) and
+  `compound_poisson_pmf` (0.87×).
+- **No rustfmt pass.** rustfmt was not installed on the build machine, so the Rust sources
+  have not been through it, and CI does not check formatting.
+- **Still open from 0.8.0:** every item in 0.8.0's Known limits except the C++ core item,
+  which is fixed here.
+
+## Upgrading
+
+`pip install -U open-riskpy`. Code that pinned a seeded `MonteCarloSimulator` result, or a
+seeded `aggregate_loss` tool result, gets new numbers: compare against the distribution,
+or re-pin. Tolerance-based checks are unaffected. To build from a checkout, install Rust
+with [rustup](https://rustup.rs), then `pip install .`; CONTRIBUTING.md has the details.
+
+---
+
 # RiskPY v0.8.0 — Release Notes
 
 **Release date:** 2026-11-21  
