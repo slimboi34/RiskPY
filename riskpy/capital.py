@@ -44,17 +44,20 @@ correlation of its latent normal (or t) variables — not the Spearman rank corr
 ``Model.correlate`` takes; ``kendall_tau()`` and ``spearman_rho()`` convert. TVaR means
 expected shortfall (Acerbi–Tasche), the same definition as ``Result.tvar``.
 
-The closed forms are pure Python; sampling, :func:`allocate` and
-:func:`nearest_correlation` need NumPy (``pip install "open-riskpy[sim]"``).
+The closed forms are pure Python (a Gaussian or t copula may be given a 2×2 matrix without
+NumPy); sampling, :func:`allocate` and :func:`nearest_correlation` need NumPy
+(``pip install "open-riskpy[sim]"``).
 """
 from __future__ import annotations
 
 import math
+import numbers
+import operator
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import _special
-from .errors import ArgumentTypeError, InputError
+from .errors import ArgumentTypeError, InputError, MissingDependencyError
 
 __all__ = [
     "Copula",
@@ -80,7 +83,42 @@ def _numpy():
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """A real number: int, float, Fraction or any NumPy integer or floating scalar (np.int64,
+    np.float32, ...), but not a bool (NumPy's bool is not a ``numbers.Real`` either)."""
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+def _whole(value: Any) -> Optional[int]:
+    """``value`` as an int if it is a whole-number type (int or a NumPy integer, not a bool), else None."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        return None
+    return operator.index(value)
+
+
+def _correlation_rows(correlation: Any) -> List[List[float]]:
+    """A correlation matrix argument as a square list of lists of finite floats, checked in
+    pure Python: nested lists or tuples, a NumPy array or a DataFrame."""
+    rows = correlation
+    if hasattr(rows, "to_numpy") and not hasattr(rows, "tolist"):      # a pandas DataFrame
+        rows = rows.to_numpy()
+    tolist = getattr(rows, "tolist", None)
+    if callable(tolist):
+        rows = tolist()
+    if not isinstance(rows, (list, tuple)) or not all(isinstance(row, (list, tuple)) for row in rows):
+        raise ArgumentTypeError(f"correlation must be a number in [-1, 1] or a square matrix given as rows of "
+                                f"numbers, got {type(correlation).__name__}", code="RP404", param="correlation")
+    k = len(rows)
+    if k == 0 or any(len(row) != k for row in rows):
+        raise InputError(f"correlation must be a square matrix: got {k} rows of lengths "
+                         f"{sorted({len(row) for row in rows})}", code="RP100", param="correlation")
+    for row in rows:
+        for value in row:
+            if not _is_number(value):
+                raise ArgumentTypeError(f"correlation entries must be numbers, got {value!r}", code="RP404",
+                                        param="correlation")
+            if not math.isfinite(value):
+                raise InputError("correlation must be finite", code="RP101", param="correlation")
+    return [[float(v) for v in row] for row in rows]
 
 
 def _check_level(level: Any, name: str = "level") -> float:
@@ -278,7 +316,7 @@ class Copula:
 
         Example::
 
-            GumbelCopula(2.0).joint_exceedance(0.995)     # 0.00293, 117× the independent 2.5e-5
+            GumbelCopula(2.0).joint_exceedance(0.995)     # 0.00294, 117× the independent 2.5e-5
         """
         q = _check_level(level)
         return max(1.0 - 2.0 * q + self.cdf(q, q), 0.0)
@@ -302,20 +340,37 @@ class _Elliptical(Copula):
     def __init__(self, correlation: Any):
         if _is_number(correlation):
             rho = float(correlation)
-            if not -1.0 <= rho <= 1.0:
-                raise InputError(f"correlation must be in [-1, 1], got {correlation!r}", code="RP100",
-                                 param="correlation", hint="Correlations are decimals in [-1, 1].")
-            self._matrix: List[List[float]] = [[1.0, rho], [rho, 1.0]]
         else:
-            from .mc import _check_correlation
-
-            np = _numpy()
-            matrix = np.asarray(correlation, dtype=float)
-            _check_correlation(matrix)
-            if matrix.shape[0] < 2:
+            rows = _correlation_rows(correlation)
+            if len(rows) < 2:
                 raise InputError("a copula needs at least two variables", code="RP111", param="correlation")
-            self._matrix = matrix.tolist()
-        self.dim = len(self._matrix)
+            if len(rows) > 2:
+                from .mc import _check_correlation
+
+                try:
+                    np = _numpy()
+                except MissingDependencyError as exc:
+                    raise MissingDependencyError(
+                        f"a copula on {len(rows)} risks needs NumPy for its correlation matrix: "
+                        'pip install "open-riskpy[sim]". Two risks (a number, or a 2x2 matrix) need none.',
+                        code="RP201") from exc
+                matrix = np.asarray(rows, dtype=float)
+                _check_correlation(matrix)
+                self._matrix: List[List[float]] = matrix.tolist()
+                self.dim = len(self._matrix)
+                return
+            # Two risks: the matrix is a single correlation, and its closed forms need no NumPy.
+            if abs(rows[0][0] - 1.0) > 1e-12 or abs(rows[1][1] - 1.0) > 1e-12:
+                raise InputError("correlation matrix must have ones on the diagonal", code="RP100",
+                                 param="correlation")
+            if abs(rows[0][1] - rows[1][0]) > 1e-12:
+                raise InputError("correlation matrix must be symmetric", code="RP100", param="correlation")
+            rho = rows[0][1]
+        if not -1.0 <= rho <= 1.0:
+            raise InputError(f"correlation must be in [-1, 1], got {correlation!r}", code="RP100",
+                             param="correlation", hint="Correlations are decimals in [-1, 1].")
+        self._matrix = [[1.0, rho], [rho, 1.0]]
+        self.dim = 2
 
     @property
     def correlation(self):
@@ -323,13 +378,16 @@ class _Elliptical(Copula):
         return _numpy().array(self._matrix, dtype=float)
 
     def _rho(self, i: int, j: int) -> float:
+        index = []
         for name, k in (("i", i), ("j", j)):
-            if isinstance(k, bool) or not isinstance(k, int) or not 0 <= k < self.dim:
+            whole = _whole(k)
+            if whole is None or not 0 <= whole < self.dim:
                 raise InputError(f"{name} must be a variable index from 0 to {self.dim - 1}, got {k!r}",
                                  code="RP100", param=name)
-        if i == j:
+            index.append(whole)
+        if index[0] == index[1]:
             raise InputError("i and j must be two different variables", code="RP113", param="j")
-        return self._matrix[i][j]
+        return self._matrix[index[0]][index[1]]
 
     def _latent(self, n: int, rng: Any):
         """``n`` correlated standard normal rows. An eigen-decomposition rather than a
@@ -393,7 +451,7 @@ class GaussianCopula(_Elliptical):
 
         Example::
 
-            GaussianCopula(0.5).spearman_rho()     # 0.48261…
+            GaussianCopula(0.5).spearman_rho()     # 0.48258…
         """
         return 6.0 / math.pi * math.asin(0.5 * self._rho(i, j))
 
@@ -577,12 +635,13 @@ class _Archimedean(Copula):
     def __init__(self, theta: float, dim: int = 2, survival: bool = False):
         if not _is_number(theta) or not math.isfinite(theta):
             raise InputError(f"theta must be a finite number, got {theta!r}", code="RP101", param="theta")
-        if isinstance(dim, bool) or not isinstance(dim, int) or dim < 2:
+        whole = _whole(dim)
+        if whole is None or whole < 2:
             raise InputError(f"dim must be a whole number >= 2, got {dim!r}", code="RP107", param="dim")
         if not isinstance(survival, bool):
             raise ArgumentTypeError(f"survival must be True or False, got {survival!r}", code="RP404", param="survival")
         self.theta = float(theta)
-        self.dim = dim
+        self.dim = whole
         self.survival = survival
 
     def _draw(self, n: int, rng: Any):  # pragma: no cover - abstract
@@ -1043,8 +1102,9 @@ def nearest_correlation(matrix: Any, tol: float = 1e-10, max_iter: int = 2000):
                          hint="Correlations are decimals in [-1, 1].")
     if not (_is_number(tol) and tol > 0.0):
         raise InputError(f"tol must be positive, got {tol!r}", code="RP102", param="tol")
-    if isinstance(max_iter, bool) or not isinstance(max_iter, int) or max_iter < 1:
+    if _whole(max_iter) is None or max_iter < 1:
         raise InputError(f"max_iter must be a whole number >= 1, got {max_iter!r}", code="RP107", param="max_iter")
+    max_iter = _whole(max_iter)
 
     a = 0.5 * (a + a.T)
     target = a.copy()
@@ -1082,6 +1142,7 @@ def _plain_matrix(correlation: Any, names: Sequence[str]) -> List[List[float]]:
     if isinstance(correlation, Mapping):
         index = {name: i for i, name in enumerate(names)}
         matrix = [[1.0 if i == j else 0.0 for j in range(k)] for i in range(k)]
+        given: Dict[frozenset, Tuple[Any, float]] = {}
         for pair, rho in correlation.items():
             if not isinstance(pair, tuple) or len(pair) != 2:
                 raise InputError(f"correlation keys must be (name, name) pairs, got {pair!r}", code="RP100",
@@ -1097,6 +1158,13 @@ def _plain_matrix(correlation: Any, names: Sequence[str]) -> List[List[float]]:
             if not _is_number(rho):
                 raise ArgumentTypeError(f"correlation for {pair!r} must be a number, got {rho!r}", code="RP404",
                                         param="correlation")
+            # (a, b) and (b, a) are the same pair: both may be listed, but only with one value.
+            key = frozenset(pair)
+            if key in given and given[key][1] != float(rho):
+                raise InputError(f"correlation gives the pair {given[key][0]!r} as {given[key][1]!r} and "
+                                 f"{pair!r} as {rho!r}", code="RP113", param="correlation",
+                                 hint="List each pair once, or give both orders the same value.")
+            given[key] = (pair, float(rho))
             matrix[index[a]][index[b]] = matrix[index[b]][index[a]] = float(rho)
     else:
         tolist = getattr(correlation, "tolist", None)
@@ -1256,7 +1324,8 @@ def aggregate_capital(standalone: Any, correlation: Any, names: Optional[Sequenc
     standalone: the capital of each risk on its own — ``{name: amount}`` or a list of amounts,
         all >= 0, all at the same confidence level and in the same currency
     correlation: a matrix in the order of the risks, or ``{(name, name): rho}`` for the pairs
-        that are correlated (unlisted pairs are independent)
+        that are correlated (unlisted pairs are independent; a pair listed in both orders
+        must have one value)
     names: labels for the risks when ``standalone`` is a list (default ``risk_1, risk_2, …``)
 
     Returns an :class:`Aggregation`: the diversified ``total``, the ``undiversified`` sum,
@@ -1472,15 +1541,28 @@ def _measure(values, level: float, measure: str, np) -> float:
 
 def _loss_columns(losses: Any, names: Optional[Sequence[str]], np) -> Tuple[List[str], Any]:
     if hasattr(losses, "columns") and hasattr(losses, "to_numpy"):         # a pandas DataFrame
+        if names is not None:
+            raise InputError("pass names only when losses is an array; a DataFrame's columns are its names",
+                             code="RP113", param="names", hint="Rename the columns instead: df.rename(columns=...).")
         labels = [str(c) for c in losses.columns]
-        matrix = np.asarray(losses.to_numpy(), dtype=float)
+        try:
+            matrix = np.asarray(losses.to_numpy(), dtype=float)
+        except (TypeError, ValueError):
+            raise ArgumentTypeError("every column of the losses DataFrame must be numeric", code="RP404",
+                                    param="losses") from None
     elif isinstance(losses, Mapping):
         if names is not None:
             raise InputError("pass names only when losses is an array", code="RP113", param="names")
         labels = [str(k) for k in losses]
         if not labels:
             raise InputError("losses is empty: give at least one line", code="RP111", param="losses")
-        columns = [np.asarray(v, dtype=float) for v in losses.values()]
+        columns = []
+        for label, values in zip(labels, losses.values()):
+            try:
+                columns.append(np.asarray(values, dtype=float))
+            except (TypeError, ValueError):
+                raise ArgumentTypeError(f"losses[{label!r}] must be an array of numbers", code="RP404",
+                                        param="losses") from None
         for label, column in zip(labels, columns):
             if column.ndim != 1:
                 raise InputError(f"losses[{label!r}] must be one-dimensional, got shape {column.shape}",
@@ -1532,11 +1614,14 @@ def allocate(losses: Any, level: float = 0.99, measure: str = "tvar", method: st
         - "euler" (default): each line's marginal contribution. For TVaR this is the
           co-TVaR ``E[Xᵢ | S in the worst (1 − level)]``, an exact identity on the sample.
           For VaR it is ``E[Xᵢ | S = VaR]``, estimated from the trials whose total is
-          nearest the VaR and scaled to add up; it is much noisier than co-TVaR.
+          nearest the VaR (all of them, if many sit exactly on it), with the small gap
+          between their mean total and the VaR shared out by ``Cov(Xᵢ, S)/Var(S)`` so the
+          pieces add up; it is much noisier than co-TVaR.
         - "covariance": ``E[Xᵢ] + Cov(Xᵢ, S)/Var(S) · (total − E[S])``. Equal to Euler when
           the losses are jointly normal; stable, but blind to which line fills the tail.
         - "standalone": pro rata to each line's own risk measure.
-    names: labels for the columns when ``losses`` is a plain array
+    names: labels for the columns when ``losses`` is a plain array (refused with a dict or
+        a DataFrame, which name their own lines)
     bandwidth: for Euler VaR only, the share of trials around the VaR to average over
         (default ``trials^(−1/2)``, at least 5 trials each side)
 
@@ -1569,8 +1654,12 @@ def allocate(losses: Any, level: float = 0.99, measure: str = "tvar", method: st
                          param="method")
     labels, matrix = _loss_columns(losses, names, np)
     n, k = matrix.shape
-    total_losses = matrix.sum(axis=1)
-    means = matrix.mean(axis=0)
+    with np.errstate(over="ignore", invalid="ignore"):
+        total_losses = matrix.sum(axis=1)
+        means = matrix.mean(axis=0)
+    if not (np.all(np.isfinite(total_losses)) and np.all(np.isfinite(means))):
+        raise InputError("the lines' losses overflow double precision when added up", code="RP304",
+                         param="losses", hint="Express the losses in larger units (thousands or millions).")
     quantile, weights = _tail_weights(total_losses, level, np)
     total = quantile if measure == "var" else float(weights @ total_losses)
     standalone = [_measure(matrix[:, j], level, measure, np) for j in range(k)]
@@ -1587,11 +1676,22 @@ def allocate(losses: Any, level: float = 0.99, measure: str = "tvar", method: st
         order = np.argsort(total_losses, kind="mergesort")
         centre = min(max(int(math.ceil(n * level - 1e-9)) - 1, 0), n - 1)
         half = min(half, centre, n - 1 - centre)          # a symmetric window, so its mean total stays at the VaR
-        window = order[centre - half:centre + half + 1]
-        local = matrix[window].mean(axis=0)
-        local_total = float(local.sum())
-        # Scale the window mean so the pieces add up to the VaR itself.
-        contributions = local * (total / local_total) if local_total != 0.0 else np.full(k, total / k)
+        tied = total_losses == total
+        if int(tied.sum()) > 2 * half + 1:
+            # An atom at the VaR: E[X | S = VaR] is the mean over every trial in it, not over
+            # whichever of them the sort put in the window.
+            local = matrix[tied].mean(axis=0)
+        else:
+            local = matrix[order[centre - half:centre + half + 1]].mean(axis=0)
+        # The window's mean total is the VaR only up to sampling noise. Spread that small
+        # residual by each line's share of the portfolio's variance (the slope of E[Xᵢ | S = s]
+        # in s for jointly normal losses), so the pieces add up to the VaR. Scaling them by
+        # VaR / window total instead, as 0.7.0 did, multiplies every line by an arbitrary
+        # factor when the VaR is near zero (a hedged book), and can flip their signs.
+        centred = total_losses - total_losses.mean()
+        variance = float(centred @ centred)
+        beta = (matrix.T @ centred) / variance if variance > 0.0 else np.full(k, 1.0 / k)
+        contributions = local + beta * (total - float(local.sum()))
     elif method == "covariance":
         centred = matrix - means
         s_centred = total_losses - total_losses.mean()
