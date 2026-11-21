@@ -29,8 +29,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
+import threading
 from typing import Any, List, Optional
 
 __all__ = ["build_server", "client_config", "script_path", "tool_list", "main", "RESOURCES", "PROMPTS",
@@ -304,7 +306,20 @@ def build_server():
             return tool_list(self)
 
         async def call_tool(self, name: str, arguments: dict, context: Any = None):  # SDK hook
-            out = await anyio.to_thread.run_sync(lambda: tools.call(name, arguments, errors="return", via="mcp"))
+            # The call runs in a worker thread, which cannot be interrupted. When the client cancels
+            # (notifications/cancelled), stop waiting for it and set the event: sensitivity and
+            # scenario_table check it between the calculator runs they drive and stop with RP408.
+            cancel = threading.Event()
+
+            def run() -> Any:
+                with tools._cancellable(cancel):
+                    return tools.call(name, arguments, errors="return", via="mcp")
+
+            try:
+                out = await anyio.to_thread.run_sync(run, abandon_on_cancel=True)
+            except anyio.get_cancelled_exc_class():
+                cancel.set()
+                raise
             failed = isinstance(out, dict) and set(out) == {"error"}
             text = json.dumps(out, indent=2, ensure_ascii=False, allow_nan=False)
             structured = out if isinstance(out, dict) else {"result": out}
@@ -323,8 +338,6 @@ def build_server():
 
 def script_path() -> Optional[str]:
     """riskpy-mcp in this interpreter's scripts directory (a virtualenv's bin/), if it is there."""
-    import os
-
     return shutil.which("riskpy-mcp", path=os.path.dirname(sys.executable))
 
 
@@ -340,17 +353,28 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="print the client configuration (JSON) and the `claude mcp add` line, then exit")
     parser.add_argument("--audit", metavar="FILE",
                         help="record every calculator call, in full, to this hash-chained JSON-lines ledger "
-                             "(the same as setting RISKPY_AUDIT_FILE); check it with riskpy-audit")
+                             "(the same as setting RISKPY_AUDIT_FILE; the server will not start if the file cannot "
+                             "be opened for appending); check it with riskpy-audit")
     args = parser.parse_args(argv)
     if args.audit:
-        import os
-
         os.environ["RISKPY_AUDIT_FILE"] = args.audit
     if args.config:
         cfg = client_config()
         print(json.dumps(cfg, indent=2))
         print(f"\n# Claude Code:\nclaude mcp add riskpy -- {cfg['mcpServers']['riskpy']['command']}")
         return 0
+    ledger = os.environ.get("RISKPY_AUDIT_FILE")
+    if ledger:
+        # A ledger that cannot be written records nothing and says nothing (it must never break a
+        # calculation), so find out now, before the client starts relying on it.
+        try:
+            with open(ledger, "a", encoding="utf-8"):
+                pass
+        except OSError as exc:
+            from .errors import _output_failed
+
+            source = "--audit" if args.audit else "RISKPY_AUDIT_FILE"
+            return _output_failed("riskpy-mcp", ledger, exc, what=f"open the audit ledger ({source})")
     build_server().run(transport="stdio")
     return 0
 
