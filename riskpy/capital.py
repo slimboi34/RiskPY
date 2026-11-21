@@ -379,7 +379,8 @@ class GaussianCopula(_Elliptical):
 
     def uniforms(self, n: int, rng: Any):
         """Draw ``n`` joint observations: correlated normals pushed through Φ."""
-        return _open_unit(_special.norm_cdf_vec(self._latent(n, rng)))
+        u = _special.norm_cdf_vec(self._latent(n, rng))
+        return _open_unit(u, out=u)
 
     def spearman_rho(self, i: int = 0, j: int = 1) -> float:
         """Spearman's rank correlation between variables ``i`` and ``j``: ``6/π · asin(ρ/2)``.
@@ -435,8 +436,10 @@ class StudentTCopula(_Elliptical):
     """The dependence of a multivariate Student t: correlation plus symmetric tail dependence.
 
     correlation: a number in [-1, 1] for two risks, or a full correlation matrix
-    df: degrees of freedom, > 0. Small values (3–5) mean strong tail dependence; as ``df``
-        grows the copula tends to the Gaussian.
+    df: degrees of freedom, at least 1e-300 (any positive double that is not subnormal).
+        Small values (3–5) mean strong tail dependence; as ``df`` grows the copula tends to
+        the Gaussian, and from df = 1e4 on its CDF is computed by Hill's normalising
+        transform, exact to rounding however large df is.
 
     Unlike the Gaussian, a t copula has tail dependence even at zero correlation: the shared
     chi-square mixing variable makes every risk extreme in the same trials.
@@ -452,6 +455,10 @@ class StudentTCopula(_Elliptical):
         super().__init__(correlation)
         if not _is_number(df) or not math.isfinite(df) or df <= 0.0:
             raise InputError(f"df must be a positive number, got {df!r}", code="RP102", param="df")
+        if df < _MIN_T_DF:
+            raise InputError(f"df must be at least {_MIN_T_DF:g}, got {df!r}", code="RP102", param="df",
+                             hint="Below that, df/2 is not a normal double (it is 0 at df = 5e-324). Any df "
+                                  "from 1e-300 up is simulated exactly.")
         self.df = float(df)
 
     def _extra_repr(self) -> str:
@@ -461,15 +468,47 @@ class StudentTCopula(_Elliptical):
         """Draw ``n`` joint observations: correlated normals over a shared √(χ²/df), through the t CDF."""
         np = _numpy()
         z = self._latent(n, rng)
-        w = rng.chisquare(self.df, size=n) / self.df
-        nu = self.df
+        # The t CDF is applied a block of rows at a time, writing over the latent normals,
+        # so the only full-size array is the result itself; the draws are the same as an
+        # unblocked pass, and in the same order. (Done whole, the CDF's temporaries cost
+        # over 200 bytes a cell: 4.5 GB at the capital_allocation tool's 2e7-cell limit.)
+        rows = max(1, _BLOCK_CELLS // self.dim)
+        if self.df < _T_LOG_MIXING_DF:
+            return self._uniforms_log_mixing(z, rng, rows)
+        w = rng.chisquare(self.df, size=n)
+        w /= self.df
         # With very few degrees of freedom the mixing variable can underflow to zero, which
-        # sends the whole row to ±infinity: the right limit, reached without a warning.
+        # sends the whole row to ±infinity (the right limit), or to 0/0 where a latent normal
+        # is exactly zero, which is the centre.
         with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-            t = z / np.sqrt(w)[:, None]
-            x = np.nan_to_num(nu / (nu + t * t), nan=1.0, posinf=1.0, neginf=0.0)
-        ib = _special.betainc_vec(0.5 * nu, 0.5, np.clip(x, 0.0, 1.0))
-        return _open_unit(np.where(z > 0.0, 1.0 - 0.5 * ib, 0.5 * ib))
+            for start in range(0, n, rows):
+                block = z[start:start + rows]
+                t = block / np.sqrt(w[start:start + rows])[:, None]
+                t[np.isnan(t)] = 0.0
+                block[...] = _special.t_cdf_vec(t, self.df)
+        return _open_unit(z, out=z)
+
+    def _uniforms_log_mixing(self, z, rng, rows: int):
+        """The t copula for df below 0.2, with the mixing variable in log space.
+
+        χ²(df)/df is about U^(2/df): for df = 0.01 it underflows to zero in 3% of rows and
+        for df = 0.001 in 70%, and every such row was put at a corner of the unit square,
+        while its true t value, however far beyond the largest double, has a CDF well
+        inside (0, 1) (P(T > 1e500) is 0.16 at df = 0.001). So draw ln W instead, by
+        Gamma(α) = Gamma(1 + α)·U^(1/α) with α = df/2, and take the CDF from ln|t|.
+        """
+        np = _numpy()
+        n = z.shape[0]
+        alpha = 0.5 * self.df
+        log_w = np.log(rng.gamma(1.0 + alpha, 1.0, size=n))
+        log_w += np.log1p(-rng.random(n)) / alpha + math.log(2.0 / self.df)
+        with np.errstate(divide="ignore"):
+            for start in range(0, n, rows):
+                block = z[start:start + rows]
+                log_abs_t = np.log(np.abs(block)) - 0.5 * log_w[start:start + rows, None]
+                block[...] = _special._t_cdf_vec_log(log_abs_t.ravel(), block.ravel() > 0.0,
+                                                     self.df).reshape(block.shape)
+        return _open_unit(z, out=z)
 
     def tail_dependence(self, i: int = 0, j: int = 1) -> TailDependence:
         """``λ = 2·t_{df+1}(−√((df + 1)(1 − ρ)/(1 + ρ)))``, the same in both tails.
@@ -800,9 +839,24 @@ def _frank_cdf(u: float, v: float, t: float) -> float:
     return lo - (math.log(inner) - math.log(-math.expm1(-t))) / t
 
 
-def _open_unit(u):
+def _open_unit(u, out=None):
     """Keep simulated uniforms strictly inside (0, 1), so no quantile function is asked for ±infinity."""
-    return _numpy().clip(u, 1e-16, 1.0 - 1e-16)
+    return _numpy().clip(u, 1e-16, 1.0 - 1e-16, out=out)
+
+
+# Copula samplers transform their draws this many cells at a time (8 MB per temporary).
+_BLOCK_CELLS = 1 << 20
+# The smallest t-copula df: below it df/2 underflows to a subnormal (and to 0 at 5e-324).
+_MIN_T_DF = 1e-300
+# Below this df the t copula draws its chi-square mixing variable in log space (above it,
+# χ²(df)/df underflows with probability under 1e-30 a row, and the draws are those of 0.7.0).
+_T_LOG_MIXING_DF = 0.2
+# From this θ on, the Clayton sampler draws its frailty in log space. Below it a Gamma(1/θ)
+# variate underflows with probability under 1e-20 a draw, and the draws are those of 0.7.0.
+_CLAYTON_LOG_THETA = 15.0
+# From this θ on, the Frank sampler in three or more dimensions draws its logarithmic-series
+# frailty itself: NumPy's takes p = 1 − e^(−θ), which rounds once θ passes about 30.
+_FRANK_OWN_LOGSERIES_THETA = 25.0
 
 
 def empirical_tail_dependence(x: Any, y: Any, level: float = 0.95) -> TailDependence:

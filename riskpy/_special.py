@@ -315,6 +315,26 @@ def _lbeta(a: float, b: float) -> float:
             + _stirling_err(small) + _stirling_err(large) - _stirling_err(total))
 
 
+# The incomplete-beta continued fraction needs about 0.1·√max(a, b) terms at its worst
+# (x at the switch point (a + 1)/(a + b + 2)): 115 at a = b = 1e4, 10,700 at a = b = 1e10.
+# The cap used to grow with √max(a, b) as well, which made it no cap at all: fed the
+# rounded arguments of a Student t with df = 1e300 it allowed 3.5e151 iterations and the
+# call never returned. A fixed cap that no valid argument comes near, and a coded error
+# past it, bound the work instead.
+_BETACF_MAX_ITER = 20_000
+
+
+def _betacf_failed(a: float, b: float) -> Exception:
+    from .errors import ConvergenceError
+
+    return ConvergenceError(
+        f"the incomplete beta function did not converge in {_BETACF_MAX_ITER:,} terms for shape parameters "
+        f"a = {a:g}, b = {b:g}", code="RP304", param=None,
+        hint="Shape parameters (or Student t degrees of freedom) this large are beyond what the continued "
+             "fraction can resolve in double precision; use a normal approximation, which is exact to "
+             "rounding at that size.")
+
+
 def _betacf(a: float, b: float, x: float) -> float:
     qab = a + b
     qap = a + 1.0
@@ -325,7 +345,8 @@ def _betacf(a: float, b: float, x: float) -> float:
         d = _FPMIN
     d = 1.0 / d
     h = d
-    for m in range(1, 1000 + int(50.0 * math.sqrt(max(a, b)))):
+    delta = math.nan
+    for m in range(1, _BETACF_MAX_ITER + 1):
         m2 = 2 * m
         aa = m * (b - m) * x / ((qam + m2) * (a + m2))
         d = 1.0 + aa * d
@@ -347,8 +368,11 @@ def _betacf(a: float, b: float, x: float) -> float:
         delta = d * c
         h *= delta
         if abs(delta - 1.0) < _EPS:
-            break
-    return h
+            return h
+    # A fraction that has settled to within a few ulps (a delta stuck at 1 + ε) has converged.
+    if abs(delta - 1.0) < 64.0 * _EPS:
+        return h
+    raise _betacf_failed(a, b)
 
 
 def betainc(a: float, b: float, x: float) -> float:
@@ -411,11 +435,14 @@ def t_cdf(x: float, df: float) -> float:
         log_r = math.log(root_df) - math.log(abs(x))
         ib = _betainc(0.5 * df, 0.5, xb, yb, log_x=2.0 * log_r - math.log1p(r2), log_y=-math.log1p(r2))
         return 1.0 - 0.5 * ib if x > 0.0 else 0.5 * ib
-    else:
-        r = abs(x) / root_df
-        r2 = r * r
-        xb, yb = 1.0 / (1.0 + r2), r2 / (1.0 + r2)
-    ib = _betainc(0.5 * df, 0.5, xb, yb)
+    r = abs(x) / root_df
+    r2 = r * r
+    xb, yb = 1.0 / (1.0 + r2), r2 / (1.0 + r2)
+    # The logarithms exactly, not of the rounded xb (the beta raises it to the power df/2,
+    # which cost 2e-12 of the CDF at df = 9999) and not of yb (which underflows to zero for
+    # |x| below about 1e-154·√df).
+    l1 = math.log1p(r2)
+    ib = _betainc(0.5 * df, 0.5, xb, yb, log_x=-l1, log_y=2.0 * math.log(r) - l1)
     return 1.0 - 0.5 * ib if x > 0.0 else 0.5 * ib
 
 
@@ -430,22 +457,68 @@ def _t_tail_large_df(t: float, df: float) -> float:
         return norm_cdf(-t)
     a = df - 0.5
     b = 48.0 * a * a
-    z2 = a * math.log1p(t * t / df)
+    t2 = t * t
+    ratio = t2 / df
+    # a·ln(1 + t²/df), kept in t² for small ratios so that a vanishing t²/df cannot underflow.
+    z2 = (a / df) * t2 * (1.0 - 0.5 * ratio) if ratio < 1e-8 else a * math.log1p(ratio)
+    if z2 > 1e100:              # z > 1e50: far beyond where the normal tail underflows (z ≈ 38.5)
+        return 0.0
     z = math.sqrt(z2)
     z = (((((-0.4 * z2 - 3.3) * z2 - 24.0) * z2 - 85.5) / (0.8 * z2 * z2 + 100.0 + b) + z2 + 3.0) / b + 1.0) * z
     return norm_cdf(-z)
 
 
+def _norm_ppf_central(p: float) -> float:
+    """Φ⁻¹(p) for p in (¼, ¾) to full *relative* precision, however close p is to ½.
+
+    :func:`norm_ppf` refines against ``erfc``, which near the centre carries the answer
+    as ``1 + tiny`` and leaves it about 1e-9 relative (an absolute error of 1e-19 there,
+    harmless for a quantile but not for a series that multiplies it). Newton steps on
+    ``½·erf(x/√2) = p − ½``, with ``p − ½`` exact in this range, restore the digits.
+    """
+    q = p - 0.5
+    x = norm_ppf(p)
+    for _ in range(2):
+        if x == 0.0:
+            break
+        x -= (0.5 * math.erf(x / _SQRT2) - q) / norm_pdf(x)
+    return x
+
+
+def _t_ppf_cornish_fisher(p: float, df: float) -> float:
+    """The t quantile by Fisher's expansion in powers of 1/df (Abramowitz & Stegun 26.7.5).
+
+    Four terms: the first omitted one is of relative size (z²/df)⁵ times a modest
+    constant, below 1e-20 wherever this is used (df >= 1e4 with |z| < 0.68, or df >= 1e10
+    with |z| <= 38.5, the whole double range of p).
+    """
+    z = _norm_ppf_central(p) if 0.25 < p < 0.75 else norm_ppf(p)
+    z2 = z * z
+    g1 = (z2 + 1.0) * z / 4.0
+    g2 = ((5.0 * z2 + 16.0) * z2 + 3.0) * z / 96.0
+    g3 = (((3.0 * z2 + 19.0) * z2 + 17.0) * z2 - 15.0) * z / 384.0
+    g4 = ((((79.0 * z2 + 776.0) * z2 + 1482.0) * z2 - 1920.0) * z2 - 945.0) * z / 92160.0
+    v = 1.0 / df
+    return z + v * (g1 + v * (g2 + v * (g3 + v * g4)))
+
+
 def t_ppf(p: float, df: float) -> float:
-    """Student-t quantile, by bracketed root finding on :func:`t_cdf`."""
+    """Student-t quantile, by bracketed root finding on :func:`t_cdf`.
+
+    For large df the quantile is Fisher's series in 1/df around the normal quantile,
+    which is exact to rounding there and costs nothing. A quantile beyond the largest
+    double (tiny df) comes back as ±infinity.
+    """
     if not (0.0 < p < 1.0):
         raise ValueError(f"p must be in (0, 1), got {p!r}")
-    if df <= 0.0:
+    if not df > 0.0:
         raise ValueError(f"df must be > 0, got {df!r}")
     if p == 0.5:
         return 0.0
     if math.isinf(df):
         return norm_ppf(p)
+    if df >= 1e10 or (df >= 1e4 and 0.25 < p < 0.75):
+        return _t_ppf_cornish_fisher(p, df)
     # Solve in the lower tail, where t_cdf(-t) = ½·I(df/(df+t²); df/2, ½) keeps
     # its relative precision: solving t_cdf(t) = 1 - p instead rounds 1 - 1e-20
     # to 1 and returned -4096 for a quantile of -15684. The root is found in
@@ -456,10 +529,22 @@ def t_ppf(p: float, df: float) -> float:
         # p - 0.5 is exact here.
         half = abs(p - 0.5)
         target_c = math.log(2.0 * half)
+        log_df = math.log(df)
 
         def g(u: float) -> float:
-            t2 = math.exp(2.0 * u)
-            mass = _betainc(0.5, 0.5 * df, t2 / (df + t2), df / (df + t2))
+            # The beta's argument t²/(df+t²) and its complement df/(df+t²), formed from
+            # r² = t²/df (or its reciprocal) with their logarithms: df/(df+t²) rounds to 1
+            # once t²/df < 1e-16, and its logarithm, which the beta raises to the power
+            # df/2, is then lost entirely.
+            log_r2 = 2.0 * u - log_df
+            if log_r2 > 0.0:
+                s = math.exp(-log_r2)
+                l1 = math.log1p(s)
+                mass = _betainc(0.5, 0.5 * df, 1.0 / (1.0 + s), s / (1.0 + s), log_x=-l1, log_y=-log_r2 - l1)
+            else:
+                r2 = math.exp(log_r2)
+                l1 = math.log1p(r2)
+                mass = _betainc(0.5, 0.5 * df, r2 / (1.0 + r2), 1.0 / (1.0 + r2), log_x=log_r2 - l1, log_y=-l1)
             return (math.log(mass) if mass > 0.0 else -math.inf) - target_c
 
         lo, hi = -2.0, 2.0
@@ -467,6 +552,9 @@ def t_ppf(p: float, df: float) -> float:
             lo -= 4.0
         while g(hi) < 0.0:
             hi += 2.0
+            if hi > 709.0:
+                # The quantile is beyond the largest double (df below about 0.001).
+                return math.inf if p > 0.5 else -math.inf
         value = math.exp(brent(g, lo, hi, tol=1e-14))
         return value if p > 0.5 else -value
     q = min(p, 1.0 - p)
@@ -894,7 +982,8 @@ def _betacf_vec(a: float, b: float, x):
     d = 1.0 / d
     h = d.copy()
     idx = np.arange(x.size)
-    for m in range(1, 1000 + int(50.0 * math.sqrt(max(a, b)))):
+    delta = np.ones(0)
+    for m in range(1, _BETACF_MAX_ITER + 1):
         if idx.size == 0:
             break
         m2 = 2 * m
@@ -919,12 +1008,46 @@ def _betacf_vec(a: float, b: float, x):
         hi = hi * delta
 
         c[idx], d[idx], h[idx] = ci, di, hi
-        idx = idx[np.abs(delta - 1.0) >= _EPS]
+        keep = np.abs(delta - 1.0) >= _EPS
+        idx, delta = idx[keep], delta[keep]
+    # As in the scalar version: within a few ulps counts as converged; anything else is an error.
+    if idx.size and not np.all(np.abs(delta - 1.0) < 64.0 * _EPS):
+        raise _betacf_failed(a, b)
     return h
 
 
+# Elementwise array routines work through their input this many points at a time, so the
+# temporaries they need (a dozen arrays for the continued fraction, Python floats for the
+# frompyfunc maps) stay a few MB however large the input is. The results do not depend on
+# the block size: every point is computed on its own.
+_BLOCK = 1 << 16
+
+
+def _neg_lbeta(a: float, b: float) -> float:
+    """−ln B(a, b): the plain lgamma sum for small arguments, :func:`_lbeta` once one passes 100."""
+    if max(a, b) < 100.0:
+        return math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+    return -_lbeta(a, b)
+
+
+def _betainc_block(a: float, b: float, x, y, log_x, log_y, neg_lbeta: float):
+    """I_x(a, b) for 1-D arrays strictly inside (0, 1), given ``y = 1 − x`` and both logarithms."""
+    import numpy as np
+
+    front = np.exp(neg_lbeta + a * log_x + b * log_y)
+    res = np.empty(x.size, dtype=float)
+    direct = x < (a + 1.0) / (a + b + 2.0)
+    fwd = np.flatnonzero(direct)
+    if fwd.size:
+        res[fwd] = front[fwd] * _betacf_vec(a, b, x[fwd]) / a
+    rev = np.flatnonzero(~direct)
+    if rev.size:
+        res[rev] = 1.0 - front[rev] * _betacf_vec(b, a, y[rev]) / b
+    return res
+
+
 def betainc_vec(a: float, b: float, x):
-    """Regularised incomplete beta over a NumPy array ``x``, scalar ``a, b``."""
+    """Regularised incomplete beta over a NumPy array ``x``, scalar ``a, b``. NaN gives NaN."""
     import numpy as np
 
     if a <= 0.0 or b <= 0.0:
@@ -934,25 +1057,114 @@ def betainc_vec(a: float, b: float, x):
         raise ValueError("betainc needs 0 <= x <= 1")
     shape = x.shape
     flat = x.ravel()
-    out = np.empty(flat.size, dtype=float)
-    lbeta = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
-
-    out[flat <= 0.0] = 0.0
-    out[flat >= 1.0] = 1.0
-    inner = np.flatnonzero((flat > 0.0) & (flat < 1.0))
-    if inner.size:
-        xi = flat[inner]
-        front = np.exp(lbeta + a * np.log(xi) + b * np.log1p(-xi))
-        direct = xi < (a + 1.0) / (a + b + 2.0)
-        res = np.empty(xi.size, dtype=float)
-        fwd = np.flatnonzero(direct)
-        if fwd.size:
-            res[fwd] = front[fwd] * _betacf_vec(a, b, xi[fwd]) / a
-        rev = np.flatnonzero(~direct)
-        if rev.size:
-            res[rev] = 1.0 - front[rev] * _betacf_vec(b, a, 1.0 - xi[rev]) / b
-        out[inner] = res
+    out = np.full(flat.size, np.nan)
+    neg_lbeta = _neg_lbeta(a, b)
+    for start in range(0, flat.size, _BLOCK):
+        xs = flat[start:start + _BLOCK]
+        part = out[start:start + _BLOCK]
+        part[xs <= 0.0] = 0.0
+        part[xs >= 1.0] = 1.0
+        inner = np.flatnonzero((xs > 0.0) & (xs < 1.0))
+        if inner.size:
+            xi = xs[inner]
+            part[inner] = _betainc_block(a, b, xi, 1.0 - xi, np.log(xi), np.log1p(-xi), neg_lbeta)
     return np.clip(out, 0.0, 1.0).reshape(shape)
+
+
+def t_cdf_vec(t, df: float):
+    """Student-t CDF over a NumPy array, accurate where ``df/(df + t²)`` rounds.
+
+    The textbook ``½·I(df/(df + t²); df/2, ½)`` hands the incomplete beta an argument
+    within 1e-12 of 1 once df is large, and its complement ``1 − x`` then carries only a
+    few digits; at df = 1e17 it rounds to exactly 1 and every point comes out 0.5. Here
+    the argument and its complement are both formed from ``r = |t|/√df`` (or its
+    reciprocal, so t² cannot overflow), and from df = 1e4 on Hill's normalising transform
+    replaces the beta altogether, as in :func:`t_cdf`. ±infinity gives 1 or 0; NaN gives NaN.
+    """
+    import numpy as np
+
+    if not df > 0.0:
+        raise ValueError(f"df must be > 0, got {df!r}")
+    t = np.asarray(t, dtype=float)
+    shape = t.shape
+    flat = t.ravel()
+    out = np.empty(flat.size, dtype=float)
+    root_df = math.sqrt(df)
+    neg_lbeta = _neg_lbeta(0.5 * df, 0.5)
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore", under="ignore"):
+        for start in range(0, flat.size, _BLOCK):
+            ts = flat[start:start + _BLOCK]
+            mag = np.abs(ts)
+            if df >= 1e4:
+                tail = norm_cdf_vec(-_hill_z_vec(mag, df))
+            else:
+                tail = np.full(ts.size, 0.5)
+                tail[np.isinf(mag)] = 0.0
+                inner = np.flatnonzero(np.isfinite(mag) & (mag > 0.0))
+                if inner.size:
+                    m = mag[inner]
+                    far = m > root_df
+                    r = np.where(far, root_df / m, m / root_df)
+                    tail[inner] = _t_tail_beta(r, np.log(r), far, df, neg_lbeta)
+            out[start:start + ts.size] = np.where(ts > 0.0, 1.0 - tail, tail)
+    out[np.isnan(flat)] = np.nan
+    return out.reshape(shape)
+
+
+def _t_tail_beta(r, log_r, far, df: float, neg_lbeta: float):
+    """P(T < −|t|) by the incomplete beta, for 1-D arrays: ``r = √df/|t|`` where ``far`` is set
+    (|t| > √df) and ``r = |t|/√df`` elsewhere, so r <= 1, with ``log_r = ln r`` (which may be
+    far below the smallest double's logarithm when r itself underflows)."""
+    import numpy as np
+
+    r2 = r * r
+    l1 = np.log1p(r2)
+    x = np.where(far, r2, 1.0) / (1.0 + r2)
+    y = np.where(far, 1.0, r2) / (1.0 + r2)
+    log_x = np.where(far, 2.0 * log_r, 0.0) - l1
+    log_y = np.where(far, 0.0, 2.0 * log_r) - l1
+    return 0.5 * np.clip(_betainc_block(0.5 * df, 0.5, x, y, log_x, log_y, neg_lbeta), 0.0, 1.0)
+
+
+def _t_cdf_vec_log(log_abs_t, positive, df: float):
+    """The Student-t CDF at ±|t| given ln|t| (1-D array) and the sign, for df < 1e4.
+
+    For a t copula with df well below 1 the mixing variable is far below the smallest
+    double, and so |t| is far above the largest: ln|t| is still an ordinary number, and
+    with it the tail ½·I(r²/(1 + r²); df/2, ½), r = √df/|t|, whose df/2-th power of r² is
+    an ordinary number too.
+    """
+    import numpy as np
+
+    log_abs_t = np.asarray(log_abs_t, dtype=float)
+    out = np.empty(log_abs_t.size, dtype=float)
+    half_log_df, neg_lbeta = 0.5 * math.log(df), _neg_lbeta(0.5 * df, 0.5)
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore", under="ignore"):
+        for start in range(0, log_abs_t.size, _BLOCK):
+            log_q = half_log_df - log_abs_t[start:start + _BLOCK]
+            log_r = -np.abs(log_q)
+            tail = _t_tail_beta(np.exp(log_r), log_r, log_q < 0.0, df, neg_lbeta)
+            out[start:start + _BLOCK] = np.where(positive[start:start + _BLOCK], 1.0 - tail, tail)
+    return out
+
+
+def _hill_z_vec(t, df: float):
+    """Hill's normalising transform of |t| (see :func:`_t_tail_large_df`), over an array."""
+    import numpy as np
+
+    if math.isinf(df):
+        return np.asarray(t, dtype=float).copy()
+    a = df - 0.5
+    b = 48.0 * a * a
+    t2 = t * t
+    ratio = t2 / df
+    # a·ln(1 + t²/df), kept in t² for small ratios so that a vanishing t²/df cannot underflow.
+    z2 = np.where(ratio < 1e-8, (a / df) * t2 * (1.0 - 0.5 * ratio), a * np.log1p(ratio))
+    z = np.sqrt(z2)
+    finite = z2 < 1e100         # beyond, z > 1e50 and the tail is zero with or without the correction
+    zf = np.where(finite, z2, 0.0)
+    corr = ((((-0.4 * zf - 3.3) * zf - 24.0) * zf - 85.5) / (0.8 * zf * zf + 100.0 + b) + zf + 3.0) / b + 1.0
+    return np.where(finite, corr * z, z)
 
 
 _VEC_ERFC = None
@@ -972,7 +1184,15 @@ def norm_cdf_vec(x):
     if _VEC_ERFC is None:
         _VEC_ERFC = np.frompyfunc(math.erfc, 1, 1)
     x = np.asarray(x, dtype=float)
-    return np.asarray(_VEC_ERFC(-x / _SQRT2), dtype=float) * 0.5
+    if x.size <= _BLOCK:
+        return np.asarray(_VEC_ERFC(-x / _SQRT2), dtype=float) * 0.5
+    # In blocks: frompyfunc builds an array of Python floats (about 32 bytes a point) first.
+    flat = x.ravel()
+    out = np.empty(flat.size, dtype=float)
+    for start in range(0, flat.size, _BLOCK):
+        out[start:start + _BLOCK] = np.asarray(_VEC_ERFC(-flat[start:start + _BLOCK] / _SQRT2), dtype=float)
+    out *= 0.5
+    return out.reshape(x.shape)
 
 
 def norm_ppf_vec(p):
@@ -983,4 +1203,10 @@ def norm_ppf_vec(p):
     if _VEC_PPF is None:
         _VEC_PPF = np.frompyfunc(norm_ppf, 1, 1)
     p = np.asarray(p, dtype=float)
-    return np.asarray(_VEC_PPF(p), dtype=float)
+    if p.size <= _BLOCK:
+        return np.asarray(_VEC_PPF(p), dtype=float)
+    flat = p.ravel()
+    out = np.empty(flat.size, dtype=float)
+    for start in range(0, flat.size, _BLOCK):
+        out[start:start + _BLOCK] = np.asarray(_VEC_PPF(flat[start:start + _BLOCK]), dtype=float)
+    return out.reshape(p.shape)
