@@ -37,7 +37,9 @@ install; this module is opt-in.
 
 from __future__ import annotations
 
+import hashlib
 import math
+import numbers
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -192,22 +194,84 @@ class Distribution:
         return f"{type(self).__name__}({args})"
 
 
+def _is_bool(value: Any) -> bool:
+    """True for Python and NumPy booleans, which are numbers to ``float()`` but never meant as one.
+    (NumPy's is ``numpy.bool`` in NumPy 2 and ``numpy.bool_`` before; neither subclasses ``bool``.)"""
+    return isinstance(value, bool) or type(value).__name__ in ("bool", "bool_")
+
+
+def _as_float(name: str, value: Any) -> float:
+    """``value`` as a float, or RP101. Refuses booleans, strings and bytes (``float("100")`` and
+    ``float(True)`` would otherwise coerce them), and turns the ``TypeError`` of ``None`` and the
+    ``OverflowError`` of an integer past the float range into the same coded error."""
+    if _is_bool(value) or isinstance(value, (str, bytes, bytearray)):
+        raise InputError(f"{name} must be a number, got {value!r}", code="RP101", param=name)
+    try:
+        return float(value)
+    except OverflowError:
+        raise InputError(f"{name} must be finite, got an integer too large for a float", code="RP101",
+                         param=name) from None
+    except (TypeError, ValueError):
+        raise InputError(f"{name} must be a number, got {value!r}", code="RP101", param=name) from None
+
+
 def _check_positive(name: str, value: float) -> float:
-    if not (value > 0) or not math.isfinite(value):
+    number = _as_float(name, value)
+    if not (number > 0) or not math.isfinite(number):
         raise InputError(f"{name} must be a finite number > 0, got {value!r}", code="RP102", param=name)
-    return float(value)
+    return number
 
 
 def _check_non_negative(name: str, value: float) -> float:
-    if not (value >= 0) or not math.isfinite(value):
+    number = _as_float(name, value)
+    if not (number >= 0) or not math.isfinite(number):
         raise InputError(f"{name} must be a finite number >= 0, got {value!r}", code="RP102", param=name)
-    return float(value)
+    # + 0.0 turns -0.0 into 0.0: NumPy refuses a scale whose sign bit is set, so Normal(0, -0.0)
+    # would pass here and then fail at sample time.
+    return number + 0.0
 
 
 def _check_finite(name: str, value: float) -> float:
-    if not math.isfinite(value):
+    number = _as_float(name, value)
+    if not math.isfinite(number):
         raise InputError(f"{name} must be finite, got {value!r}", code="RP101", param=name)
-    return float(value)
+    return number
+
+
+def _check_probability(name: str, value: Any, *, open_low: bool = False) -> float:
+    """A probability in [0, 1] (or (0, 1] with ``open_low``): RP101 if not a finite number, RP103 if outside."""
+    number = _check_finite(name, value)
+    if not ((0.0 < number) if open_low else (0.0 <= number)) or number > 1.0:
+        interval = "(0, 1]" if open_low else "[0, 1]"
+        raise InputError(f"{name} must be in {interval}, got {value!r}", code="RP103", param=name)
+    return number
+
+
+def _check_trials(trials: Any) -> int:
+    """The number of trials: a whole number >= 1 (an int or a NumPy integer, never a bool)."""
+    if _is_bool(trials) or not isinstance(trials, numbers.Integral):
+        raise InputError(f"trials must be a whole number >= 1, got {trials!r}", code="RP107", param="trials",
+                         hint="Pass an integer number of trials, e.g. 100_000 (not 1e5 or 2.5).")
+    if trials < 1:
+        raise InputError(f"trials must be >= 1, got {trials!r}", code="RP107", param="trials")
+    return int(trials)
+
+
+def _check_seed(seed: Any) -> Any:
+    """``None``, a whole number >= 0, or something NumPy already treats as a seed (a
+    ``SeedSequence``, ``BitGenerator`` or ``Generator``), which is passed through unchanged."""
+    if seed is None:
+        return None
+    np = _numpy()
+    if isinstance(seed, (np.random.SeedSequence, np.random.BitGenerator, np.random.Generator)):
+        return seed
+    if _is_bool(seed) or not isinstance(seed, numbers.Integral):
+        raise InputError(f"seed must be a whole number >= 0 or None, got {seed!r}", code="RP107", param="seed",
+                         hint="Pass an integer seed such as 42, or None for fresh draws on every run.")
+    if seed < 0:
+        raise InputError(f"seed must be >= 0, got {seed!r}", code="RP102", param="seed",
+                         hint="Pass a non-negative integer seed such as 42, or None for fresh draws on every run.")
+    return int(seed)
 
 
 def _as_array(x):
@@ -321,9 +385,10 @@ class Constant(Distribution):
 
 class Uniform(Distribution):
     def __init__(self, low: float, high: float):
-        if not (high > low):
+        lo, hi = _check_finite("low", low), _check_finite("high", high)
+        if not (hi > lo):
             raise InputError(f"high must exceed low, got low={low!r} high={high!r}", code="RP113", param="high")
-        self.low, self.high = _check_finite("low", low), _check_finite("high", high)
+        self.low, self.high = lo, hi
 
     def sample(self, n, rng):
         return rng.uniform(self.low, self.high, n)
@@ -457,11 +522,12 @@ class Triangular(Distribution):
     is a best guess and two bounds."""
 
     def __init__(self, low: float, mode: float, high: float):
+        low, mode, high = _check_finite("low", low), _check_finite("mode", mode), _check_finite("high", high)
         if not (low <= mode <= high):
             raise InputError(f"need low <= mode <= high, got {low!r}, {mode!r}, {high!r}", code="RP113", param="mode")
         if low == high:
             raise InputError("low and high must differ", code="RP113", param="high")
-        self.low, self.mode, self.high = float(low), float(mode), float(high)
+        self.low, self.mode, self.high = low, mode, high
 
     def sample(self, n, rng):
         return rng.triangular(self.low, self.mode, self.high, n)
@@ -508,11 +574,12 @@ class PERT(Distribution):
     """
 
     def __init__(self, low: float, mode: float, high: float, lam: float = 4.0):
+        low, mode, high = _check_finite("low", low), _check_finite("mode", mode), _check_finite("high", high)
         if not (low <= mode <= high):
             raise InputError(f"need low <= mode <= high, got {low!r}, {mode!r}, {high!r}", code="RP113", param="mode")
         if low == high:
             raise InputError("low and high must differ", code="RP113", param="high")
-        self.low, self.mode, self.high = float(low), float(mode), float(high)
+        self.low, self.mode, self.high = low, mode, high
         self.lam = _check_non_negative("lam", lam)
 
     def _ab(self) -> Tuple[float, float]:
@@ -1084,9 +1151,7 @@ class NegativeBinomial(_Discrete):
 
     def __init__(self, n_success: float, p: float):
         self.n_success = _check_positive("n_success", n_success)
-        if not (0.0 < p <= 1.0):
-            raise InputError(f"p must be in (0, 1], got {p!r}", code="RP103", param="p")
-        self.p = float(p)
+        self.p = _check_probability("p", p, open_low=True)
 
     @classmethod
     def from_mean_dispersion(cls, mean: float, dispersion: float) -> "NegativeBinomial":
@@ -1118,9 +1183,7 @@ class NegativeBinomial(_Discrete):
 
 class Bernoulli(_Discrete):
     def __init__(self, p: float):
-        if not (0.0 <= p <= 1.0):
-            raise InputError(f"p must be in [0, 1], got {p!r}", code="RP103", param="p")
-        self.p = float(p)
+        self.p = _check_probability("p", p)
 
     def sample(self, n, rng):
         return (rng.random(n) < self.p).astype(float)
@@ -1142,11 +1205,14 @@ class Bernoulli(_Discrete):
 
 class Binomial(_Discrete):
     def __init__(self, trials: int, p: float):
+        # A whole number, never truncated: Binomial(2.5, p) used to become Binomial(2, p) silently.
+        whole = isinstance(trials, numbers.Integral) or (
+            isinstance(trials, numbers.Real) and math.isfinite(trials) and float(trials).is_integer())
+        if _is_bool(trials) or not whole:
+            raise InputError(f"trials must be a whole number >= 0, got {trials!r}", code="RP107", param="trials")
         if trials < 0:
             raise InputError(f"trials must be >= 0, got {trials!r}", code="RP107", param="trials")
-        if not (0.0 <= p <= 1.0):
-            raise InputError(f"p must be in [0, 1], got {p!r}", code="RP103", param="p")
-        self.trials, self.p = int(trials), float(p)
+        self.trials, self.p = int(trials), _check_probability("p", p)
 
     def sample(self, n, rng):
         return rng.binomial(self.trials, self.p, n).astype(float)
@@ -1517,24 +1583,47 @@ def correlation_matrix(names: Sequence[str], pairs: Mapping[Tuple[str, str], flo
             raise InputError(f"correlation refers to unknown variable {unknown!r}; known: {list(names)}", code="RP108", param="correlation")
         if a == b:
             raise InputError(f"cannot set a variable's correlation with itself ({a!r})", code="RP113", param="correlation")
-        if not (-1.0 <= rho <= 1.0):
+        value = _as_float("correlation", rho)
+        if not (-1.0 <= value <= 1.0):
             raise InputError(f"correlation must be in [-1, 1], got {rho!r} for {(a, b)!r}", code="RP100", param="correlation", hint="Correlations are decimals in [-1, 1].")
-        matrix[index[a], index[b]] = matrix[index[b], index[a]] = float(rho)
+        matrix[index[a], index[b]] = matrix[index[b], index[a]] = value
     _check_correlation(matrix)
     return matrix
 
 
+def _as_matrix(value, param: str = "correlation"):
+    """``value`` as a float array, with a coded error for ragged rows or text entries."""
+    np = _numpy()
+    try:
+        return np.asarray(value, dtype=float)
+    except (TypeError, ValueError):
+        raise InputError(f"{param} must be a matrix of numbers (a list of equal-length rows)", code="RP100",
+                         param=param, hint="Give one row per variable, each with one number per variable.") from None
+
+
 def _check_correlation(matrix) -> None:
     np = _numpy()
-    matrix = np.asarray(matrix, dtype=float)
+    matrix = _as_matrix(matrix)
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
         raise InputError(f"correlation must be a square matrix, got shape {matrix.shape}", code="RP100", param="correlation")
+    # Finiteness first: np.allclose calls inf "close" to inf and NaN fails every comparison, so
+    # a matrix with an infinite entry passed the symmetry and eigenvalue tests and a NaN one was
+    # reported as asymmetric.
+    if np.any(np.isnan(matrix)):
+        raise InputError("correlation matrix contains NaN", code="RP101", param="correlation",
+                         hint="Every entry must be a number in [-1, 1]; check for a missing value in the data.")
+    if not np.all(np.isfinite(matrix)):
+        raise InputError("correlation matrix entries must be finite, got an infinite entry", code="RP101",
+                         param="correlation", hint="Correlations are decimals in [-1, 1].")
+    if np.any(np.abs(matrix) > 1.0 + 1e-12):
+        raise InputError(f"correlation matrix entries must be in [-1, 1], got {float(np.max(np.abs(matrix))):g}",
+                         code="RP100", param="correlation", hint="Correlations are decimals in [-1, 1].")
     if not np.allclose(matrix, matrix.T, atol=1e-12):
         raise InputError("correlation matrix must be symmetric", code="RP100", param="correlation")
     if not np.allclose(np.diag(matrix), 1.0, atol=1e-12):
         raise InputError("correlation matrix must have ones on the diagonal", code="RP100", param="correlation")
     eigen = np.linalg.eigvalsh(matrix)
-    if eigen.min() <= -1e-10:
+    if not np.all(np.isfinite(eigen)) or eigen.min() <= -1e-10:
         raise InputError(
             f"correlation matrix is not positive semi-definite (smallest eigenvalue "
             f"{eigen.min():.3g}). The pairwise correlations you asked for cannot all "
@@ -1556,16 +1645,23 @@ def iman_conover(samples: Dict[str, Any], target, rng, spearman: bool = True) ->
     ``2·sin(π·ρ_s/6)``, and that conversion is applied unless
     ``spearman=False``.
     """
+    return _iman_conover(samples, target, rng, spearman)[0]
+
+
+def _iman_conover(samples: Dict[str, Any], target, rng, spearman: bool = True):
+    """:func:`iman_conover`, also returning the score matrix whose column ``j`` orders variable
+    ``j`` (``None`` when there is nothing to reorder). :meth:`Model.stress` breaks ties in a
+    redrawn variable by its score, so a tie group keeps the dependence the scores carry."""
     np = _numpy()
     names = list(samples)
     k = len(names)
-    target = np.asarray(target, dtype=float)
+    target = _as_matrix(target, "target")
     if target.shape != (k, k):
         raise InputError(f"target must be {k}x{k} for {k} variables, got {target.shape}", code="RP109", param="target")
     _check_correlation(target)
     n = len(samples[names[0]])
     if n < 2:
-        return dict(samples)
+        return dict(samples), None
 
     pearson = 2.0 * np.sin(math.pi * target / 6.0) if spearman else target
     pearson = np.clip(pearson, -1.0, 1.0)
@@ -1589,7 +1685,7 @@ def iman_conover(samples: Dict[str, Any], target, rng, spearman: bool = True) ->
         ranked = np.empty(n, dtype=float)
         ranked[order] = np.sort(column)
         out[name] = ranked
-    return out
+    return out, T
 
 
 # ---------------------------------------------------------------------------
@@ -1671,9 +1767,11 @@ class Result:
     def percentile(self, q: float) -> float:
         """``q`` in percent, e.g. ``percentile(99.5)``. Linear interpolation
         between order statistics, identical to NumPy's default."""
-        np = _numpy()
-        if not (0.0 <= q <= 100.0):
-            raise InputError(f"q is a percentage in [0, 100], got {q!r}", code="RP110", param="q", hint="percentile() takes a percentage in [0, 100]; var() and tvar() take a decimal level such as 0.995.")
+        hint = "percentile() takes a percentage in [0, 100]; var() and tvar() take a decimal level such as 0.995."
+        value = _as_float("q", q)
+        if not (0.0 <= value <= 100.0):
+            raise InputError(f"q is a percentage in [0, 100], got {q!r}", code="RP110", param="q", hint=hint)
+        q = value
         ordered = self._ordered()
         n = ordered.size
         pos = (q / 100.0) * (n - 1)
@@ -1687,7 +1785,7 @@ class Result:
 
     def var(self, level: float = 0.995) -> float:
         """Value at Risk — the loss exceeded with probability ``1 - level``."""
-        _check_level(level)
+        level = _check_level(level)
         return self.percentile(level * 100.0)
 
     def tvar(self, level: float = 0.995) -> float:
@@ -1705,7 +1803,7 @@ class Result:
         Preferred to VaR for the same reason regulators prefer it: VaR tells you
         the threshold and nothing about how bad it gets past it.
         """
-        _check_level(level)
+        level = _check_level(level)
         np = _numpy()
         ordered = self._ordered()
         n = ordered.size
@@ -1748,11 +1846,13 @@ class Result:
         """Running mean and a ±1.96 standard-error band, for a convergence plot.
 
         Returns ``(n, running_mean, half_width)``. If the band is still visibly
-        narrowing at the right-hand edge, you have not run enough trials.
+        narrowing at the right-hand edge, you have not run enough trials. A one-trial run
+        gives a single point with a half-width of 0, as :attr:`standard_error` does.
         """
         np = _numpy()
         points = max(2, min(int(points), self.trials))
-        first = max(2, self.trials // points)
+        # Never past the last trial: with one trial the first checkpoint used to be trial 2.
+        first = min(max(2, self.trials // points), self.trials)
         idx = np.unique(np.linspace(first, self.trials, points).astype(int))
         cumulative = np.cumsum(self.values)
         running = cumulative[idx - 1] / idx
@@ -1803,12 +1903,12 @@ class Result:
                        tail: str = "upper") -> "ReverseStress":
         """Reverse stress test: what do the inputs look like in the trials where the output is extreme?
 
-        level: the tail starts at this quantile of the output, as a decimal (0.995 looks at
-            the worst 0.5% of trials); ignored when ``threshold`` is given
+        level: the tail is the worst ``1 - level`` of trials, as a decimal (0.995 looks at
+            the worst 0.5%: 500 of 100,000 trials); ignored when ``threshold`` is given
         threshold: an output value instead of a level — "the trials where the loss exceeds
-            50 million"
-        tail: "upper" (outputs at or above the threshold, the default — losses) or "lower"
-            (at or below — profits, solvency ratios)
+            50 million"; every trial at or beyond it counts in full
+        tail: "upper" (the highest outputs, the default — losses) or "lower" (the lowest —
+            profits, solvency ratios)
 
         A stress test asks what the output is under a scenario. A reverse stress test asks
         the opposite: given that the output breached the threshold, what scenario was it?
@@ -1816,6 +1916,12 @@ class Result:
         expectation ``E[input | output beyond threshold]`` — reported next to its
         unconditional mean, as a shift in standard deviations, and as the percentile of the
         input's own distribution that the conditional mean sits at.
+
+        With a ``level`` the tail is weighted exactly as :meth:`tvar` weights it: trials beyond
+        the ``level`` quantile count in full, and trials tied *at* the quantile share whatever
+        weight is left, so the tail holds ``n·(1 − level)`` trials' worth and ``output_mean``
+        (upper tail) equals ``tvar(level)``. The quantile trial itself is not in the tail when
+        ``n·level`` is a whole number and nothing ties with it.
 
         Returns a :class:`ReverseStress`. Needs the inputs, so the run must have kept them.
 
@@ -1834,34 +1940,53 @@ class Result:
         if tail not in ("upper", "lower"):
             raise InputError(f"tail must be 'upper' or 'lower', got {tail!r}", code="RP108", param="tail")
         np = _numpy()
+        # beyond: trials in the tail in full; at/share: trials tied at the cut, and the total
+        # weight they share (zero for a threshold, which counts every tied trial in full).
+        values = self.values
         if threshold is None:
-            _check_level(level)
-            # The same lower empirical quantile that tvar() uses, mirrored for the lower tail.
-            ordered = self._ordered()
+            level = _check_level(level)
+            # The lower empirical quantile tvar() uses; the lower tail is the upper tail of -values.
+            signed = values if tail == "upper" else -values
+            ordered = self._ordered() if tail == "upper" else -self._ordered()[::-1]
             n = ordered.size
-            if tail == "upper":
-                k = min(max(int(math.ceil(n * level - 1e-9)) - 1, 0), n - 1)
-            else:
-                k = min(max(int(math.floor(n * (1.0 - level) + 1e-9)), 0), n - 1)
-            cut = float(ordered[k])
-            used_level: Optional[float] = float(level)
+            k = min(max(int(math.ceil(n * level - 1e-9)) - 1, 0), n - 1)
+            q = float(ordered[k])
+            size = n * (1.0 - level)       # the tail, in trials: 500.0 for 100,000 at 0.995
+            nearest = round(size)
+            if nearest >= 1 and abs(size - nearest) <= 1e-9 * size:
+                size = float(nearest)      # 10 * (1 - 0.8) is 1.9999999999999996
+            beyond, at = signed > q, signed == q
+            n_at = int(at.sum())
+            # At most size trials lie beyond q and at least one sits at it, so share > 0 whenever
+            # nothing lies beyond: the tail is never empty.
+            share = min(max(size - int(beyond.sum()), 0.0), float(n_at))
+            cut = (q if tail == "upper" else -q) + 0.0   # never report -0.0
+            used_level: Optional[float] = level
         else:
             cut = _check_finite("threshold", threshold)
             used_level = None
-        mask = self.values >= cut if tail == "upper" else self.values <= cut
+            beyond = values >= cut if tail == "upper" else values <= cut
+            at, n_at, share = None, 0, 0.0
+        mask = beyond | at if share > 0.0 else beyond
         count = int(mask.sum())
         if count == 0:
             side = "at or above" if tail == "upper" else "at or below"
             raise InputError(
                 f"no trial has an output {side} {cut:g} (the output ranges from "
-                f"{float(self.values.min()):g} to {float(self.values.max()):g})", code="RP111", param="threshold",
+                f"{float(values.min()):g} to {float(values.max()):g})", code="RP111", param="threshold",
                 hint="Choose a threshold inside the simulated range, or run more trials."
             )
+
+        def tail_mean_of(column) -> float:
+            if share <= 0.0:
+                return float(column[beyond].mean())
+            return float((column[beyond].sum() + share / n_at * column[at].sum()) / (int(beyond.sum()) + share))
+
         rows = {}
         for name, column in self.inputs.items():
             column = np.asarray(column, dtype=float)
             mean, sd = float(column.mean()), float(column.std())
-            tail_mean = float(column[mask].mean())
+            tail_mean = tail_mean_of(column)
             rows[name] = {
                 "mean": mean,
                 "tail_mean": tail_mean,
@@ -1870,7 +1995,7 @@ class Result:
             }
         return ReverseStress(
             label=self.label, tail=tail, level=used_level, threshold=cut, trials=self.trials,
-            tail_trials=count, output_mean=float(self.values[mask].mean()), inputs=rows,
+            tail_trials=count, output_mean=tail_mean_of(values), inputs=rows,
         )
 
     # -- presentation -------------------------------------------------------
@@ -1956,9 +2081,12 @@ class ReverseStress:
 
     Fields: ``label`` (the output's name); ``tail`` ("upper" or "lower"); ``level`` (the
     quantile the tail starts at, or None when a threshold was given); ``threshold`` (the
-    output value the tail starts at); ``trials``; ``tail_trials`` (how many trials are in
-    the tail); ``output_mean`` (the mean output over those trials — the TVaR when
-    ``tail="upper"`` and there are no ties at the threshold); ``inputs`` — per input,
+    output value the tail starts at: the ``level`` quantile, or the threshold given);
+    ``trials``; ``tail_trials`` (how many trials are in the tail: with a level and no ties at
+    the quantile, ``n·(1 − level)`` rounded up — 500 of 100,000 at 0.995 — and when trials
+    tie at the quantile, all of them, sharing the weight the tail has left);
+    ``output_mean`` (the mean output over the tail — with a level and ``tail="upper"``,
+    exactly :meth:`Result.tvar`); ``inputs`` — per input,
     ``{"mean", "tail_mean", "shift_sd", "percentile"}``: its unconditional mean, its mean
     in the tail, the difference in units of its standard deviation, and the share of its
     own draws at or below the tail mean (a decimal).
@@ -2074,7 +2202,7 @@ class StressResult:
     def to_dict(self, level: float = 0.995) -> Dict[str, Any]:
         """Base and scenarios as plain data: mean, std, VaR and TVaR at ``level``, and each
         scenario's change from the base (absolute, and relative as a decimal)."""
-        _check_level(level)
+        level = _check_level(level)
 
         def stats(result: Result) -> Dict[str, float]:
             return {"mean": result.mean, "std": result.std, "var": result.var(level), "tvar": result.tvar(level)}
@@ -2121,9 +2249,13 @@ class StressResult:
         return f"<StressResult base={self.base.label!r} scenarios={list(self.scenarios)}>"
 
 
-def _check_level(level: float) -> None:
-    if not (0.0 < level < 1.0):
+def _check_level(level: float) -> float:
+    """A confidence level strictly inside (0, 1), as a float: RP101 if it is not a number at all
+    (a string, None, a boolean), RP110 if it is outside the interval."""
+    value = _as_float("level", level)
+    if not (0.0 < value < 1.0):
         raise InputError(f"level must be a probability in (0, 1), e.g. 0.995 — got {level!r}", code="RP110", param="level")
+    return value
 
 
 def _rankdata(values, np):
@@ -2144,16 +2276,42 @@ def _rankdata(values, np):
 # ---------------------------------------------------------------------------
 
 
+def _not_a_distribution(name: str, value: Any, where: str) -> ArgumentTypeError:
+    """The error for a keyword of ``Model()`` or ``simulate()`` that is not a Distribution, with
+    advice that fits what was passed: a function is a formula, a number wants ``Constant``."""
+    if callable(value) and not isinstance(value, type):
+        if where == "Model":
+            message = (f"{name!r} is a function, but Model() takes only distributions. Register the formula "
+                       f"with @model.formula (or model.formula(fn)), or pass it to model.run(fn=...).")
+            hint = "Model(claims=LogNormal(8, 1), ...) takes the random inputs; the formula goes in @model.formula."
+        else:
+            message = (f"{name!r} is a function, but the keywords of simulate() are distributions. Pass the "
+                       f"formula as the first argument: simulate(fn, trials=..., x=Normal(0, 1)).")
+            hint = "simulate(fn, trials, seed, ..., name=Distribution): only the formula is a function."
+        return ArgumentTypeError(message, code="RP404", param=name, hint=hint)
+    if isinstance(value, type) and issubclass(value, Distribution):
+        return ArgumentTypeError(
+            f"{name!r} is the class {value.__name__}, not a distribution: call it with its parameters, "
+            f"e.g. {name}={value.__name__}(...).", code="RP404", param=name,
+            hint="Pass a distribution object such as Normal(0, 1), not the class Normal.")
+    if isinstance(value, numbers.Real) and not _is_bool(value):
+        return ArgumentTypeError(
+            f"{name!r} must be a Distribution, got {type(value).__name__}. Wrap a fixed number in "
+            f"Constant({value!r}).", code="RP404", param=name,
+            hint=f"A fixed input is a distribution too: {name}=Constant({value!r}).")
+    return ArgumentTypeError(
+        f"{name!r} must be a Distribution such as Normal(0, 1) or Poisson(3), got {type(value).__name__}.",
+        code="RP404", param=name,
+        hint="Every keyword is a random input: pass a riskpy.mc distribution (Normal, LogNormal, Poisson, ...).")
+
+
 class Model:
     """A set of named random inputs, optional dependence, and a formula."""
 
     def __init__(self, **variables: Distribution):
         for name, dist in variables.items():
             if not isinstance(dist, Distribution):
-                raise ArgumentTypeError(
-                    f"{name!r} must be a Distribution, got {type(dist).__name__}. "
-                    f"Wrap a fixed number in Constant({dist!r}).", code="RP404", param=name
-                )
+                raise _not_a_distribution(name, dist, "Model")
         self.variables: Dict[str, Distribution] = dict(variables)
         self.correlations: Dict[Tuple[str, str], float] = {}
         self._formula: Optional[Callable[..., Any]] = None
@@ -2168,8 +2326,11 @@ class Model:
         for name in (a, b):
             if name not in self.variables:
                 raise InputError(f"unknown variable {name!r}; known: {list(self.variables)}", code="RP108", param="name")
-        self.correlations[(a, b)] = float(rho)
-        correlation_matrix(list(self.variables), self.correlations)  # validate now
+        value = _as_float("rho", rho)
+        # Validate now, and keep the pair only if it is valid: a refused pair left on the model
+        # would make every later run fail.
+        correlation_matrix(list(self.variables), {**self.correlations, (a, b): value})
+        self.correlations[(a, b)] = value
         return self
 
     def sample(self, trials: int = 10_000, seed: Optional[int] = None, sampling: str = "random",
@@ -2177,6 +2338,7 @@ class Model:
         """Draw the inputs only, as ``{name: array}`` — for inspection or for
         feeding into something that is not a formula."""
         np = _numpy()
+        trials, seed = _check_trials(trials), _check_seed(seed)
         rng = np.random.default_rng(seed)
         return _draw(self.variables, trials, rng, sampling, self.correlations or None, copula)
 
@@ -2246,10 +2408,17 @@ class Model:
             - a number — the variable is fixed at that value in every trial
               (``{"inflation": 0.08}``: "what if inflation is 8%");
             - a callable taking and returning an array — the draws are transformed
-              (``{"claims": lambda x: 1.2 * x}``: "claims 20% worse");
+              (``{"claims": lambda x: 1.2 * x}``: "claims 20% worse"). It is given a copy, so
+              changing the array in place cannot leak into the base or another scenario;
             - a :class:`Distribution` — the variable is redrawn from it *at the same ranks*
               as the base draw, so the trial that had the worst claims still has the worst
-              claims and every correlation and copula is preserved.
+              claims and every correlation and copula is preserved. Under ``copula=`` the new
+              values are the shock's quantiles at the copula's own uniforms — exactly the
+              column a re-run with the new marginal would draw. Otherwise a fresh sample is
+              sorted into the base ranks; trials that tie in the base (a default flag, a claim
+              count, a year with no claims) are ordered by the dependence that drew them — the
+              correlation's normal score, or an independent tie-break — and never by trial
+              number.
         trials: number of trials
         seed: random seed; pass one so the numbers can be reproduced
         fn: the formula, if one is not registered with ``@model.formula``
@@ -2260,7 +2429,11 @@ class Model:
         Returns a :class:`StressResult` holding the base :class:`Result` and one per
         scenario. Because every scenario shares the base run's draws (common random
         numbers), ``stress.delta(...)`` is the effect of the shock with the sampling noise
-        cancelled; two separate ``run`` calls would bury a small effect in noise.
+        cancelled; two separate ``run`` calls would bury a small effect in noise. The base is
+        the :meth:`run` of the same seed, trial for trial. A fresh sample for a Distribution
+        shock comes from a random stream of its own, one per variable, so a scenario's
+        numbers do not depend on which other scenarios are listed with it, or in what order,
+        and two scenarios that redraw a variable from the same distribution agree exactly.
 
         Example::
 
@@ -2286,42 +2459,44 @@ class Model:
             if not isinstance(shocks, Mapping):
                 raise ArgumentTypeError(f"scenario {label!r} must be a {{variable: shock}} mapping, got "
                                         f"{type(shocks).__name__}", code="RP404", param="scenarios")
-            for name in shocks:
+            for name, shock in shocks.items():
                 if name not in self.variables:
                     raise InputError(f"scenario {label!r} shocks unknown variable {name!r}; known: "
                                      f"{list(self.variables)}", code="RP108", param="scenarios")
-        if isinstance(trials, bool) or trials < 1:
-            raise InputError(f"trials must be >= 1, got {trials!r}", code="RP107", param="trials")
+                # Refuse a bad shock before the base run, not after it.
+                if _is_pinned(shock):
+                    _check_finite(f"scenario {label!r}: {name}", shock)
+                elif not (isinstance(shock, Distribution) or callable(shock)):
+                    raise ArgumentTypeError(
+                        f"scenario {label!r}: the shock for {name!r} must be a number, a callable or a "
+                        f"Distribution, got {type(shock).__name__}", code="RP404", param="scenarios"
+                    )
+        trials, seed = _check_trials(trials), _check_seed(seed)
 
         rng = np.random.default_rng(seed)
-        samples = _draw(self.variables, trials, rng, sampling, self.correlations or None, copula)
+        samples, latent, uniform = _draw_with_latent(self.variables, trials, rng, sampling,
+                                                     self.correlations or None, copula)
         base_label = getattr(formula, "__name__", "output")
         base = Result(values=_evaluate(formula, samples, trials, vectorised), inputs=samples, trials=trials,
                       seed=seed, label=base_label)
+        streams = _Streams(rng)
         results: Dict[str, Result] = {}
         for label, shocks in scenarios.items():
             shocked = dict(samples)
             for name, shock in shocks.items():
                 column = np.asarray(samples[name], dtype=float)
                 if isinstance(shock, Distribution):
-                    fresh = np.sort(np.asarray(shock.sample(trials, rng), dtype=float))
-                    ranks = np.argsort(np.argsort(column, kind="mergesort"), kind="mergesort")
-                    new = fresh[ranks]
+                    new = _redraw(shock, name, column, latent[name], uniform, trials, sampling, streams)
                 elif callable(shock):
-                    new = np.asarray(shock(column), dtype=float)
+                    new = np.asarray(shock(column.copy()), dtype=float)
                     if new.shape != (trials,):
                         raise InputError(
                             f"scenario {label!r}: the shock for {name!r} returned shape {new.shape}, expected "
                             f"({trials},)", code="RP100", param="scenarios",
                             hint="A callable shock takes the array of draws and returns an array of the same length."
                         )
-                elif isinstance(shock, (int, float)) and not isinstance(shock, bool):
-                    new = np.full(trials, _check_finite(f"scenario {label!r}: {name}", shock))
                 else:
-                    raise ArgumentTypeError(
-                        f"scenario {label!r}: the shock for {name!r} must be a number, a callable or a "
-                        f"Distribution, got {type(shock).__name__}", code="RP404", param="scenarios"
-                    )
+                    new = np.full(trials, _check_finite(f"scenario {label!r}: {name}", shock))
                 shocked[name] = new
             results[str(label)] = Result(values=_evaluate(formula, shocked, trials, vectorised), inputs=shocked,
                                          trials=trials, seed=seed, label=str(label))
@@ -2332,8 +2507,84 @@ class Model:
         return f"<Model({names})>"
 
 
+def _is_pinned(shock: Any) -> bool:
+    """A number that pins a stressed variable: any real number, NumPy scalars included, but not a bool."""
+    return isinstance(shock, numbers.Real) and not _is_bool(shock)
+
+
+class _Streams:
+    """Independent random streams for :meth:`Model.stress`, one per (purpose, variable).
+
+    Seeded from the run's generator *after* the base draws, so the base is untouched, and keyed
+    by the variable's name, so a stream does not depend on which scenarios use it or in what
+    order. Created on first use: a stress with no Distribution shock draws nothing extra.
+    """
+
+    def __init__(self, rng):
+        self._rng = rng
+        self._root = None
+        self._tiebreak: Dict[str, Any] = {}
+
+    def generator(self, purpose: int, name: str):
+        np = _numpy()
+        if self._root is None:
+            self._root = [int(x) for x in self._rng.integers(0, 2 ** 63, size=2)]
+        digest = hashlib.blake2b(str(name).encode("utf-8"), digest_size=16).digest()
+        words = [int.from_bytes(digest[i:i + 4], "little") for i in range(0, 16, 4)]
+        return np.random.default_rng(np.random.SeedSequence(self._root, spawn_key=(purpose, *words)))
+
+    def tiebreak(self, name: str, trials: int):
+        """Uniforms that order an independent variable's tied draws — the same in every scenario."""
+        if name not in self._tiebreak:
+            self._tiebreak[name] = self.generator(1, name).random(trials)
+        return self._tiebreak[name]
+
+
+def _redraw(shock: "Distribution", name: str, column, latent, uniform: bool, trials: int, sampling: str,
+            streams: _Streams):
+    """Values of ``shock`` in the same rank order as the base ``column`` — see :meth:`Model.stress`."""
+    np = _numpy()
+    if uniform:
+        # The copula's own uniforms: the base column is dist.ppf(latent) (or sorted into its
+        # ranks), so shock.ppf(latent) is the column a re-run with the new marginal draws.
+        try:
+            new = np.asarray(shock.ppf(latent), dtype=float)
+        except NotImplementedError:
+            new = None
+        if new is not None:
+            return np.broadcast_to(new, (trials,)).astype(float)
+    if latent is None:
+        latent = streams.tiebreak(name, trials)
+    # Sort by the base value, ties by the variable's latent ordering. A tie broken by trial
+    # number would assign the redrawn values independently of every other input, and the same
+    # index order across several tied variables would make them falsely comonotone.
+    order = np.lexsort((latent, column))
+    draw = shock.sample_lhs if sampling == "lhs" else shock.sample
+    fresh = np.sort(np.asarray(draw(trials, streams.generator(2, name)), dtype=float))
+    new = np.empty(trials, dtype=float)
+    new[order] = fresh
+    return new
+
+
+def _ranks(x):
+    """0-based ranks, ties in order of appearance."""
+    np = _numpy()
+    return np.argsort(np.argsort(x, kind="mergesort"), kind="mergesort")
+
+
 def _draw(variables: Mapping[str, Distribution], trials: int, rng, sampling: str,
           correlation, copula) -> Dict[str, Any]:
+    return _draw_with_latent(variables, trials, rng, sampling, correlation, copula)[0]
+
+
+def _draw_with_latent(variables: Mapping[str, Distribution], trials: int, rng, sampling: str, correlation, copula):
+    """Draw the inputs, and say for each what orders it.
+
+    Returns ``(samples, latent, uniform)``. ``latent[name]`` ranks the trials the way the
+    dependence does — the copula's uniform for that variable, or its Iman–Conover score — or is
+    ``None`` for an independent input; ``samples[name]`` is non-decreasing in it. ``uniform`` is
+    True when the latents are the copula's uniforms, to which a quantile function applies directly.
+    """
     np = _numpy()
     names = list(variables)
     if sampling not in ("random", "lhs"):
@@ -2343,40 +2594,58 @@ def _draw(variables: Mapping[str, Distribution], trials: int, rng, sampling: str
         if correlation is not None:
             raise InputError("pass either correlation= or copula=, not both", code="RP113", param="copula")
         dim = getattr(copula, "dim", None)
-        if dim is not None and dim != len(names):
-            raise InputError(f"copula has dimension {dim} but there are {len(names)} variables", code="RP109", param="copula")
+        k = len(names)
+        if dim is not None and dim != k:
+            raise InputError(
+                f"copula has dimension {dim} but there are {k} variables", code="RP109", param="copula",
+                hint=f"Build the copula with one dimension per variable ({k}, in the order {names}): an "
+                     f"Archimedean copula takes dim={k}, e.g. GumbelCopula(theta, dim={k}); GaussianCopula and "
+                     f"StudentTCopula take a {k}x{k} correlation matrix.")
         u = np.asarray(copula.uniforms(trials, rng), dtype=float)
-        if u.shape != (trials, len(names)):
-            raise InputError(f"copula.uniforms must return shape ({trials}, {len(names)}), got {u.shape}", code="RP109", param="copula")
-        samples = {}
+        if u.shape != (trials, k):
+            raise InputError(f"copula.uniforms must return shape ({trials}, {k}), got {u.shape}", code="RP109",
+                             param="copula", hint="copula.uniforms(n, rng) must return an (n, dim) array of "
+                                                  "uniforms, one column per variable.")
+        samples, latent = {}, {}
         for j, name in enumerate(names):
+            uj = u[:, j]
+            if sampling == "lhs":
+                # Latin hypercube inside the copula: keep each column's ranks, which are all the
+                # dependence there is, and put exactly one draw in each 1/n stratum.
+                uj = (_ranks(uj) + rng.random(trials)) / trials
             try:
-                samples[name] = variables[name].ppf(u[:, j])
+                samples[name] = variables[name].ppf(uj)
             except NotImplementedError:
                 # No quantile function (a Compound): draw the marginal and put
                 # its sorted values in the order of the copula's column. The marginal is
                 # the simulated one and the ranks are exactly the copula's.
-                drawn = np.sort(np.asarray(variables[name].sample(trials, rng), dtype=float))
-                samples[name] = drawn[np.argsort(np.argsort(u[:, j], kind="mergesort"), kind="mergesort")]
-        return samples
+                draw = variables[name].sample_lhs if sampling == "lhs" else variables[name].sample
+                drawn = np.sort(np.asarray(draw(trials, rng), dtype=float))
+                samples[name] = drawn[_ranks(uj)]
+            latent[name] = uj
+        return samples, latent, True
 
     if sampling == "lhs":
         samples = {name: dist.sample_lhs(trials, rng) for name, dist in variables.items()}
     else:
         samples = {name: dist.sample(trials, rng) for name, dist in variables.items()}
+    latent: Dict[str, Any] = {name: None for name in names}
 
     if correlation is not None:
         if isinstance(correlation, Mapping):
             matrix = correlation_matrix(names, correlation)
         else:
-            matrix = np.asarray(correlation, dtype=float)
+            matrix = _as_matrix(correlation)
             if matrix.shape != (len(names), len(names)):
                 raise InputError(
                     f"correlation matrix must be {len(names)}x{len(names)} in the order "
-                    f"{names}, got shape {matrix.shape}", code="RP109", param="correlation"
+                    f"{names}, got shape {matrix.shape}", code="RP109", param="correlation",
+                    hint=f"Give a {len(names)}x{len(names)} matrix, rows and columns in the order {names}."
                 )
-        samples = iman_conover(samples, matrix, rng)
-    return samples
+        samples, scores = _iman_conover(samples, matrix, rng)
+        if scores is not None:
+            latent = {name: scores[:, j] for j, name in enumerate(names)}
+    return samples, latent, False
 
 
 def _evaluate(fn: Callable[..., Any], samples: Mapping[str, Any], trials: int, vectorised: bool):
@@ -2431,19 +2700,22 @@ def simulate(
     Latin hypercube draws, which cuts the noise on the mean by a large factor
     at no cost. ``copula`` accepts any object with ``uniforms(n, rng)`` — see
     :mod:`riskpy.capital` — for tail dependence a correlation cannot express.
+    With both, each variable keeps the copula's ranks and its uniform is moved
+    into the stratum its rank points to, so the marginals are stratified and the
+    dependence is the copula's.
+
+    ``trials`` is a whole number >= 1 and ``seed`` is None or a whole number >= 0
+    (or a NumPy ``SeedSequence`` / ``Generator``); anything else is RP107 (RP102
+    for a negative seed).
     """
     np = _numpy()
 
-    if trials < 1:
-        raise InputError(f"trials must be >= 1, got {trials!r}", code="RP107", param="trials")
+    trials, seed = _check_trials(trials), _check_seed(seed)
     if not variables:
         raise InputError("Nothing to simulate — pass at least one distribution.", code="RP111", param="variables")
     for name, dist in variables.items():
         if not isinstance(dist, Distribution):
-            raise ArgumentTypeError(
-                f"{name!r} must be a Distribution, got {type(dist).__name__}. "
-                f"Wrap a fixed number in Constant({dist!r}).", code="RP404", param=name
-            )
+            raise _not_a_distribution(name, dist, "simulate")
 
     rng = np.random.default_rng(seed)
     samples = _draw(variables, trials, rng, sampling, correlation, copula)

@@ -163,9 +163,10 @@ def test_reverse_stress_matches_the_normal_conditional_mean():
     assert [name for name, _ in rs.drivers] == ["x", "y"]
     # the percentile of the tail mean in the input's own distribution: Φ(shift)
     assert rs.inputs["x"]["percentile"] == pytest.approx(Phi(2.0 / sd_s * ratio), abs=0.003)
-    # the tail is the worst 1%: its mean output is the TVaR, and the scenario adds up to it
-    assert rs.probability == pytest.approx(0.01, abs=2e-6) and rs.tail_trials == 10_001
-    assert rs.output_mean == pytest.approx(result.tvar(level), rel=1e-4)
+    # the tail is the worst 1% — exactly 10,000 trials, not the VaR trial as well — so its mean
+    # output is the TVaR, and the scenario adds up to it
+    assert rs.probability == 0.01 and rs.tail_trials == 10_000
+    assert rs.output_mean == pytest.approx(result.tvar(level), rel=1e-12)
     assert sum(rs.scenario.values()) == pytest.approx(rs.output_mean, rel=1e-12)
     assert rs.threshold == pytest.approx(15.0 + sd_s * 2.3263478740408408, abs=0.045)
 
