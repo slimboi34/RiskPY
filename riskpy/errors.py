@@ -462,10 +462,36 @@ def _broken_pipe() -> int:
     return 0
 
 
+def _closed_pipe(exc: BaseException) -> bool:
+    """Whether a write failed because stdout's reader went away.
+
+    POSIX raises BrokenPipeError (EPIPE). Windows raises a plain OSError with EINVAL when the
+    pipe's read end is closed, so both count.
+    """
+    if isinstance(exc, BrokenPipeError):
+        return True
+    import errno
+
+    return os.name == "nt" and isinstance(exc, OSError) and exc.errno == errno.EINVAL
+
+
+def _quote_path(path: Any) -> str:
+    """A path for a message: in single quotes, with control characters escaped (a newline in a
+    file name cannot forge a second line) and backslashes left alone, so a Windows path reads
+    as typed rather than doubled the way repr() writes it."""
+    try:
+        text = os.fspath(path)
+    except TypeError:
+        text = str(path)
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "backslashreplace")
+    return "'" + "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in text) + "'"
+
+
 def _output_failed(prog: str, path: Any, exc: OSError, what: str = "write") -> int:
     """RP505 on stderr for a file a CLI could not write, with the hint; returns the exit status, 1."""
     reason = exc.strerror or str(exc) or type(exc).__name__
-    print(f"{prog}: RP505 cannot {what} {str(path)!r}: {reason}\n  hint: {CATALOGUE['RP505']['hint']}",
+    print(f"{prog}: RP505 cannot {what} {_quote_path(path)}: {reason}\n  hint: {CATALOGUE['RP505']['hint']}",
           file=sys.stderr)
     return 1
 

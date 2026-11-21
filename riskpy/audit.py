@@ -64,7 +64,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
 
-from .errors import InputError
+from .errors import InputError, _quote_path
 
 __all__ = ["Ledger", "ChainReport", "ReplayReport", "ENV", "GENESIS", "start", "stop", "active", "record", "load",
            "digest", "verify_chain", "replay", "report", "status", "main"]
@@ -668,7 +668,7 @@ def _read(source: Source) -> List[Item]:
                     entry = _parse_line(raw)
                     items.append(entry if isinstance(entry, dict) else _Damaged(number, entry))
         except OSError as exc:
-            raise InputError(f"cannot read the ledger {path!r}: {exc.strerror or exc}", code="RP505",
+            raise InputError(f"cannot read the ledger {_quote_path(path)}: {exc.strerror or exc}", code="RP505",
                              param="source") from None
         return items
     try:
@@ -1013,7 +1013,7 @@ def _replay_items(items: Sequence[Item], chain: ChainReport, rel_tol: float, abs
                        recorded_versions=sorted({str(e.get("riskpy")) for e in items
                                                  if isinstance(e, dict) and e.get("riskpy")}))
     order = list(range(len(items))) if positions is None else list(positions)
-    deadline = None if seconds is None else time.monotonic() + seconds
+    deadline = None if seconds is None else time.perf_counter() + seconds
     drifted: List[Tuple[int, dict]] = []
     skipped: List[Tuple[int, dict]] = []
     looked = 0
@@ -1021,7 +1021,7 @@ def _replay_items(items: Sequence[Item], chain: ChainReport, rel_tol: float, abs
     _replaying.on = True
     try:
         for index in order:
-            if deadline is not None and looked and time.monotonic() > deadline:
+            if deadline is not None and looked and time.perf_counter() > deadline:
                 break
             looked += 1
             entry = items[index]
@@ -1372,7 +1372,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 with open(args.output, "w", encoding="utf-8") as fh:
                     fh.write(text)
             except OSError as exc:
-                print(f"riskpy-audit: RP505 cannot write {args.output!r}: {exc.strerror or exc}", file=sys.stderr)
+                print(f"riskpy-audit: RP505 cannot write {_quote_path(args.output)}: {exc.strerror or exc}", file=sys.stderr)
                 return 1
             print(f"wrote {args.output}")
         else:
@@ -1382,7 +1382,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     except InputError as exc:
         print(f"riskpy-audit: {exc.code} {exc}", file=sys.stderr)
         return 1
-    except BrokenPipeError:
+    except OSError as exc:
+        from .errors import _closed_pipe
+
+        if not _closed_pipe(exc):
+            print(f"riskpy-audit: RP900 {type(exc).__name__}: {_clip(str(exc), 300)}", file=sys.stderr)
+            return 1
         # The reader went away (riskpy-audit report FILE | head): stop quietly, as other CLIs do.
         with contextlib.suppress(OSError, ValueError):
             devnull = os.open(os.devnull, os.O_WRONLY)

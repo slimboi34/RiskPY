@@ -305,7 +305,7 @@ def build() -> str:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    from .errors import _broken_pipe, _output_failed, _safe_streams
+    from .errors import _broken_pipe, _closed_pipe, _output_failed, _safe_streams
 
     _safe_streams()      # the pack is full of σ, √ and —: a cp1252 console must not crash on them
     parser = argparse.ArgumentParser(prog="riskpy-context",
@@ -325,7 +325,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             sys.stdout.write(text if text.endswith("\n") else text + "\n")
             sys.stdout.flush()
-    except BrokenPipeError:          # riskpy-context | head
+    except OSError as exc:           # riskpy-context | head
+        if not _closed_pipe(exc):
+            raise
         return _broken_pipe()
     return 0
 

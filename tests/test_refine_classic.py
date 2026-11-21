@@ -470,7 +470,7 @@ def test_tutorial_blocks_run_in_a_fresh_process(title, blocks, tmp_path):
     assert python, f"{title} has no Python blocks"
     for lang, code in blocks:
         if lang == "csv":
-            (tmp_path / "submissions.csv").write_text(code)
+            (tmp_path / "submissions.csv").write_text(code, encoding="utf-8")
     if any("UnderwritingApp" in code for code in python):
         _app()  # skip where Tkinter is missing
     # The window is the one thing a test cannot open: run() becomes a no-op.
@@ -482,10 +482,11 @@ def test_tutorial_blocks_run_in_a_fresh_process(title, blocks, tmp_path):
             pass
     """)
     script = tmp_path / "tutorial.py"
-    script.write_text(prelude + "\n".join(python))
+    script.write_text(prelude + "\n".join(python), encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env["PYTHONIOENCODING"] = "utf-8"            # the tutorials print ≈ and —; a Windows pipe is cp1252
     done = subprocess.run([sys.executable, str(script)], cwd=tmp_path, capture_output=True, text=True,
-                          timeout=300, env=env)
+                          encoding="utf-8", errors="replace", timeout=300, env=env)
     assert done.returncode == 0, f"{title} failed:\n{done.stderr[-2000:]}"
     assert _TUTORIAL_OUTPUT.get(title, "") in done.stdout
 

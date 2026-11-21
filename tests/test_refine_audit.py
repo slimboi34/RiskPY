@@ -176,7 +176,7 @@ def test_a_foreign_last_line_does_not_stop_the_recording(tmp_path):
         tools.call("annuity_certain", {"i": 0.05, "n": 10})
     for foreign in ('{"seq": Infinity, "digest": "x"}', '{"seq": 1e400}', '{"seq": "2", "digest": 5}',
                     "[" * 100_000 + "]" * 100_000, '{"seq": 3, "digest": "not hex"}'):
-        with open(path, "a", encoding="utf-8") as fh:
+        with open(path, "a", encoding="utf-8", newline="\n") as fh:     # the same bytes on Windows
             fh.write(foreign + "\n")
         with audit.record(path) as ledger:
             tools.call("annuity_certain", {"i": 0.05, "n": 20})

@@ -666,7 +666,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except (ValueError, OSError):  # pragma: no cover - closed or odd streams
                 pass
 
-    from .errors import _broken_pipe, _output_failed
+    from .errors import _broken_pipe, _closed_pipe, _output_failed
 
     # An output file that cannot be written is found out before the suite runs, not after.
     for path in (args.json, args.markdown):
@@ -687,7 +687,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not args.quiet:
             print(report.summary(verbose=args.verbose))
             sys.stdout.flush()
-    except BrokenPipeError:          # riskpy-verify -v | head
+    except OSError as exc:           # riskpy-verify -v | head
+        if not _closed_pipe(exc):
+            raise
         _broken_pipe()
     return status
 

@@ -131,10 +131,9 @@ def test_a_simulation_is_bumped_by_one_per_cent_by_default():
     out = tools.call("sensitivity", {"tool": "aggregate_loss", "arguments": sim, "parameter": "expected_frequency"})
     assert out["bump"] == pytest.approx(0.1)                    # 1% of 10, stated in the result
     assert out["outputs"]["mean"]["derivative"] == pytest.approx(1000.0, rel=0.15)   # d(λ·E[X])/dλ = E[X]
-    # 0.7.0's default, 0.0001 × λ, differenced sampling noise: a derivative of about −10,000
-    old = tools.call("sensitivity", {"tool": "aggregate_loss", "arguments": sim, "parameter": "expected_frequency",
-                                     "bump": 0.001})
-    assert abs(old["outputs"]["mean"]["derivative"] - 1000.0) > 2000.0
+    # 0.7.0's default, 0.0001 × λ, differenced sampling noise: about −10,000 on macOS. How far a tiny
+    # bump drifts depends on the C++ standard library's Poisson sampler (libc++, libstdc++ and MSVC
+    # differ), so only the 1% default is pinned here.
     # a closed form keeps the fine default
     assert tools.call("sensitivity", {"tool": "black_scholes", "arguments": BS, "parameter": "S"})["bump"] == 0.01
 
@@ -205,9 +204,9 @@ def test_the_trace_bounds_the_parameter_and_the_cli_escapes_control_characters(t
 
 
 def test_deeply_nested_objects_are_refused_with_a_code():
-    # json.loads accepts ~2000 levels; 0.7.0 answered RP900 RecursionError.
+    # 0.7.0 answered RP900 RecursionError. 500 levels: json.loads on Python 3.10/3.11 stops near 1,000.
     deep = json.loads('{"tool": "black_scholes", "arguments": {"S": 100, "K": 100, "T": 1, "r": 0.05, "sigma": 0.2},'
-                      ' "scenarios": {"up": {"S": 110}, "junk": {"S": ' + "[" * 2000 + "]" * 2000 + "}}}")
+                      ' "scenarios": {"up": {"S": 110}, "junk": {"S": ' + "[" * 500 + "]" * 500 + "}}}")
     err = _err("scenario_table", deep)
     assert (err["code"], err["param"]) == ("RP405", "scenarios") and "32 levels" in err["message"]
     err = _err("sensitivity", {"tool": "black_scholes", "arguments": {**BS, "K": _nested(40)}, "parameter": "S"})
@@ -483,3 +482,18 @@ def test_every_python_block_on_the_agents_page_runs_on_its_own(tmp_path):
     for block in blocks:
         run = subprocess.run([sys.executable, "-c", block], capture_output=True, text=True, cwd=str(tmp_path))
         assert run.returncode == 0, (block, run.stderr[-500:])
+
+
+def test_a_closed_pipe_is_recognised_on_windows_too(monkeypatch):
+    import errno
+    from riskpy.errors import _closed_pipe, _quote_path
+
+    assert _closed_pipe(BrokenPipeError(errno.EPIPE, "Broken pipe"))
+    invalid = OSError(errno.EINVAL, "Invalid argument")
+    monkeypatch.setattr(os, "name", "nt")
+    assert _closed_pipe(invalid)                   # what Windows raises for `riskpy-context | head -0`
+    monkeypatch.setattr(os, "name", "posix")
+    assert not _closed_pipe(invalid) and not _closed_pipe(OSError(errno.ENOSPC, "No space left"))
+    # paths read as typed: backslashes are not doubled, control characters cannot start a new line
+    assert _quote_path("C:\\Users\\me\\run.jsonl") == "'C:\\Users\\me\\run.jsonl'"
+    assert _quote_path("a\nb") == "'a\\nb'" and "\n" not in _quote_path("a\nb")

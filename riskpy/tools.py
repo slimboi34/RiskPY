@@ -2198,7 +2198,7 @@ def _warn_unrecorded() -> None:
 
     ledger = audit.active()
     if ledger is not None and ledger.failures:
-        print(f"riskpy-tools: warning: RP505 the call was not recorded to the audit ledger {ledger.path!r} "
+        print(f"riskpy-tools: warning: RP505 the call was not recorded to the audit ledger {_errors._quote_path(ledger.path)} "
               f"(RISKPY_AUDIT_FILE): check that its folder exists and is writable", file=sys.stderr)
 
 
