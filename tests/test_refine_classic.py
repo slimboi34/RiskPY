@@ -113,6 +113,52 @@ def test_set_premium_column_same_column_relabels(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# Every tutorial runs as written
+# ---------------------------------------------------------------------------
+
+
+def _tutorials():
+    text = (ROOT / "docs" / "TUTORIALS.md").read_text(encoding="utf-8")
+    sections = re.split(r"^## (Tutorial \d+[^\n]*)$", text, flags=re.M)
+    out = []
+    for title, body in zip(sections[1::2], sections[2::2]):
+        blocks = re.findall(r"^```(\w*)\n(.*?)^```", body, flags=re.M | re.S)
+        out.append((title.split(":")[0], blocks))
+    return out
+
+
+# What each tutorial prints that pins its numbers (Tutorial 4: 1,080 + 13,500 + 2,160).
+_TUTORIAL_OUTPUT = {"Tutorial 4": "Processed 3 policies. Total: $16,740.00"}
+
+
+@pytest.mark.parametrize("title, blocks", _tutorials(), ids=[t for t, _ in _tutorials()])
+def test_tutorial_blocks_run_in_a_fresh_process(title, blocks, tmp_path):
+    pytest.importorskip("numpy")
+    python = [code for lang, code in blocks if lang == "python"]
+    assert python, f"{title} has no Python blocks"
+    for lang, code in blocks:
+        if lang == "csv":
+            (tmp_path / "submissions.csv").write_text(code)
+    if any("UnderwritingApp" in code for code in python):
+        _app()  # skip where Tkinter is missing
+    # The window is the one thing a test cannot open: run() becomes a no-op.
+    prelude = textwrap.dedent("""
+        try:
+            import riskpy.app
+            riskpy.app.UnderwritingApp.run = lambda self, *a, **k: None
+        except ImportError:
+            pass
+    """)
+    script = tmp_path / "tutorial.py"
+    script.write_text(prelude + "\n".join(python))
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    done = subprocess.run([sys.executable, str(script)], cwd=tmp_path, capture_output=True, text=True,
+                          timeout=300, env=env)
+    assert done.returncode == 0, f"{title} failed:\n{done.stderr[-2000:]}"
+    assert _TUTORIAL_OUTPUT.get(title, "") in done.stdout
+
+
+# ---------------------------------------------------------------------------
 # The publishing job installs nothing
 # ---------------------------------------------------------------------------
 

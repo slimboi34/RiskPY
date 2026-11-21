@@ -159,6 +159,9 @@ The **99.5th percentile** is your 1-in-200 year loss — the amount regulators r
 ### The Model
 
 ```python
+from riskpy import MonteCarloSimulator
+import numpy as np
+
 results = MonteCarloSimulator(trials=50000).simulate_life_portfolio(
     policy_count=10000,          # 10,000 life policies
     base_mortality_rate=0.002,   # 0.2% base annual mortality (qx)
@@ -174,6 +177,11 @@ results = MonteCarloSimulator(trials=50000).simulate_life_portfolio(
 4. Total claims = number of deaths × death benefit
 
 A shock factor of 1.5 represents a 50% increase in mortality (pandemic scenario). A shock factor of 0.8 represents a mild year.
+
+```python
+print(f"Expected annual claims:  ${np.mean(results):,.0f}")
+print(f"99.5% VaR (1-in-200):    ${np.percentile(results, 99.5):,.0f}")
+```
 
 **Full working example**: See [`examples/life_annuity_pricing.py`](https://github.com/slimboi34/RiskPY/blob/main/examples/life_annuity_pricing.py)
 
@@ -196,14 +204,44 @@ FL,19,Sports Car,2+ Claims
 CA,45,SUV,1 Claim
 ```
 
-### Step 2: Process the Batch
+Save it as `submissions.csv`.
+
+### Step 2: Build the Rater
+
+The same pieces as Tutorial 1, one field per CSV column. No window opens:
+`calculate_batch` is headless, though `UnderwritingApp` still needs the `[gui]`
+extra and Tkinter to import.
 
 ```python
+from riskpy import UnderwritingApp, FactorModel
+
+model = FactorModel(initial_base_rate=750.0)
+for state, factor in [("NY", 1.8), ("CA", 2.0), ("FL", 2.5)]:
+    model.add_multiplier("state", state, factor)
+model.add_numeric_band_multiplier("driver_age", 16, 25, 2.0)
+model.add_numeric_band_multiplier("driver_age", 26, 55, 1.0)
+model.add_numeric_band_multiplier("driver_age", 56, 99, 1.3)
+for vehicle, factor in [("Sedan", 1.0), ("SUV", 1.2), ("Sports Car", 2.0)]:
+    model.add_multiplier("vehicle_type", vehicle, factor)
+for history, factor in [("Clean", 0.8), ("1 Claim", 1.2), ("2+ Claims", 1.8)]:
+    model.add_multiplier("claims_history", history, factor)
+
+app = UnderwritingApp(title="Batch Processor")
+app.add_field("state", "State", "A", choices=["NY", "CA", "FL"])
+app.add_field("driver_age", "Driver Age", "B")
+app.add_field("vehicle_type", "Vehicle Type", "C", choices=["Sedan", "SUV", "Sports Car"])
+app.add_field("claims_history", "Claims History", "D", choices=["Clean", "1 Claim", "2+ Claims"])
 app.set_premium_column("E", "Premium")   # otherwise the workbook has the inputs but no premium
+app.set_factor_model(model)
+```
+
+### Step 3: Process the Batch
+
+```python
 total_premium, count = app.calculate_batch("submissions.csv", "rated_book.xlsx")
 print(f"Processed {count} policies. Total: ${total_premium:,.2f}")
 ```
 
-`calculate_batch` reads the CSV in Python and prices each row with the C++ `FactorModel`, then writes the whole book to a binary Excel file in one call to the OpenXLSX C++ library. Only the columns mapped with `add_field` and `set_premium_column` are written.
+`calculate_batch` reads the CSV in Python and prices each row with the C++ `FactorModel`, then writes the whole book to a binary Excel file in one call to the OpenXLSX C++ library. Only the columns mapped with `add_field` and `set_premium_column` are written. Calling `set_premium_column` again moves the premium column; it never adds a second one.
 
 **Full working example**: See [`examples/batch_processing.py`](https://github.com/slimboi34/RiskPY/blob/main/examples/batch_processing.py)
