@@ -1,3 +1,364 @@
+# RiskPY v0.8.0 — Release Notes
+
+**Release date:** 2026-11-21  
+**Type:** Minor release — fixes from a planned stress test of 0.7.0. Some results change and some inputs are now refused; see Changed  
+**Install:** `pip install -U open-riskpy`
+
+---
+
+## TL;DR
+
+0.8.0 is a fix release. Fable planned a stress test of 0.7.0 in seven missions, and a team
+of agents ran it. Of 60 raw findings, 13 were refuted on re-checking, and the rest came to 45
+distinct defects; one more documentation defect was confirmed during the fixing. With the 10
+defects already known before the test, that made 56. Five agents fixed them in parallel, one batch each, and
+all 56 are fixed, plus three more found while merging. Three were high severity:
+`Model.stress` gave a 99.5% VaR of 20 defaults for a PD shock whose re-run gives 4, a t copula
+with a huge `df` hung `riskpy-mcp` from a 70-byte request, and the Frank copula sampler was
+wrong above θ ≈ 35. On security: no single MCP request can now hang the server or exhaust its
+memory, `riskpy-mcp` honours cancellation, text an agent supplies can no longer forge the
+`riskpy-audit` calculation record, and the publish job no longer installs anything while it
+holds the PyPI token.
+
+The seven missions covered capital and stress-testing correctness, the older modules, denial
+of service through the agent tools, the audit ledger's files and the packaging, upgrades and
+concurrency, and literal walkthroughs of the docs and of the agent surface. Nothing found was
+memory-unsafe or gave an agent access to files. Every confirmed repro was re-run against the
+merged build. The C++ core is unchanged. The suite goes from 935 to 1,567 tests,
+`riskpy-verify` passes all 139 checks (125 without SciPy), and the 52 regression-notebook
+scenarios all pass.
+
+---
+
+## Security
+
+- **A t copula with a huge `df` no longer hangs.** `copula_dependence`, and
+  `StudentTCopula.cdf` / `joint_exceedance`, never returned with df around 1e23 or more and a
+  level in the central band. Over MCP, a 70-byte request kept a core busy after the client had
+  given up. The t quantile now uses the Cornish–Fisher series in 1/df (Abramowitz & Stegun
+  26.7.5) from df = 1e10, and in the central band from df = 1e4, and answers at once for any
+  df.
+- **The incomplete beta function has a fixed iteration cap** of 20,000 terms, past which it
+  raises **RP304**. The old cap grew with √max(a, b) and allowed 3.5e151 iterations at
+  df = 1e300.
+- **`capital_allocation` with `copula="t"` needs about a seventh of the memory.** At about 230
+  bytes a simulated cell, a call at `LIMITS["capital_cells"]` (2e7) would have needed about
+  4.5 GB; 2.2 GB was measured at half the limit. The t copula now applies its CDF a block of
+  rows at a time: 0.60 GB at the limit, the same as the Gaussian copula, whose own peak falls
+  from 1.16 GB to 0.59 GB.
+- **`sensitivity` and `scenario_table` have a work budget.** The base run plus every bumped or
+  scenario run may ask for no more work than one call of the calculator at its limit. The
+  cost is estimated before anything runs, from the sizes `LIMITS` already bounds. A call over
+  budget is refused with **RP405**, naming the largest run. In 0.7.0 one in-limits
+  `scenario_table` ran `aggregate_loss` 101 times at 10⁸ simulated claims each.
+- **`scenario_table` stops starting scenarios after `LIMITS["meta_seconds"]` (20 s).** What
+  ran is returned. The rest carry RP405 and are listed under `not_run`.
+- **`riskpy-mcp` honours cancellation.** On `notifications/cancelled`, the meta-tools stop at
+  the next gap between calculator runs, and the call is recorded with the new code **RP408**.
+  The server used to keep computing.
+- **`verify` cannot be driven by `sensitivity` or `scenario_table`** (RP108). A scenario
+  table of it used to run the whole verification suite up to 101 times.
+- **Tool names, argument names and scenario labels are bounded like string values.** Over
+  200 characters is refused with RP405, before the "did you mean" search, and the name is
+  never echoed back. A 5-million-character tool name used to cost about 370 MB and came back
+  in full in the error. An error's `param` is cut to 80 characters.
+- **The trace no longer keeps or prints agent-chosen text raw.** `error.param` is capped in
+  the trace; a 2 MB argument name used to go into every `riskpy_status` reply for the next
+  200 calls. `riskpy-tools trace` (text and `--json`) escapes control characters, as does the
+  CLI's error line on stderr, so ANSI or OSC sequences in a name cannot move the cursor or
+  retitle the reader's terminal.
+- **Agent-supplied text can no longer forge the calculation record.** `riskpy-audit report`
+  printed tool names, argument names, error messages and notes into the Markdown as they
+  were. An agent could add a fake `## Reproducibility` section, break out of a code span, or
+  insert HTML, and the chain stayed intact. Ledger text is now escaped, or put in a code span
+  longer than any backtick run inside it. Arguments, results and errors sit in fenced JSON
+  blocks. A tool name that is not a real tool's is stored as its repr.
+- **`riskpy_audit(check=true)` does a bounded amount of work.** It replayed the whole
+  persistent ledger in one agent call: 25 earlier large simulations made one call take 40 s.
+  It now replays the most recent 50 entries for at most about 10 s, and the reply says how
+  many it covered. `audit.replay()` and `riskpy-audit replay` still replay everything.
+- **A crafted ledger cannot make replay record or recurse.** A ledger entry for
+  `riskpy_audit` with `check=true` started a nested replay that switched recording back on.
+  With `RISKPY_AUDIT_FILE` pointing at the file being replayed, it appended hundreds of
+  entries to the evidence under check. Entries for introspection tools are now skipped.
+- **A line that repeats a JSON key is reported as damaged.** `verify` hashed the parsed
+  entry, and JSON keeps the last of two duplicate keys, so a different `"result"` at the front
+  of a line changed what a person reads while `verify` still said intact.
+- **The publish job installs nothing.** The job holding the Trusted Publishing OIDC token ran
+  an unpinned `pip install --upgrade twine`. It now only downloads the built artifacts and
+  runs the SHA-pinned `pypa/gh-action-pypi-publish`. `twine check --strict` moved to a new
+  `check-dist` job with no publishing rights.
+
+---
+
+## Fixed
+
+### Capital, copulas and the Student t
+
+- **Student-t quantile and CDF at large df.** `t_ppf` rounded df/(df + t²) to 1, so it was
+  wrong from df ≈ 1e12: the t copula's joint exceedance was 1.4% from its Gaussian limit at
+  df = 1e16. It now matches 60-digit mpmath to 6e-15 relative for df from 0.5 to 1e300.
+  - From df ≈ 1e17 every t-copula uniform was exactly 0.5, which made `capital_allocation`
+    degenerate. At df = 1e12, 1e20 and 1e300 it now gives 385.67, the Gaussian figure.
+  - `t_cdf` is exact just below df = 1e4. It no longer raises "math domain error" for a
+    tiny |t|, or returns NaN for a huge one.
+  - **`mc.StudentT.cdf`** had the same defect: 3e-5 relative error at df = 1e12, and 0.5
+    everywhere from df ≈ 1e17. It now uses the same CDF, within 1e-12 of mpmath (relative to
+    the tail) for df from 4 to 1e20.
+- **t copula at tiny df.** Below df = 0.2 the chi-square mixing variable is drawn in log
+  space. At df = 0.001 it underflowed in 70% of rows, sending them to a corner of the unit
+  square. The marginals are now uniform, and Kendall's tau matches 2/π·asin ρ, down to
+  df = 1e-300. A quantile beyond the largest double is ±inf instead of a bare "math domain
+  error", and the copula's `cdf` refuses it with RP304.
+- **Frank sampler at large θ.** With two risks, the upper tail lost its precision above
+  θ ≈ 35, and `capital_allocation` reported a TVaR about three times the comonotone bound:
+  1,275 against 421 at θ = 40. With three or more risks, Kendall's tau stuck at 0.897 for
+  every θ above about 37. Both are now correct; the tests go to |θ| = 500.
+- **Clayton sampler at large θ.** The Gamma(1/θ) frailty underflowed to zero, and the row was
+  clipped to 1e-16. It is now drawn in log space from θ = 15, and any finite θ works.
+- **Gumbel CDF and joint exceedance near 1.** (−ln u)^θ underflowed. At θ = 50 the joint
+  exceedance was 1.4% out for levels above 1 − 3e-7, and from θ = 100 it returned the
+  comonotone answer. Both now match 60-digit mpmath to 4e-16 at every θ and level tested.
+- **`FrankCopula.from_kendall_tau`** works for any non-zero τ up to 0.99. Below |τ| ≈ 1e-7 it
+  failed with a bare `ValueError: no sign change`.
+- **Euler VaR allocation.** `allocate(..., measure="var")` scaled every contribution by
+  VaR / (window total). For a hedged book with a VaR near zero, that multiplied each line by
+  an arbitrary factor and could flip signs. The residual is now shared by Cov(Xᵢ, S)/Var(S),
+  and an atom at the VaR is averaged whole. Positive books move by under 0.1 standard error.
+- **Coded errors instead of bare ones.**
+  - A ragged correlation matrix is **RP100**, text entries **RP404**, and NaN or infinite
+    entries **RP101**. The messages are the same whether `riskpy.capital` or `riskpy.mc`
+    catches them.
+  - A text column in `allocate` is **RP404**.
+  - Losses whose sum overflows are **RP304**, instead of `inf` with a warning.
+  - `betainc_vec` returns NaN for a NaN input, instead of uninitialised memory.
+- **Docstring examples** give the right digits: `spearman_rho()` 0.48258, the Gumbel joint
+  exceedance 0.00294.
+
+### Monte Carlo and stress testing
+
+- **`Model.stress` with inputs that repeat a value.** A `Distribution` shock on a default
+  flag, a claim count or a line with claim-free years broke ties by trial number. Inside each
+  tie group the redrawn values ignored the other inputs, and several tied variables shocked
+  together became comonotone. With 20 obligors stressed from a 2% to a 5% PD, the 99.5% VaR
+  came out at 20 defaults instead of 4. Ties are now ordered by the dependence that drew
+  them: the copula's uniform, the `correlate` normal score, or an independent tie-break.
+  Under `copula=`, the stressed column is exactly what a same-seed re-run with the new
+  marginal draws.
+- **`Model.stress` results no longer depend on scenario order.** Each variable's fresh sample
+  comes from its own stream, derived from the seed. Before, listing another scenario first
+  changed ΔTVaR from 1,422,149 to 1,443,578.
+- **A callable shock gets a copy of the draws**, so `x *= 2` inside it cannot leak into the
+  base or later scenarios.
+- **`sampling="lhs"` now works with `copula=`.** It was ignored without a warning. Each
+  variable keeps the copula's ranks and is moved into its stratum. In the stress test's
+  example, the spread of the mean across seeds fell from 0.46 to 0.0025.
+- **`Result.reverse_stress(level)` takes exactly the worst `1 − level`.** It included the
+  VaR trial too: 501 trials for the worst 0.5% of 100,000. The tail is now weighted as
+  `Result.tvar` weights it, so `output_mean == tvar(level)`, with or without ties.
+- **Correlation matrices with an infinite entry are refused** (RP101). They passed
+  validation, after which `GaussianCopula` produced NaN uniforms and `StudentTCopula` a
+  constant 0.5.
+- **`Result.convergence()` on a one-trial run** returns one point instead of raising
+  `IndexError`.
+- **`Normal(mean, -0.0)` and `LogNormal(mu, -0.0)`** sample, instead of failing in NumPy.
+- **`Poisson(1e308)` and `NegativeBinomial(3, 1e-300)`** raise RP304 naming `mean` or `p`
+  when sampled, instead of NumPy's bare `ValueError`.
+
+### The audit ledger
+
+- **One very long ledger line no longer stalls every later call.** Finding the last entry was
+  quadratic in the line's length, under the global audit lock. A 20 MB line made the next call
+  of any kind take minutes. The tail is now read once from the end, and a ledger remembers
+  where the file ended.
+- **A torn last line no longer swallows the next entry.** After a crash mid-write, the next
+  entry was glued onto the partial line, `seq` restarted at 1, and `verify`, `replay` and
+  `report` refused the whole ledger. The newline is now restored in the same write, `seq`
+  continues from the last good entry, and `verify` reports the damaged line.
+- **`verify`, `replay`, `report` and the status read a damaged ledger** instead of refusing
+  it. A line that is not UTF-8, not JSON, or nested too deeply counts as a break at that
+  line, and the entries around it are still processed. `audit.load()` still refuses such a
+  file, now always with RP100.
+- **Replay no longer reports false drift.** NaN and ±inf were stored as `null`, and bytes
+  and NumPy arrays were flattened, so a refused call could replay as a different error or a
+  success. Such values are now stored as small `"$riskpy"`-tagged objects that replay turns
+  back into the original. Plain JSON arguments are stored exactly as before.
+- **A successful call is not dropped when its arguments cannot be serialised.** It is
+  recorded with a chained placeholder, which replay skips. `write_failure_reasons` says why
+  any write failed; before, the status blamed an unwritable folder.
+- **`riskpy-audit` answers with a coded line, never a traceback.** An unwritable
+  `report -o` is RP505, anything unexpected RP900, and a closed pipe ends quietly.
+- **`python -m riskpy.audit replay` no longer records the calls it replays.**
+
+### Agent tools and CLIs
+
+- **`sensitivity` on a simulation no longer differences sampling noise.** For a calculator
+  with a seed, the default bump is now 1% of the value (1% of the distance to 0 or 1 for a
+  confidence level). It was 0.0001 × the value, which gave −12,566 for a claim-frequency
+  derivative whose true value is 1,000.
+- **Deeply nested arguments are refused with RP405** past `LIMITS["depth"]` (32). A 2,000-deep
+  scenario override returned RP900 RecursionError.
+- **A bare "math domain error" is RP304 with a hint.** `short_rate_zero_bond` names `T` when
+  the price underflows to 0. The `black_scholes` tool with `explain=true` no longer fails
+  when S/K underflows.
+- **`riskpy-tools call` warns (RP505) when the ledger could not record the call.**
+  **`riskpy-mcp`** exits with a one-line RP505 at start-up if its ledger cannot be opened for
+  appending.
+- **`riskpy-context`** survives a cp1252 console and a closed pipe, and reports an unwritable
+  `-o` as RP505. It now lists constructor signatures, each class's own summary and every
+  method, and has a worked example. **`riskpy-verify`** refuses an unknown `-m` module and an
+  unwritable output path before running the suite.
+- **`option_greeks`' description states its units**: vega and rho per percentage point,
+  theta per calendar day.
+- **`capital_allocation` correlation-shape errors say what was wrong**, and name a short row
+  (`correlation[0]`).
+- **The `docs/agents.md` "Tools that drive other tools" example** runs on its own.
+
+### Older modules, the app and the docs
+
+- **`quant.heston_price` reaches Black–Scholes as the vol-of-vol vanishes.** Below xi ≈ 1e-7
+  the characteristic function lost every digit: an at-the-money call priced at 38.65 with
+  xi = 1e-9, against 9.41. It now agrees to about 1e-10 down to xi = 1e-12.
+- **`rates.cir_zero_bond` with a tiny `sigma`** returned 0.0 or raised `ZeroDivisionError`.
+  It now takes the exact σ → 0 limit.
+- **Short-rate bond prices that overflow raise RP304**, naming the parameter responsible,
+  instead of a bare `OverflowError`.
+- **No "math domain error" when spot over strike underflows.** `black_scholes`, `greeks`,
+  `implied_vol`, `heston_price` and `credit.merton` take ln S − ln K.
+- **`implied_vol` validates its arguments before using them**, and `norm_cdf` / `norm_pdf`
+  check theirs. `T=None` used to be a bare `TypeError`.
+- **The VaR helpers take one series.** `historical_var`, `parametric_var` and
+  `expected_shortfall` refuse a 2-D `returns` (RP100). They used to pool the columns into one
+  sample without a word.
+- **`UnderwritingApp.set_premium_column` moves the column.** A second call added a second
+  premium column.
+- **Tutorials 3 and 4 run as written.** The test suite now runs every tutorial.
+
+---
+
+## Changed
+
+### Results that change
+
+- **`Model.stress` with a `Distribution` shock** gives different numbers. Tied inputs keep
+  their dependence, and continuous shocks draw from a per-variable stream. The base `Result`
+  is unchanged and still equals `Model.run` on the same seed.
+- **`Result.reverse_stress(level)`** counts one trial fewer (500, not 501, at 0.995 on
+  100,000 distinct outputs), and its means change to match `tvar(level)`.
+- **`sampling="lhs"` with `copula=`** now really stratifies, and draws n extra uniforms per
+  variable.
+- **`sensitivity`'s default bump** on `aggregate_loss` and `capital_allocation` is 1% of the
+  value. Replaying a 0.7.0 ledger that holds such calls will show drift.
+- **Seeded copula samples.**
+  - The random draws stay the same, but some values change because the old ones were
+    inexact. t-copula uniforms move by at most 2e-11 at df = 4, and up to 2.6e-7 near
+    df = 1e4. Frank two-risk draws move in the deep upper tail.
+  - The stream itself changes for t copulas with df < 0.2, Clayton with θ ≥ 15, and Frank
+    in three or more dimensions with θ ≥ 25.
+  - Gaussian, Gumbel, Clayton (θ < 15) and Frank (θ < 25) samples are bit-for-bit
+    unchanged. The 482.9 t-copula TVaR in the capital docs, and every accuracy figure in
+    `benchmarks/capital/RESULTS.md`, are unchanged.
+- **`allocate(..., measure="var")`** contributions change by under 0.1 standard error on a
+  positive book, and materially (now correctly) on a hedged one.
+- **`quant.heston_price`** moves by up to 1.3e-4 at xi = 1e-4, and by under 4e-10 at ordinary
+  vol-of-vol, each time towards a 60-digit evaluation.
+- **`GumbelCopula.cdf` / `joint_exceedance`** change near level 1 and at large θ.
+- **Student t values** (`_special.t_ppf`, `t_cdf`, `mc.StudentT.cdf`) change in the last
+  digits, and the incomplete beta for max(a, b) ≥ 100 by up to 2e-13.
+
+### New refusals
+
+- **Numbers must be numbers.**
+  - Numeric arguments in `quant`, `rates`, `credit`, `life` and `mc`, `var`/`tvar` levels,
+    `percentile`, and `correlate` refuse booleans (`numpy.bool_` too), numeric strings,
+    bytes and `None` with **RP101**. Before, `black_scholes(S="100", ...)` priced and
+    `Normal(True, 1)` had mean 1.0.
+  - An integer too large for a double is RP101, not `OverflowError`.
+  - NumPy integer and float scalars, 0-d numeric arrays, `Fraction` and `Decimal` are still
+    accepted.
+  - `credit_portfolio_loss(rho="0.1")` is now refused.
+- **Whole-number counts and valid seeds** in `simulate`, `Model.run` / `sample` / `stress`, the
+  path generators, `credit_portfolio_loss` and `bootstrap_chain_ladder`.
+  - `trials` and `steps` of 2.5, `True` or `"100"` are **RP107**.
+  - A negative seed is **RP102**, and any other bad type RP107.
+  - NumPy `Generator` and `SeedSequence` objects still work.
+  - `Model.sample(0)` is refused.
+- **`Binomial(2.5, p)` is refused** (RP107); it was silently `Binomial(2, p)`. A NaN
+  probability is RP101 (it was RP103).
+- **`heston_price` with `kappa <= rho·xi`** raises RP113, instead of `ZeroDivisionError`.
+- **`StudentTCopula` refuses df below 1e-300** (RP102). **`aggregate_capital`** refuses a pair
+  listed in both orders with different values (RP113). **`allocate`** refuses `names=` with a
+  DataFrame (RP113), where it used to ignore it.
+- **`mc.Beta(a, b).cdf` with a and b around 1e11 or more** can now raise RP304 near the
+  switch point, because of the new iteration cap, instead of slowly returning a value.
+- **A long tool name** is now InputError RP405, no longer UnknownNameError RP401.
+- **`riskpy-mcp` will not start** if the ledger named by `--audit` or `RISKPY_AUDIT_FILE`
+  cannot be opened for appending (RP505), so a stale `RISKPY_AUDIT_FILE` now stops the
+  server. When it can, an empty ledger file is created at start-up.
+
+### New and changed API
+
+- `verify_chain(source, expected_head=None, expected_entries=None)`, and
+  `riskpy-audit verify --head HEX [--entries N]`. These detect entries cut off the end or
+  appended after the head you quoted, which a valid chain alone cannot show. The calculation
+  record ends with `riskpy-audit verify --head <head> LEDGER.jsonl`.
+- `riskpy-audit report` puts arguments, results and errors in fenced JSON blocks, instead of
+  inline code. Anything that parsed the old `Arguments: \`...\`` lines needs to adapt.
+- `audit.status(check=True, replay_last=50, replay_seconds=10.0)`, `ReplayReport.replayed`,
+  `Ledger.failure_reasons`, and `write_failure_reasons` in the status and the `riskpy_audit`
+  tool. Recorded error messages are cut to 1,000 characters.
+- New `LIMITS` keys `depth` (32) and `meta_seconds` (20), and a new error code, RP408 (call
+  cancelled). `scenario_table` results gain `not_run` when the time allowance runs out.
+- NumPy scalars are accepted throughout `riskpy.capital` and as pinned `Model.stress` shocks.
+  A 2×2 correlation matrix needs no NumPy.
+- `riskpy-context` class lines carry the constructor signature, and `describe()` class
+  entries gain a `signature` key.
+- New private helper `riskpy._special.t_cdf_vec`.
+
+### Speed
+
+Re-measured with `benchmarks/capital/run.py` (same Python and SciPy as the 0.7.0 figures):
+recording a call to a
+ledger file takes 58 µs instead of 81 µs; `audit.verify_chain` on 10,000 entries takes 65 ms
+instead of 54 ms, and `audit.replay` 351 ms instead of 319 ms. `black_scholes` is about 17%
+slower per call (0.54 µs instead of 0.46 µs) because of the stricter number check, and
+`heston_price` about 20% faster.
+
+---
+
+## Known limits
+
+Left for a later release:
+
+- **C++ core.** `ActuarialMath.present_value` / `future_value` lose digits for tiny rates,
+  and accept negative periods and NaN or infinite payments. Fixing either needs a core
+  rebuild that CI builds and tests; this release changes only Python.
+- **`mc.StudentT.ppf` at very large df.** It is accurate to 1.6e-8 up to df = 1e8 but loses
+  digits beyond: 1.6e-4 relative at df = 1e12, and wrong from about df = 1e14. Use `Normal`
+  at such df. (`StudentT.cdf`, `_special.t_ppf` and the t copula are exact.)
+- **Not every input gives a coded error yet.** `life.annuity_certain(n=10**400)` and trial or
+  step counts of 10**400 still raise `OverflowError` or NumPy errors, and a `YieldCurve` whose
+  discount factor underflows still fails in its constructor.
+- **The work budget is an estimate.** Closed-form calculators count as free, so the 20 s
+  allowance is their backstop. A single calculator run cannot be interrupted by MCP
+  cancellation; the meta-tools stop between runs.
+- **The ledger records a refused call's arguments in full**, as it records every call, so an
+  agent can still grow the ledger by the size of its requests.
+- **RP304** is used for non-convergence of the incomplete beta, though its catalogue title
+  is "Numerical overflow".
+- **Publishing.** The PyPI Trusted Publisher still has no protected GitHub environment.
+  Adding `environment: pypi` to the workflow needs the environment created on GitHub and on
+  PyPI first.
+- **Optional hardening not done:** a tools-layer cap on t-copula df; fencing and capping MCP
+  prompt arguments; a keyword-only `seed` on `Copula.sample`; path redaction; `riskpy-explain`
+  accepting tool names; an HMAC key for the ledger (until then, keep the head somewhere else).
+- **Not verified:** three documentation findings from the stress test (the README quickstart
+  on a NumPy-free install, `reserving.genins()`'s message without NumPy, and
+  `riskpy-tools trace` after a CLI call in another process). The stress test did not probe
+  `viz` or the Tk GUI beyond their existing tests, and nothing was run on Windows or Linux.
+
+---
+
 # RiskPY v0.7.0 — Release Notes
 
 **Release date:** 2026-11-20  

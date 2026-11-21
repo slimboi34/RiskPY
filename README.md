@@ -40,6 +40,15 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+> **v0.8.0** — fixes from a planned stress test of 0.7.0: 56 defects, every one fixed,
+> plus three found while merging. Three were high severity: `Model.stress` put a 99.5%
+> VaR of 20 defaults on a PD shock whose re-run gives 4, a t copula with a huge `df`
+> hung `riskpy-mcp` from a 70-byte request, and the Frank sampler was wrong above
+> θ ≈ 35. No single MCP request can now hang the server or exhaust its memory,
+> `riskpy-mcp` honours cancellation, and text an agent supplies can no longer forge the
+> `riskpy-audit` calculation record. Some results change and some inputs are now
+> refused; see [RELEASE_NOTES.md](RELEASE_NOTES.md).
+>
 > **v0.7.0** — economic capital, stress testing and an audit trail. `riskpy.capital`
 > adds five copulas with closed-form tail dependence (the `copula=` hook in `riskpy.mc`
 > now has something to plug into it), a nearest-correlation repair, variance–covariance
