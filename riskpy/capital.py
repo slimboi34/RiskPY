@@ -194,8 +194,11 @@ def _debye1(x: float) -> float:
 
 
 def _frank_tau(theta: float) -> float:
-    if abs(theta) < 1e-6:
-        return theta / 9.0
+    if abs(theta) < 0.1:
+        # The series τ = θ/9 − θ³/900 + θ⁵/52920 − θ⁷/2721600 + … (from D₁'s Bernoulli
+        # expansion); the closed form cancels to nothing here (1 − D₁ ≈ θ/4).
+        t2 = theta * theta
+        return theta * (1.0 / 9.0 - t2 * (1.0 / 900.0 - t2 * (1.0 / 52920.0 - t2 / 2721600.0)))
     d1 = _debye1(abs(theta))
     if theta < 0.0:
         d1 += -theta / 2.0          # D₁(−x) = D₁(x) + x/2
@@ -648,11 +651,27 @@ class ClaytonCopula(_Archimedean):
 
     def _draw(self, n: int, rng: Any):
         # Marshall–Olkin: a Gamma(1/θ) frailty shared by the row, then ψ(E/V) with ψ(t) = (1 + t)^(−1/θ).
-        v = rng.gamma(1.0 / self.theta, 1.0, size=n)[:, None]
-        e = rng.exponential(1.0, size=(n, self.dim))
         np = _numpy()
-        with np.errstate(divide="ignore", invalid="ignore"):
-            return np.where(v > 0.0, (1.0 + e / np.where(v > 0.0, v, 1.0)) ** (-1.0 / self.theta), 0.0)
+        t = self.theta
+        if t < _CLAYTON_LOG_THETA:
+            v = rng.gamma(1.0 / t, 1.0, size=n)[:, None]
+            e = rng.exponential(1.0, size=(n, self.dim))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return np.where(v > 0.0, (1.0 + e / np.where(v > 0.0, v, 1.0)) ** (-1.0 / t), 0.0)
+        # A Gamma(1/θ) variate is about U^θ, which underflows to zero for large θ (about one row
+        # in 10,000 at θ = 80), and a zero frailty sends the row to u = 0. Work with log V instead:
+        # Gamma(α) = Gamma(1 + α)·U^(1/α), so log V = log G + θ·log U never underflows, and
+        # log ψ(E/V) = −log(1 + e^(log E − log V))/θ follows without forming V. It is carried
+        # divided by θ, so that a θ near the largest double cannot overflow either:
+        # y = (log E − log V)/θ = (log E − log G)/θ − log U, and log u = −log(1 + e^(θy))/θ.
+        log_g = np.log(rng.gamma(1.0 + 1.0 / t, 1.0, size=n))
+        log_unif = np.log1p(-rng.random(n))
+        e = rng.exponential(1.0, size=(n, self.dim))
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            y = (np.log(e) - log_g[:, None]) / t - log_unif[:, None]
+            log_u = np.maximum(y, 0.0) + np.log1p(np.exp(-t * np.abs(y))) / t
+        np.negative(log_u, out=log_u)
+        return np.exp(log_u, out=log_u)
 
     def _cdf(self, u: float, v: float) -> float:
         # (u^−θ + v^−θ − 1)^(−1/θ), with the largest power factored out so a large θ cannot overflow.
@@ -661,7 +680,11 @@ class ClaytonCopula(_Archimedean):
         m = max(a, b)
         if m < 30.0:
             return math.exp(-math.log1p(math.expm1(a) + math.expm1(b)) / t)      # exact as θ → 0
-        return math.exp(-(m + math.log(math.exp(a - m) + math.exp(b - m) - math.exp(-m))) / t)
+        # Divided through by θ first, so that θ·(−ln u) may overflow (θ up to the largest double).
+        lu, lv = -math.log(u), -math.log(v)
+        top = max(lu, lv)
+        rest = math.exp(-t * (top - lu)) + math.exp(-t * (top - lv)) - math.exp(-t * top)
+        return math.exp(-(top + math.log(rest) / t))
 
     def kendall_tau(self) -> float:
         """Kendall's tau: ``θ/(θ + 2)``."""
@@ -724,8 +747,31 @@ class GumbelCopula(_Archimedean):
         return np.nan_to_num(u, nan=0.5)
 
     def _cdf(self, u: float, v: float) -> float:
+        # exp(−((−ln u)^θ + (−ln v)^θ)^(1/θ)), with the generator sum taken in logs: the powers
+        # underflow for u near 1 (at θ = 50, (−ln u)^θ is subnormal for u above 1 − 3e-7) and
+        # overflow for u near 0, while ln(−ln u) is always an ordinary number.
         t = self.theta
-        return math.exp(-(((-math.log(u)) ** t + (-math.log(v)) ** t) ** (1.0 / t)))
+        la, lb = math.log(-math.log(u)), math.log(-math.log(v))
+        # ln of the sum, divided by θ: max + ln(1 + e^(−θ·|la − lb|))/θ (θ may be huge).
+        log_root = max(la, lb) + math.log1p(math.exp(-t * abs(la - lb))) / t
+        return math.exp(-math.exp(log_root))
+
+    def joint_exceedance(self, level: float) -> float:
+        """P(U > level, V > level). See :meth:`Copula.joint_exceedance`.
+
+        On the diagonal C(q, q) = q^c with c = 2^(1/θ), so ``1 − 2q + C(q, q)`` can be
+        rewritten as ``q·(q^(c−2) − 1) + (1 − q)·(1 − q^(c−1))``: two non-negative terms, where
+        the textbook form subtracts numbers near 1 and kept only a few digits of a joint
+        probability of 1e-9 (at θ = 1, independence, it returned 0 for (1 − q)² = 1e-18).
+        """
+        q = _check_level(level)
+        if self.survival:
+            return super().joint_exceedance(q)
+        delta = 1.0 - q
+        log_q = math.log1p(-delta) if q >= 0.5 else math.log(q)          # 1 − q is exact only for q >= ½
+        c = math.expm1(math.log(2.0) / self.theta)                        # 2^(1/θ) − 1
+        c_minus_1 = 2.0 * math.expm1(-(self.theta - 1.0) / self.theta * math.log(2.0))    # 2^(1/θ) − 2
+        return min(max(q * math.expm1(c_minus_1 * log_q) - delta * math.expm1(c * log_q), 0.0), delta)
 
     def kendall_tau(self) -> float:
         """Kendall's tau: ``1 − 1/θ``."""
@@ -781,17 +827,37 @@ class FrankCopula(_Archimedean):
         np = _numpy()
         t = self.theta
         if self.dim == 2:
-            # Conditional inversion, valid for either sign of theta.
+            # Conditional inversion, valid for either sign of theta:
+            # v = −ln(1 + r)/θ with r = w·(e^(−θ) − 1)/(w + (1 − w)·e^(−θu)).
             u = rng.random(n)
             w = rng.random(n)
             a = np.exp(-t * u)
-            v = -np.log1p(w * np.expm1(-t) / (w + (1.0 - w) * a)) / t
-            return np.column_stack([u, v])
+            r = w * np.expm1(-t) / (w + (1.0 - w) * a)
+            with np.errstate(divide="ignore"):             # r = −1 exactly is replaced below
+                v = -np.log1p(r) / t
+            if t > 0.0:
+                # For θ > 0, r reaches −1 in the upper tail and 1 + r cancels to nothing (exactly
+                # zero once e^(−θ) is below the rounding of 1, θ > 37): v came out infinite or
+                # above 1. There, 1 + r = ((1 − w)·e^(−θu) + w·e^(−θ)) / (w + (1 − w)·e^(−θu)),
+                # a ratio of sums of positive terms, which keeps every digit (|θ| <= 500, so no
+                # term underflows).
+                deep = np.flatnonzero(r < -0.5)
+                if deep.size:
+                    wd, ad = w[deep], a[deep]
+                    v[deep] = (np.log(wd + (1.0 - wd) * ad) - np.log((1.0 - wd) * ad + wd * math.exp(-t))) / t
+            return np.column_stack([u, np.clip(v, 0.0, 1.0)])
         # Marshall–Olkin with a logarithmic-series frailty; ψ(s) = −ln(1 − (1 − e^(−θ))·e^(−s))/θ.
-        p = min(-math.expm1(-t), 1.0 - 2.0 ** -53)
-        frailty = rng.logseries(p, size=n).astype(float)[:, None]
+        if t < _FRANK_OWN_LOGSERIES_THETA:
+            p = -math.expm1(-t)
+            frailty = rng.logseries(p, size=n).astype(float)[:, None]
+            e = rng.exponential(1.0, size=(n, self.dim))
+            return -np.log1p(-p * np.exp(-e / frailty)) / t
+        # Large θ: p = 1 − e^(−θ) is within rounding of 1, so draw the frailty with the exact
+        # ln(1 − p) = −θ, and write 1 − p·e^(−s) as (1 − e^(−s)) + e^(−θ−s) so that it does not cancel.
+        frailty = _logseries_frailty(t, n, rng)[:, None]
         e = rng.exponential(1.0, size=(n, self.dim))
-        return -np.log1p(-p * np.exp(-e / frailty)) / t
+        s = e / frailty
+        return -np.log(-np.expm1(-s) + np.exp(-t - s)) / t
 
     def _cdf(self, u: float, v: float) -> float:
         t = self.theta
@@ -818,10 +884,49 @@ class FrankCopula(_Archimedean):
         if not _is_number(tau) or not -1.0 < float(tau) < 1.0 or tau == 0.0:
             raise InputError(f"tau must be non-zero and strictly between -1 and 1, got {tau!r}", code="RP100",
                              param="tau")
+        tau = float(tau)
         if abs(tau) > 0.99:
             raise InputError(f"|tau| must be at most 0.99 for a Frank copula, got {tau!r}", code="RP100", param="tau")
-        lo, hi = (1e-6, 500.0) if tau > 0 else (-500.0, -1e-6)
-        return cls(_special.brent(lambda th: _frank_tau(th) - tau, lo, hi, tol=1e-12), dim)
+        if abs(tau) < 1e-4:
+            # Invert the series τ = θ/9 − θ³/900 + …: θ = 9τ + (9τ)³/100 + O(τ⁵), exact to
+            # rounding here. (The root search's bracket started at θ = 1e-6, so a |tau| below
+            # about 1e-7 used to fail with a bare "no sign change".)
+            x = 9.0 * tau
+            return cls(x + x ** 3 / 100.0, dim)
+        # τ(θ) <= θ/9 for θ > 0 (and the mirror image below 0), so θ = 9τ brackets from below.
+        lo, hi = (9.0 * tau, 500.0) if tau > 0 else (-500.0, 9.0 * tau)
+        return cls(_special.brent(lambda th: _frank_tau(th) - tau, lo, hi, tol=1e-12 * min(1.0, abs(9.0 * tau))), dim)
+
+
+def _logseries_frailty(theta: float, n: int, rng: Any):
+    """``n`` draws of the logarithmic-series law P(K = k) = (1 − e^(−θ))^k / (k·θ), as floats.
+
+    Kemp's (1981) LK algorithm, the one NumPy's ``logseries`` uses, written with the exact
+    ln(1 − p) = −θ: NumPy's version takes p and forms ln(1 − p) itself, and once θ passes
+    about 30 the rounding of p = 1 − e^(−θ) makes that −36.7 whatever θ is (at θ = 100 or
+    500 the copula's Kendall's tau came out 0.90 instead of 0.96 or 0.99). A draw can be as
+    large as e^θ; floats hold that up to the θ = 500 cap.
+    """
+    np = _numpy()
+    p = -math.expm1(-theta)
+    out = np.empty(n, dtype=float)
+    todo = np.arange(n)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        while todo.size:
+            v = rng.random(todo.size)
+            u = rng.random(todo.size)
+            tu = theta * u
+            q = -np.expm1(-tu)                                       # 1 − (1 − p)^u
+            log_q = np.where(tu > math.log(2.0), np.log1p(-np.exp(-tu)), np.log(q))
+            k = np.where(v >= q, 1.0, 2.0)
+            series = v <= q * q
+            k = np.where(series, np.floor(1.0 + np.log(v) / log_q), k)
+            k = np.where(v >= p, 1.0, k)
+            # NumPy's algorithm redraws a series result below 1 (v = 0, or rounding); so does this.
+            bad = (v < p) & series & ~((k >= 1.0) & np.isfinite(k))
+            out[todo[~bad]] = k[~bad]
+            todo = todo[bad]
+    return out
 
 
 def _frank_cdf(u: float, v: float, t: float) -> float:
