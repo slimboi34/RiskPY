@@ -163,6 +163,7 @@ def test_merton_survives_an_assets_debt_ratio_that_underflows():
 
 @pytest.mark.parametrize("name, args", [
     ("black_scholes", {"S": 1e-200, "K": 1e200, "T": 1, "r": 0.05, "sigma": 0.2}),
+    ("black_scholes", {"S": 1e-200, "K": 1e200, "T": 1, "r": 0.05, "sigma": 0.2, "explain": True}),
     ("option_greeks", {"S": 5e-324, "K": 100, "T": 1, "r": 0.05, "sigma": 0.2}),
     ("implied_vol", {"price": 1.0, "S": 5e-324, "K": 100, "T": 1, "r": 0.05}),
     ("merton", {"assets": 1e-200, "debt": 1e200, "T": 1, "r": 0.05, "sigma": 0.25}),

@@ -744,7 +744,8 @@ def _bs_explain(S: float, K: float, T: float, r: float, sigma: float, q: float, 
                              "max(±(S·e^(−qT) − K·e^(−rT)), 0); d1 and d2 are undefined")
         return out
     vol_t = sigma * math.sqrt(T)
-    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / vol_t
+    # ln S − ln K, not ln(S/K): the ratio underflows to 0 for S = 1e-200, K = 1e200 (as in quant._d1_d2).
+    d1 = (math.log(S) - math.log(K) + (r - q + 0.5 * sigma * sigma) * T) / vol_t
     d2 = d1 - vol_t
     out.update({"d1": d1, "d2": d2, "N(d1)": quant.norm_cdf(d1), "N(d2)": quant.norm_cdf(d2),
                 "discounted_spot": S * math.exp(-q * T), "discounted_strike": K * math.exp(-r * T)})
