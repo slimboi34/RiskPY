@@ -9,8 +9,14 @@ name: Publish to PyPI
 #   2. build-sdist  — builds the sdist AND installs from it (proves it is self-contained)
 #   3. build-wheels — cp310–cp314 on linux/x86_64, macos/arm64, windows/AMD64  (required)
 #   4. build-wheels-extra — linux/aarch64, macos/x86_64                       (best effort)
-#   5. publish      — twine check --strict, then PyPI via Trusted Publishing + attestations
-#   6. github-release — publishes the GitHub Release with all artifacts attached
+#   5. check-dist   — twine check --strict on every artifact (no publishing rights)
+#   6. publish      — PyPI via Trusted Publishing + attestations
+#   7. github-release — publishes the GitHub Release with all artifacts attached
+#
+# The publish job holds the OIDC token (id-token: write), so it installs nothing:
+# it only downloads the artifacts and runs the SHA-pinned publish action. Anything
+# fetched from PyPI at run time (twine, its dependencies) runs in check-dist,
+# which cannot mint a token.
 #
 # Every action is pinned to a full commit SHA (the tag is in the trailing comment);
 # Dependabot proposes the bumps. Trusted Publishing is bound to this file's name,
@@ -192,13 +198,43 @@ jobs:
           path: wheelhouse/*.whl
 
   # ---------------------------------------------------------------------------
-  publish:
-    name: Upload to PyPI
+  # Metadata check on exactly what publish will upload, in a job with no
+  # id-token permission: the unpinned twine install runs here, never next to
+  # the publishing token.
+  # ---------------------------------------------------------------------------
+  check-dist:
+    name: Check artifacts
     # Wait for the best-effort wheels too (they are continue-on-error, so a failure there does
     # not block the upload). Without them in `needs`, the upload raced them: 0.5.0 went out
     # without its macOS x86_64 wheels, which finished three minutes after the upload started.
     needs: [guard, build-sdist, build-wheels, build-wheels-extra]
     if: ${{ !cancelled() && needs.guard.result == 'success' && needs.build-sdist.result == 'success' && needs.build-wheels.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: staging
+          merge-multiple: true
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: twine check
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find staging -type f \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
+          python -m pip install --upgrade twine
+          twine check --strict dist/*
+
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Upload to PyPI
+    needs: [guard, build-sdist, build-wheels, build-wheels-extra, check-dist]
+    if: ${{ !cancelled() && needs.guard.result == 'success' && needs.build-sdist.result == 'success' && needs.build-wheels.result == 'success' && needs.check-dist.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -213,11 +249,8 @@ jobs:
           path: staging
           merge-multiple: true
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
-      - name: Collect and verify artifacts
+      # Shell only: nothing is installed in the job that holds the OIDC token.
+      - name: Collect artifacts
         env:
           VERSION: ${{ needs.guard.outputs.version }}
         run: |
@@ -229,8 +262,6 @@ jobs:
           ls -lh dist/
           test -n "$(find dist -name '*.tar.gz' -print -quit)" || { echo "::error::no sdist"; exit 1; }
           test "$(find dist -name '*.whl' | wc -l)" -ge 1 || { echo "::error::no wheels"; exit 1; }
-          python -m pip install --upgrade twine
-          twine check --strict dist/*
           echo "### Artifacts for ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
           (cd dist && ls -1) | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
 
