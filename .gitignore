@@ -1,4 +1,6 @@
 # Build artifacts
+# Rust build output (cargo / maturin: rust/target/)
+target/
 build/
 dist/
 site/
