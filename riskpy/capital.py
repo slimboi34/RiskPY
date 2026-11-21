@@ -44,17 +44,20 @@ correlation of its latent normal (or t) variables — not the Spearman rank corr
 ``Model.correlate`` takes; ``kendall_tau()`` and ``spearman_rho()`` convert. TVaR means
 expected shortfall (Acerbi–Tasche), the same definition as ``Result.tvar``.
 
-The closed forms are pure Python; sampling, :func:`allocate` and
-:func:`nearest_correlation` need NumPy (``pip install "open-riskpy[sim]"``).
+The closed forms are pure Python (a Gaussian or t copula may be given a 2×2 matrix without
+NumPy); sampling, :func:`allocate` and :func:`nearest_correlation` need NumPy
+(``pip install "open-riskpy[sim]"``).
 """
 from __future__ import annotations
 
 import math
+import numbers
+import operator
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import _special
-from .errors import ArgumentTypeError, InputError
+from .errors import ArgumentTypeError, InputError, MissingDependencyError
 
 __all__ = [
     "Copula",
@@ -80,7 +83,42 @@ def _numpy():
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """A real number: int, float, Fraction or any NumPy integer or floating scalar (np.int64,
+    np.float32, ...), but not a bool (NumPy's bool is not a ``numbers.Real`` either)."""
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+def _whole(value: Any) -> Optional[int]:
+    """``value`` as an int if it is a whole-number type (int or a NumPy integer, not a bool), else None."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        return None
+    return operator.index(value)
+
+
+def _correlation_rows(correlation: Any) -> List[List[float]]:
+    """A correlation matrix argument as a square list of lists of finite floats, checked in
+    pure Python: nested lists or tuples, a NumPy array or a DataFrame."""
+    rows = correlation
+    if hasattr(rows, "to_numpy") and not hasattr(rows, "tolist"):      # a pandas DataFrame
+        rows = rows.to_numpy()
+    tolist = getattr(rows, "tolist", None)
+    if callable(tolist):
+        rows = tolist()
+    if not isinstance(rows, (list, tuple)) or not all(isinstance(row, (list, tuple)) for row in rows):
+        raise ArgumentTypeError(f"correlation must be a number in [-1, 1] or a square matrix given as rows of "
+                                f"numbers, got {type(correlation).__name__}", code="RP404", param="correlation")
+    k = len(rows)
+    if k == 0 or any(len(row) != k for row in rows):
+        raise InputError(f"correlation must be a square matrix: got {k} rows of lengths "
+                         f"{sorted({len(row) for row in rows})}", code="RP100", param="correlation")
+    for row in rows:
+        for value in row:
+            if not _is_number(value):
+                raise ArgumentTypeError(f"correlation entries must be numbers, got {value!r}", code="RP404",
+                                        param="correlation")
+            if not math.isfinite(value):
+                raise InputError("correlation must be finite", code="RP101", param="correlation")
+    return [[float(v) for v in row] for row in rows]
 
 
 def _check_level(level: Any, name: str = "level") -> float:
@@ -194,8 +232,11 @@ def _debye1(x: float) -> float:
 
 
 def _frank_tau(theta: float) -> float:
-    if abs(theta) < 1e-6:
-        return theta / 9.0
+    if abs(theta) < 0.1:
+        # The series τ = θ/9 − θ³/900 + θ⁵/52920 − θ⁷/2721600 + … (from D₁'s Bernoulli
+        # expansion); the closed form cancels to nothing here (1 − D₁ ≈ θ/4).
+        t2 = theta * theta
+        return theta * (1.0 / 9.0 - t2 * (1.0 / 900.0 - t2 * (1.0 / 52920.0 - t2 / 2721600.0)))
     d1 = _debye1(abs(theta))
     if theta < 0.0:
         d1 += -theta / 2.0          # D₁(−x) = D₁(x) + x/2
@@ -275,7 +316,7 @@ class Copula:
 
         Example::
 
-            GumbelCopula(2.0).joint_exceedance(0.995)     # 0.00293, 117× the independent 2.5e-5
+            GumbelCopula(2.0).joint_exceedance(0.995)     # 0.00294, 117× the independent 2.5e-5
         """
         q = _check_level(level)
         return max(1.0 - 2.0 * q + self.cdf(q, q), 0.0)
@@ -299,20 +340,37 @@ class _Elliptical(Copula):
     def __init__(self, correlation: Any):
         if _is_number(correlation):
             rho = float(correlation)
-            if not -1.0 <= rho <= 1.0:
-                raise InputError(f"correlation must be in [-1, 1], got {correlation!r}", code="RP100",
-                                 param="correlation", hint="Correlations are decimals in [-1, 1].")
-            self._matrix: List[List[float]] = [[1.0, rho], [rho, 1.0]]
         else:
-            from .mc import _check_correlation
-
-            np = _numpy()
-            matrix = np.asarray(correlation, dtype=float)
-            _check_correlation(matrix)
-            if matrix.shape[0] < 2:
+            rows = _correlation_rows(correlation)
+            if len(rows) < 2:
                 raise InputError("a copula needs at least two variables", code="RP111", param="correlation")
-            self._matrix = matrix.tolist()
-        self.dim = len(self._matrix)
+            if len(rows) > 2:
+                from .mc import _check_correlation
+
+                try:
+                    np = _numpy()
+                except MissingDependencyError as exc:
+                    raise MissingDependencyError(
+                        f"a copula on {len(rows)} risks needs NumPy for its correlation matrix: "
+                        'pip install "open-riskpy[sim]". Two risks (a number, or a 2x2 matrix) need none.',
+                        code="RP201") from exc
+                matrix = np.asarray(rows, dtype=float)
+                _check_correlation(matrix)
+                self._matrix: List[List[float]] = matrix.tolist()
+                self.dim = len(self._matrix)
+                return
+            # Two risks: the matrix is a single correlation, and its closed forms need no NumPy.
+            if abs(rows[0][0] - 1.0) > 1e-12 or abs(rows[1][1] - 1.0) > 1e-12:
+                raise InputError("correlation matrix must have ones on the diagonal", code="RP100",
+                                 param="correlation")
+            if abs(rows[0][1] - rows[1][0]) > 1e-12:
+                raise InputError("correlation matrix must be symmetric", code="RP100", param="correlation")
+            rho = rows[0][1]
+        if not -1.0 <= rho <= 1.0:
+            raise InputError(f"correlation must be in [-1, 1], got {correlation!r}", code="RP100",
+                             param="correlation", hint="Correlations are decimals in [-1, 1].")
+        self._matrix = [[1.0, rho], [rho, 1.0]]
+        self.dim = 2
 
     @property
     def correlation(self):
@@ -320,13 +378,16 @@ class _Elliptical(Copula):
         return _numpy().array(self._matrix, dtype=float)
 
     def _rho(self, i: int, j: int) -> float:
+        index = []
         for name, k in (("i", i), ("j", j)):
-            if isinstance(k, bool) or not isinstance(k, int) or not 0 <= k < self.dim:
+            whole = _whole(k)
+            if whole is None or not 0 <= whole < self.dim:
                 raise InputError(f"{name} must be a variable index from 0 to {self.dim - 1}, got {k!r}",
                                  code="RP100", param=name)
-        if i == j:
+            index.append(whole)
+        if index[0] == index[1]:
             raise InputError("i and j must be two different variables", code="RP113", param="j")
-        return self._matrix[i][j]
+        return self._matrix[index[0]][index[1]]
 
     def _latent(self, n: int, rng: Any):
         """``n`` correlated standard normal rows. An eigen-decomposition rather than a
@@ -379,7 +440,8 @@ class GaussianCopula(_Elliptical):
 
     def uniforms(self, n: int, rng: Any):
         """Draw ``n`` joint observations: correlated normals pushed through Φ."""
-        return _open_unit(_special.norm_cdf_vec(self._latent(n, rng)))
+        u = _special.norm_cdf_vec(self._latent(n, rng))
+        return _open_unit(u, out=u)
 
     def spearman_rho(self, i: int = 0, j: int = 1) -> float:
         """Spearman's rank correlation between variables ``i`` and ``j``: ``6/π · asin(ρ/2)``.
@@ -389,7 +451,7 @@ class GaussianCopula(_Elliptical):
 
         Example::
 
-            GaussianCopula(0.5).spearman_rho()     # 0.48261…
+            GaussianCopula(0.5).spearman_rho()     # 0.48258…
         """
         return 6.0 / math.pi * math.asin(0.5 * self._rho(i, j))
 
@@ -435,8 +497,10 @@ class StudentTCopula(_Elliptical):
     """The dependence of a multivariate Student t: correlation plus symmetric tail dependence.
 
     correlation: a number in [-1, 1] for two risks, or a full correlation matrix
-    df: degrees of freedom, > 0. Small values (3–5) mean strong tail dependence; as ``df``
-        grows the copula tends to the Gaussian.
+    df: degrees of freedom, at least 1e-300 (any positive double that is not subnormal).
+        Small values (3–5) mean strong tail dependence; as ``df`` grows the copula tends to
+        the Gaussian, and from df = 1e4 on its CDF is computed by Hill's normalising
+        transform, exact to rounding however large df is.
 
     Unlike the Gaussian, a t copula has tail dependence even at zero correlation: the shared
     chi-square mixing variable makes every risk extreme in the same trials.
@@ -452,6 +516,10 @@ class StudentTCopula(_Elliptical):
         super().__init__(correlation)
         if not _is_number(df) or not math.isfinite(df) or df <= 0.0:
             raise InputError(f"df must be a positive number, got {df!r}", code="RP102", param="df")
+        if df < _MIN_T_DF:
+            raise InputError(f"df must be at least {_MIN_T_DF:g}, got {df!r}", code="RP102", param="df",
+                             hint="Below that, df/2 is not a normal double (it is 0 at df = 5e-324). Any df "
+                                  "from 1e-300 up is simulated exactly.")
         self.df = float(df)
 
     def _extra_repr(self) -> str:
@@ -461,15 +529,47 @@ class StudentTCopula(_Elliptical):
         """Draw ``n`` joint observations: correlated normals over a shared √(χ²/df), through the t CDF."""
         np = _numpy()
         z = self._latent(n, rng)
-        w = rng.chisquare(self.df, size=n) / self.df
-        nu = self.df
+        # The t CDF is applied a block of rows at a time, writing over the latent normals,
+        # so the only full-size array is the result itself; the draws are the same as an
+        # unblocked pass, and in the same order. (Done whole, the CDF's temporaries cost
+        # over 200 bytes a cell: 4.5 GB at the capital_allocation tool's 2e7-cell limit.)
+        rows = max(1, _BLOCK_CELLS // self.dim)
+        if self.df < _T_LOG_MIXING_DF:
+            return self._uniforms_log_mixing(z, rng, rows)
+        w = rng.chisquare(self.df, size=n)
+        w /= self.df
         # With very few degrees of freedom the mixing variable can underflow to zero, which
-        # sends the whole row to ±infinity: the right limit, reached without a warning.
+        # sends the whole row to ±infinity (the right limit), or to 0/0 where a latent normal
+        # is exactly zero, which is the centre.
         with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-            t = z / np.sqrt(w)[:, None]
-            x = np.nan_to_num(nu / (nu + t * t), nan=1.0, posinf=1.0, neginf=0.0)
-        ib = _special.betainc_vec(0.5 * nu, 0.5, np.clip(x, 0.0, 1.0))
-        return _open_unit(np.where(z > 0.0, 1.0 - 0.5 * ib, 0.5 * ib))
+            for start in range(0, n, rows):
+                block = z[start:start + rows]
+                t = block / np.sqrt(w[start:start + rows])[:, None]
+                t[np.isnan(t)] = 0.0
+                block[...] = _special.t_cdf_vec(t, self.df)
+        return _open_unit(z, out=z)
+
+    def _uniforms_log_mixing(self, z, rng, rows: int):
+        """The t copula for df below 0.2, with the mixing variable in log space.
+
+        χ²(df)/df is about U^(2/df): for df = 0.01 it underflows to zero in 3% of rows and
+        for df = 0.001 in 70%, and every such row was put at a corner of the unit square,
+        while its true t value, however far beyond the largest double, has a CDF well
+        inside (0, 1) (P(T > 1e500) is 0.16 at df = 0.001). So draw ln W instead, by
+        Gamma(α) = Gamma(1 + α)·U^(1/α) with α = df/2, and take the CDF from ln|t|.
+        """
+        np = _numpy()
+        n = z.shape[0]
+        alpha = 0.5 * self.df
+        log_w = np.log(rng.gamma(1.0 + alpha, 1.0, size=n))
+        log_w += np.log1p(-rng.random(n)) / alpha + math.log(2.0 / self.df)
+        with np.errstate(divide="ignore"):
+            for start in range(0, n, rows):
+                block = z[start:start + rows]
+                log_abs_t = np.log(np.abs(block)) - 0.5 * log_w[start:start + rows, None]
+                block[...] = _special._t_cdf_vec_log(log_abs_t.ravel(), block.ravel() > 0.0,
+                                                     self.df).reshape(block.shape)
+        return _open_unit(z, out=z)
 
     def tail_dependence(self, i: int = 0, j: int = 1) -> TailDependence:
         """``λ = 2·t_{df+1}(−√((df + 1)(1 − ρ)/(1 + ρ)))``, the same in both tails.
@@ -535,12 +635,13 @@ class _Archimedean(Copula):
     def __init__(self, theta: float, dim: int = 2, survival: bool = False):
         if not _is_number(theta) or not math.isfinite(theta):
             raise InputError(f"theta must be a finite number, got {theta!r}", code="RP101", param="theta")
-        if isinstance(dim, bool) or not isinstance(dim, int) or dim < 2:
+        whole = _whole(dim)
+        if whole is None or whole < 2:
             raise InputError(f"dim must be a whole number >= 2, got {dim!r}", code="RP107", param="dim")
         if not isinstance(survival, bool):
             raise ArgumentTypeError(f"survival must be True or False, got {survival!r}", code="RP404", param="survival")
         self.theta = float(theta)
-        self.dim = dim
+        self.dim = whole
         self.survival = survival
 
     def _draw(self, n: int, rng: Any):  # pragma: no cover - abstract
@@ -609,11 +710,27 @@ class ClaytonCopula(_Archimedean):
 
     def _draw(self, n: int, rng: Any):
         # Marshall–Olkin: a Gamma(1/θ) frailty shared by the row, then ψ(E/V) with ψ(t) = (1 + t)^(−1/θ).
-        v = rng.gamma(1.0 / self.theta, 1.0, size=n)[:, None]
-        e = rng.exponential(1.0, size=(n, self.dim))
         np = _numpy()
-        with np.errstate(divide="ignore", invalid="ignore"):
-            return np.where(v > 0.0, (1.0 + e / np.where(v > 0.0, v, 1.0)) ** (-1.0 / self.theta), 0.0)
+        t = self.theta
+        if t < _CLAYTON_LOG_THETA:
+            v = rng.gamma(1.0 / t, 1.0, size=n)[:, None]
+            e = rng.exponential(1.0, size=(n, self.dim))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return np.where(v > 0.0, (1.0 + e / np.where(v > 0.0, v, 1.0)) ** (-1.0 / t), 0.0)
+        # A Gamma(1/θ) variate is about U^θ, which underflows to zero for large θ (about one row
+        # in 10,000 at θ = 80), and a zero frailty sends the row to u = 0. Work with log V instead:
+        # Gamma(α) = Gamma(1 + α)·U^(1/α), so log V = log G + θ·log U never underflows, and
+        # log ψ(E/V) = −log(1 + e^(log E − log V))/θ follows without forming V. It is carried
+        # divided by θ, so that a θ near the largest double cannot overflow either:
+        # y = (log E − log V)/θ = (log E − log G)/θ − log U, and log u = −log(1 + e^(θy))/θ.
+        log_g = np.log(rng.gamma(1.0 + 1.0 / t, 1.0, size=n))
+        log_unif = np.log1p(-rng.random(n))
+        e = rng.exponential(1.0, size=(n, self.dim))
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            y = (np.log(e) - log_g[:, None]) / t - log_unif[:, None]
+            log_u = np.maximum(y, 0.0) + np.log1p(np.exp(-t * np.abs(y))) / t
+        np.negative(log_u, out=log_u)
+        return np.exp(log_u, out=log_u)
 
     def _cdf(self, u: float, v: float) -> float:
         # (u^−θ + v^−θ − 1)^(−1/θ), with the largest power factored out so a large θ cannot overflow.
@@ -622,7 +739,11 @@ class ClaytonCopula(_Archimedean):
         m = max(a, b)
         if m < 30.0:
             return math.exp(-math.log1p(math.expm1(a) + math.expm1(b)) / t)      # exact as θ → 0
-        return math.exp(-(m + math.log(math.exp(a - m) + math.exp(b - m) - math.exp(-m))) / t)
+        # Divided through by θ first, so that θ·(−ln u) may overflow (θ up to the largest double).
+        lu, lv = -math.log(u), -math.log(v)
+        top = max(lu, lv)
+        rest = math.exp(-t * (top - lu)) + math.exp(-t * (top - lv)) - math.exp(-t * top)
+        return math.exp(-(top + math.log(rest) / t))
 
     def kendall_tau(self) -> float:
         """Kendall's tau: ``θ/(θ + 2)``."""
@@ -685,8 +806,31 @@ class GumbelCopula(_Archimedean):
         return np.nan_to_num(u, nan=0.5)
 
     def _cdf(self, u: float, v: float) -> float:
+        # exp(−((−ln u)^θ + (−ln v)^θ)^(1/θ)), with the generator sum taken in logs: the powers
+        # underflow for u near 1 (at θ = 50, (−ln u)^θ is subnormal for u above 1 − 3e-7) and
+        # overflow for u near 0, while ln(−ln u) is always an ordinary number.
         t = self.theta
-        return math.exp(-(((-math.log(u)) ** t + (-math.log(v)) ** t) ** (1.0 / t)))
+        la, lb = math.log(-math.log(u)), math.log(-math.log(v))
+        # ln of the sum, divided by θ: max + ln(1 + e^(−θ·|la − lb|))/θ (θ may be huge).
+        log_root = max(la, lb) + math.log1p(math.exp(-t * abs(la - lb))) / t
+        return math.exp(-math.exp(log_root))
+
+    def joint_exceedance(self, level: float) -> float:
+        """P(U > level, V > level). See :meth:`Copula.joint_exceedance`.
+
+        On the diagonal C(q, q) = q^c with c = 2^(1/θ), so ``1 − 2q + C(q, q)`` can be
+        rewritten as ``q·(q^(c−2) − 1) + (1 − q)·(1 − q^(c−1))``: two non-negative terms, where
+        the textbook form subtracts numbers near 1 and kept only a few digits of a joint
+        probability of 1e-9 (at θ = 1, independence, it returned 0 for (1 − q)² = 1e-18).
+        """
+        q = _check_level(level)
+        if self.survival:
+            return super().joint_exceedance(q)
+        delta = 1.0 - q
+        log_q = math.log1p(-delta) if q >= 0.5 else math.log(q)          # 1 − q is exact only for q >= ½
+        c = math.expm1(math.log(2.0) / self.theta)                        # 2^(1/θ) − 1
+        c_minus_1 = 2.0 * math.expm1(-(self.theta - 1.0) / self.theta * math.log(2.0))    # 2^(1/θ) − 2
+        return min(max(q * math.expm1(c_minus_1 * log_q) - delta * math.expm1(c * log_q), 0.0), delta)
 
     def kendall_tau(self) -> float:
         """Kendall's tau: ``1 − 1/θ``."""
@@ -742,17 +886,37 @@ class FrankCopula(_Archimedean):
         np = _numpy()
         t = self.theta
         if self.dim == 2:
-            # Conditional inversion, valid for either sign of theta.
+            # Conditional inversion, valid for either sign of theta:
+            # v = −ln(1 + r)/θ with r = w·(e^(−θ) − 1)/(w + (1 − w)·e^(−θu)).
             u = rng.random(n)
             w = rng.random(n)
             a = np.exp(-t * u)
-            v = -np.log1p(w * np.expm1(-t) / (w + (1.0 - w) * a)) / t
-            return np.column_stack([u, v])
+            r = w * np.expm1(-t) / (w + (1.0 - w) * a)
+            with np.errstate(divide="ignore"):             # r = −1 exactly is replaced below
+                v = -np.log1p(r) / t
+            if t > 0.0:
+                # For θ > 0, r reaches −1 in the upper tail and 1 + r cancels to nothing (exactly
+                # zero once e^(−θ) is below the rounding of 1, θ > 37): v came out infinite or
+                # above 1. There, 1 + r = ((1 − w)·e^(−θu) + w·e^(−θ)) / (w + (1 − w)·e^(−θu)),
+                # a ratio of sums of positive terms, which keeps every digit (|θ| <= 500, so no
+                # term underflows).
+                deep = np.flatnonzero(r < -0.5)
+                if deep.size:
+                    wd, ad = w[deep], a[deep]
+                    v[deep] = (np.log(wd + (1.0 - wd) * ad) - np.log((1.0 - wd) * ad + wd * math.exp(-t))) / t
+            return np.column_stack([u, np.clip(v, 0.0, 1.0)])
         # Marshall–Olkin with a logarithmic-series frailty; ψ(s) = −ln(1 − (1 − e^(−θ))·e^(−s))/θ.
-        p = min(-math.expm1(-t), 1.0 - 2.0 ** -53)
-        frailty = rng.logseries(p, size=n).astype(float)[:, None]
+        if t < _FRANK_OWN_LOGSERIES_THETA:
+            p = -math.expm1(-t)
+            frailty = rng.logseries(p, size=n).astype(float)[:, None]
+            e = rng.exponential(1.0, size=(n, self.dim))
+            return -np.log1p(-p * np.exp(-e / frailty)) / t
+        # Large θ: p = 1 − e^(−θ) is within rounding of 1, so draw the frailty with the exact
+        # ln(1 − p) = −θ, and write 1 − p·e^(−s) as (1 − e^(−s)) + e^(−θ−s) so that it does not cancel.
+        frailty = _logseries_frailty(t, n, rng)[:, None]
         e = rng.exponential(1.0, size=(n, self.dim))
-        return -np.log1p(-p * np.exp(-e / frailty)) / t
+        s = e / frailty
+        return -np.log(-np.expm1(-s) + np.exp(-t - s)) / t
 
     def _cdf(self, u: float, v: float) -> float:
         t = self.theta
@@ -779,10 +943,49 @@ class FrankCopula(_Archimedean):
         if not _is_number(tau) or not -1.0 < float(tau) < 1.0 or tau == 0.0:
             raise InputError(f"tau must be non-zero and strictly between -1 and 1, got {tau!r}", code="RP100",
                              param="tau")
+        tau = float(tau)
         if abs(tau) > 0.99:
             raise InputError(f"|tau| must be at most 0.99 for a Frank copula, got {tau!r}", code="RP100", param="tau")
-        lo, hi = (1e-6, 500.0) if tau > 0 else (-500.0, -1e-6)
-        return cls(_special.brent(lambda th: _frank_tau(th) - tau, lo, hi, tol=1e-12), dim)
+        if abs(tau) < 1e-4:
+            # Invert the series τ = θ/9 − θ³/900 + …: θ = 9τ + (9τ)³/100 + O(τ⁵), exact to
+            # rounding here. (The root search's bracket started at θ = 1e-6, so a |tau| below
+            # about 1e-7 used to fail with a bare "no sign change".)
+            x = 9.0 * tau
+            return cls(x + x ** 3 / 100.0, dim)
+        # τ(θ) <= θ/9 for θ > 0 (and the mirror image below 0), so θ = 9τ brackets from below.
+        lo, hi = (9.0 * tau, 500.0) if tau > 0 else (-500.0, 9.0 * tau)
+        return cls(_special.brent(lambda th: _frank_tau(th) - tau, lo, hi, tol=1e-12 * min(1.0, abs(9.0 * tau))), dim)
+
+
+def _logseries_frailty(theta: float, n: int, rng: Any):
+    """``n`` draws of the logarithmic-series law P(K = k) = (1 − e^(−θ))^k / (k·θ), as floats.
+
+    Kemp's (1981) LK algorithm, the one NumPy's ``logseries`` uses, written with the exact
+    ln(1 − p) = −θ: NumPy's version takes p and forms ln(1 − p) itself, and once θ passes
+    about 30 the rounding of p = 1 − e^(−θ) makes that −36.7 whatever θ is (at θ = 100 or
+    500 the copula's Kendall's tau came out 0.90 instead of 0.96 or 0.99). A draw can be as
+    large as e^θ; floats hold that up to the θ = 500 cap.
+    """
+    np = _numpy()
+    p = -math.expm1(-theta)
+    out = np.empty(n, dtype=float)
+    todo = np.arange(n)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        while todo.size:
+            v = rng.random(todo.size)
+            u = rng.random(todo.size)
+            tu = theta * u
+            q = -np.expm1(-tu)                                       # 1 − (1 − p)^u
+            log_q = np.where(tu > math.log(2.0), np.log1p(-np.exp(-tu)), np.log(q))
+            k = np.where(v >= q, 1.0, 2.0)
+            series = v <= q * q
+            k = np.where(series, np.floor(1.0 + np.log(v) / log_q), k)
+            k = np.where(v >= p, 1.0, k)
+            # NumPy's algorithm redraws a series result below 1 (v = 0, or rounding); so does this.
+            bad = (v < p) & series & ~((k >= 1.0) & np.isfinite(k))
+            out[todo[~bad]] = k[~bad]
+            todo = todo[bad]
+    return out
 
 
 def _frank_cdf(u: float, v: float, t: float) -> float:
@@ -800,9 +1003,24 @@ def _frank_cdf(u: float, v: float, t: float) -> float:
     return lo - (math.log(inner) - math.log(-math.expm1(-t))) / t
 
 
-def _open_unit(u):
+def _open_unit(u, out=None):
     """Keep simulated uniforms strictly inside (0, 1), so no quantile function is asked for ±infinity."""
-    return _numpy().clip(u, 1e-16, 1.0 - 1e-16)
+    return _numpy().clip(u, 1e-16, 1.0 - 1e-16, out=out)
+
+
+# Copula samplers transform their draws this many cells at a time (8 MB per temporary).
+_BLOCK_CELLS = 1 << 20
+# The smallest t-copula df: below it df/2 underflows to a subnormal (and to 0 at 5e-324).
+_MIN_T_DF = 1e-300
+# Below this df the t copula draws its chi-square mixing variable in log space (above it,
+# χ²(df)/df underflows with probability under 1e-30 a row, and the draws are those of 0.7.0).
+_T_LOG_MIXING_DF = 0.2
+# From this θ on, the Clayton sampler draws its frailty in log space. Below it a Gamma(1/θ)
+# variate underflows with probability under 1e-20 a draw, and the draws are those of 0.7.0.
+_CLAYTON_LOG_THETA = 15.0
+# From this θ on, the Frank sampler in three or more dimensions draws its logarithmic-series
+# frailty itself: NumPy's takes p = 1 − e^(−θ), which rounds once θ passes about 30.
+_FRANK_OWN_LOGSERIES_THETA = 25.0
 
 
 def empirical_tail_dependence(x: Any, y: Any, level: float = 0.95) -> TailDependence:
@@ -884,8 +1102,9 @@ def nearest_correlation(matrix: Any, tol: float = 1e-10, max_iter: int = 2000):
                          hint="Correlations are decimals in [-1, 1].")
     if not (_is_number(tol) and tol > 0.0):
         raise InputError(f"tol must be positive, got {tol!r}", code="RP102", param="tol")
-    if isinstance(max_iter, bool) or not isinstance(max_iter, int) or max_iter < 1:
+    if _whole(max_iter) is None or max_iter < 1:
         raise InputError(f"max_iter must be a whole number >= 1, got {max_iter!r}", code="RP107", param="max_iter")
+    max_iter = _whole(max_iter)
 
     a = 0.5 * (a + a.T)
     target = a.copy()
@@ -923,6 +1142,7 @@ def _plain_matrix(correlation: Any, names: Sequence[str]) -> List[List[float]]:
     if isinstance(correlation, Mapping):
         index = {name: i for i, name in enumerate(names)}
         matrix = [[1.0 if i == j else 0.0 for j in range(k)] for i in range(k)]
+        given: Dict[frozenset, Tuple[Any, float]] = {}
         for pair, rho in correlation.items():
             if not isinstance(pair, tuple) or len(pair) != 2:
                 raise InputError(f"correlation keys must be (name, name) pairs, got {pair!r}", code="RP100",
@@ -938,6 +1158,13 @@ def _plain_matrix(correlation: Any, names: Sequence[str]) -> List[List[float]]:
             if not _is_number(rho):
                 raise ArgumentTypeError(f"correlation for {pair!r} must be a number, got {rho!r}", code="RP404",
                                         param="correlation")
+            # (a, b) and (b, a) are the same pair: both may be listed, but only with one value.
+            key = frozenset(pair)
+            if key in given and given[key][1] != float(rho):
+                raise InputError(f"correlation gives the pair {given[key][0]!r} as {given[key][1]!r} and "
+                                 f"{pair!r} as {rho!r}", code="RP113", param="correlation",
+                                 hint="List each pair once, or give both orders the same value.")
+            given[key] = (pair, float(rho))
             matrix[index[a]][index[b]] = matrix[index[b]][index[a]] = float(rho)
     else:
         tolist = getattr(correlation, "tolist", None)
@@ -1097,7 +1324,8 @@ def aggregate_capital(standalone: Any, correlation: Any, names: Optional[Sequenc
     standalone: the capital of each risk on its own — ``{name: amount}`` or a list of amounts,
         all >= 0, all at the same confidence level and in the same currency
     correlation: a matrix in the order of the risks, or ``{(name, name): rho}`` for the pairs
-        that are correlated (unlisted pairs are independent)
+        that are correlated (unlisted pairs are independent; a pair listed in both orders
+        must have one value)
     names: labels for the risks when ``standalone`` is a list (default ``risk_1, risk_2, …``)
 
     Returns an :class:`Aggregation`: the diversified ``total``, the ``undiversified`` sum,
@@ -1313,15 +1541,28 @@ def _measure(values, level: float, measure: str, np) -> float:
 
 def _loss_columns(losses: Any, names: Optional[Sequence[str]], np) -> Tuple[List[str], Any]:
     if hasattr(losses, "columns") and hasattr(losses, "to_numpy"):         # a pandas DataFrame
+        if names is not None:
+            raise InputError("pass names only when losses is an array; a DataFrame's columns are its names",
+                             code="RP113", param="names", hint="Rename the columns instead: df.rename(columns=...).")
         labels = [str(c) for c in losses.columns]
-        matrix = np.asarray(losses.to_numpy(), dtype=float)
+        try:
+            matrix = np.asarray(losses.to_numpy(), dtype=float)
+        except (TypeError, ValueError):
+            raise ArgumentTypeError("every column of the losses DataFrame must be numeric", code="RP404",
+                                    param="losses") from None
     elif isinstance(losses, Mapping):
         if names is not None:
             raise InputError("pass names only when losses is an array", code="RP113", param="names")
         labels = [str(k) for k in losses]
         if not labels:
             raise InputError("losses is empty: give at least one line", code="RP111", param="losses")
-        columns = [np.asarray(v, dtype=float) for v in losses.values()]
+        columns = []
+        for label, values in zip(labels, losses.values()):
+            try:
+                columns.append(np.asarray(values, dtype=float))
+            except (TypeError, ValueError):
+                raise ArgumentTypeError(f"losses[{label!r}] must be an array of numbers", code="RP404",
+                                        param="losses") from None
         for label, column in zip(labels, columns):
             if column.ndim != 1:
                 raise InputError(f"losses[{label!r}] must be one-dimensional, got shape {column.shape}",
@@ -1373,11 +1614,14 @@ def allocate(losses: Any, level: float = 0.99, measure: str = "tvar", method: st
         - "euler" (default): each line's marginal contribution. For TVaR this is the
           co-TVaR ``E[Xᵢ | S in the worst (1 − level)]``, an exact identity on the sample.
           For VaR it is ``E[Xᵢ | S = VaR]``, estimated from the trials whose total is
-          nearest the VaR and scaled to add up; it is much noisier than co-TVaR.
+          nearest the VaR (all of them, if many sit exactly on it), with the small gap
+          between their mean total and the VaR shared out by ``Cov(Xᵢ, S)/Var(S)`` so the
+          pieces add up; it is much noisier than co-TVaR.
         - "covariance": ``E[Xᵢ] + Cov(Xᵢ, S)/Var(S) · (total − E[S])``. Equal to Euler when
           the losses are jointly normal; stable, but blind to which line fills the tail.
         - "standalone": pro rata to each line's own risk measure.
-    names: labels for the columns when ``losses`` is a plain array
+    names: labels for the columns when ``losses`` is a plain array (refused with a dict or
+        a DataFrame, which name their own lines)
     bandwidth: for Euler VaR only, the share of trials around the VaR to average over
         (default ``trials^(−1/2)``, at least 5 trials each side)
 
@@ -1410,8 +1654,12 @@ def allocate(losses: Any, level: float = 0.99, measure: str = "tvar", method: st
                          param="method")
     labels, matrix = _loss_columns(losses, names, np)
     n, k = matrix.shape
-    total_losses = matrix.sum(axis=1)
-    means = matrix.mean(axis=0)
+    with np.errstate(over="ignore", invalid="ignore"):
+        total_losses = matrix.sum(axis=1)
+        means = matrix.mean(axis=0)
+    if not (np.all(np.isfinite(total_losses)) and np.all(np.isfinite(means))):
+        raise InputError("the lines' losses overflow double precision when added up", code="RP304",
+                         param="losses", hint="Express the losses in larger units (thousands or millions).")
     quantile, weights = _tail_weights(total_losses, level, np)
     total = quantile if measure == "var" else float(weights @ total_losses)
     standalone = [_measure(matrix[:, j], level, measure, np) for j in range(k)]
@@ -1428,11 +1676,22 @@ def allocate(losses: Any, level: float = 0.99, measure: str = "tvar", method: st
         order = np.argsort(total_losses, kind="mergesort")
         centre = min(max(int(math.ceil(n * level - 1e-9)) - 1, 0), n - 1)
         half = min(half, centre, n - 1 - centre)          # a symmetric window, so its mean total stays at the VaR
-        window = order[centre - half:centre + half + 1]
-        local = matrix[window].mean(axis=0)
-        local_total = float(local.sum())
-        # Scale the window mean so the pieces add up to the VaR itself.
-        contributions = local * (total / local_total) if local_total != 0.0 else np.full(k, total / k)
+        tied = total_losses == total
+        if int(tied.sum()) > 2 * half + 1:
+            # An atom at the VaR: E[X | S = VaR] is the mean over every trial in it, not over
+            # whichever of them the sort put in the window.
+            local = matrix[tied].mean(axis=0)
+        else:
+            local = matrix[order[centre - half:centre + half + 1]].mean(axis=0)
+        # The window's mean total is the VaR only up to sampling noise. Spread that small
+        # residual by each line's share of the portfolio's variance (the slope of E[Xᵢ | S = s]
+        # in s for jointly normal losses), so the pieces add up to the VaR. Scaling them by
+        # VaR / window total instead, as 0.7.0 did, multiplies every line by an arbitrary
+        # factor when the VaR is near zero (a hedged book), and can flip their signs.
+        centred = total_losses - total_losses.mean()
+        variance = float(centred @ centred)
+        beta = (matrix.T @ centred) / variance if variance > 0.0 else np.full(k, 1.0 / k)
+        contributions = local + beta * (total - float(local.sum()))
     elif method == "covariance":
         centred = matrix - means
         s_centred = total_losses - total_losses.mean()

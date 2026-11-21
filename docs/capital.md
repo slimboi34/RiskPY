@@ -29,14 +29,16 @@ Diversification benefit 31.8362 (5.6% of the standalone sum)
 ```
 
 The closed forms (Kendall's tau, tail dependence, copula CDFs,
-`aggregate_capital`) are pure Python. Sampling, `allocate` and
-`nearest_correlation` need NumPy (`pip install "open-riskpy[sim]"`).
+`aggregate_capital`) are pure Python, including a Gaussian or t copula given as
+a 2×2 matrix; a matrix for three or more risks needs NumPy (RP201). Sampling,
+`allocate` and `nearest_correlation` need NumPy (`pip install "open-riskpy[sim]"`).
 
 **Conventions.** Losses are positive numbers: bigger is worse. Confidence
 levels are decimals (`0.995`). TVaR means expected shortfall, the same
 definition as `Result.tvar`. A copula's `correlation` is the correlation of its
 latent normal or t variables, which is not the Spearman rank correlation that
-`Model.correlate` takes; `kendall_tau()` and `spearman_rho()` convert.
+`Model.correlate` takes; `kendall_tau()` and `spearman_rho()` convert. Numbers
+can be Python or NumPy scalars (`np.float32`, `np.int64`); booleans are refused.
 
 ## Copulas
 
@@ -48,7 +50,7 @@ own distribution.
 | Copula | Parameter | Kendall's tau | Tail dependence |
 |---|---|---|---|
 | `GaussianCopula(correlation)` | ρ in [−1, 1], or a matrix | 2/π · asin ρ | none |
-| `StudentTCopula(correlation, df)` | ρ or a matrix; `df` > 0 | 2/π · asin ρ | both tails: 2·t<sub>df+1</sub>(−√((df+1)(1−ρ)/(1+ρ))) |
+| `StudentTCopula(correlation, df)` | ρ or a matrix; `df` ≥ 1e-300 | 2/π · asin ρ | both tails: 2·t<sub>df+1</sub>(−√((df+1)(1−ρ)/(1+ρ))) |
 | `ClaytonCopula(theta, dim=2)` | θ > 0 | θ/(θ+2) | lower: 2<sup>−1/θ</sup> |
 | `GumbelCopula(theta, dim=2)` | θ ≥ 1 | 1 − 1/θ | upper: 2 − 2<sup>1/θ</sup> |
 | `FrankCopula(theta, dim=2)` | θ ≠ 0 | 1 − 4/θ · (1 − D₁(θ)) | none |
@@ -68,6 +70,28 @@ Every copula has:
 For the Gaussian and t copulas with more than two risks, `kendall_tau`,
 `tail_dependence`, `cdf` and `joint_exceedance` take `i` and `j` to choose the
 pair. `GaussianCopula` also has `spearman_rho()`.
+
+### Extreme parameters
+
+Every family samples and evaluates correctly across its whole parameter range,
+not just the usual one:
+
+- **t copula, large `df`.** From df = 10⁴ the t CDF and quantile switch to
+  Hill's normalising transform and Fisher's series in 1/df, which are exact to
+  rounding there, so a t copula with df = 10²⁰ is the Gaussian copula with the
+  same correlation (before 0.8.0 the central quantiles went wrong from about
+  df = 10¹², and `copula_dependence` never returned from about df = 10²³).
+- **t copula, small `df`.** Below df = 0.2 the chi-square mixing variable is
+  drawn in log space, so the marginals stay uniform down to df = 10⁻³⁰⁰, the
+  smallest accepted. The closed forms (`cdf`, `joint_exceedance`) need the t
+  quantile itself, which is beyond double precision for df below about 10⁻³
+  at most levels; they refuse those with RP304.
+- **Frank.** The sampler is exact for |θ| up to the limit of 500 in either
+  direction and in any dimension.
+- **Clayton and Gumbel.** Any finite θ: the Clayton sampler draws its frailty
+  in log space from θ = 15, the Gumbel CDF sums its generator in logs, and
+  `GumbelCopula.joint_exceedance` is accurate to rounding however close the
+  level is to 1. At the largest θ both are comonotone.
 
 ### The same rank correlation, five different tails
 
@@ -173,7 +197,8 @@ Diversification benefit 60.0000 (25.0% of the standalone sum)
 
 `standalone` is a `{name: amount}` mapping or a list (with optional `names=`).
 `correlation` is a matrix in the same order or `{(a, b): rho}` pairs; unlisted
-pairs are independent. The result has `total`, `undiversified`,
+pairs are independent. A pair may be listed in both orders only with the same
+value: `{("a", "b"): 0.9, ("b", "a"): -0.9}` is refused with RP113. The result has `total`, `undiversified`,
 `diversification_benefit`, `diversification_ratio`, `contributions`, `shares`,
 `summary()`, `to_dict()` and `plot()`.
 
@@ -191,7 +216,10 @@ simulated losses of each line and returns an `Allocation`.
 `losses` is `{name: array}`, a `(trials, lines)` array with `names=`, or a
 DataFrame. The arrays must come from one joint simulation, so that entry *k* of
 every array is the same trial. `Model.sample(...)` and `Result.inputs` are
-already in that form.
+already in that form. `names=` goes only with a plain array (a dict or a
+DataFrame names its own lines, and `names=` with one is refused with RP113); a
+column that is not numeric is refused with RP404, and losses whose sum
+overflows double precision with RP304.
 
 | `method` | What each line gets |
 |---|---|
@@ -224,7 +252,12 @@ at the top (99.5% TVaR, total 533.79):
 
 Euler VaR contributions are much noisier than co-TVaR, because they average
 over a thin slice of trials rather than the whole tail. `bandwidth=` sets the
-share of trials in that slice.
+share of trials in that slice. The slice's mean total differs from the VaR by
+sampling noise; that small residual is shared out in proportion to each line's
+Cov(Xᵢ, S)/Var(S), so the contributions add up to the VaR. (Before 0.8.0 the
+contributions were scaled by VaR / slice total, which multiplies every line by
+an arbitrary factor when the VaR is near zero, as in a hedged book.) When many
+trials sit exactly at the VaR, E[Xᵢ ∣ S = VaR] is the mean over all of them.
 
 ## As agent tools
 
@@ -263,3 +296,10 @@ others:
 - `allocate` on a ten-trial sample worked by hand, and against the closed form
   for jointly normal losses, μᵢ + Cov(Xᵢ, S)/σ<sub>S</sub> · φ(z)/(1 − α), on a
   million trials.
+
+`tests/test_refine_capital.py` covers the extreme parameters: the t quantile
+and CDF against mpmath for df from 0.5 to 10³⁰⁰, the t copula's uniforms against
+the exact t CDF, every sampler at extreme θ or df (uniform marginals and
+Kendall's tau within four standard errors of its closed form), the Gumbel CDF
+and joint exceedance against 60-digit closed forms, and a fuzz of every copula
+method at tiny, huge and boundary parameters.
