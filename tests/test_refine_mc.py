@@ -422,6 +422,18 @@ def test_a_function_passed_to_model_points_at_the_formula_decorator():
     assert err.code == "RP404" and "Constant" not in err.message
 
 
+def test_counts_too_large_to_sample_are_coded():
+    # NumPy refuses a Poisson mean above about 9.2e18, and a negative binomial whose mean is
+    # astronomically large, with a bare ValueError at sample time.
+    rng = np.random.default_rng(1)
+    for make, param in ((lambda: Poisson(1e308).sample(5, rng), "mean"),
+                        (lambda: mc.NegativeBinomial(3, 1e-300).sample(5, rng), "p"),
+                        (lambda: simulate(lambda n: n, 10, seed=1, n=Poisson(1e300)), "mean")):
+        err = _code(make)
+        assert isinstance(err, InputError) and err.code == "RP304" and err.param == param, err
+    assert Poisson(1e15).sample(3, rng).shape == (3,)
+
+
 def test_a_copula_of_the_wrong_dimension_says_how_to_build_one():
     m = Model(a=Normal(0, 1), b=Normal(0, 1), c=Normal(0, 1))
     m.formula(lambda a, b, c: a + b + c)

@@ -1124,7 +1124,13 @@ class Poisson(_Discrete):
         self.mean = _check_non_negative("mean", mean)
 
     def sample(self, n, rng):
-        return rng.poisson(self.mean, n).astype(float)
+        try:
+            return rng.poisson(self.mean, n).astype(float)
+        except ValueError:      # NumPy: "lam value too large" (above about 9.2e18)
+            raise InputError(f"Poisson mean {self.mean:g} is too large to sample: the counts would not fit in a "
+                             f"64-bit integer", code="RP304", param="mean",
+                             hint="A count this large is not meaningful as a claim count; use a smaller mean, or "
+                                  "model the total with a continuous distribution.") from None
 
     def pmf(self, k):
         np = _numpy()
@@ -1162,7 +1168,13 @@ class NegativeBinomial(_Discrete):
         return cls(n_success=mean * p / (1.0 - p), p=p)
 
     def sample(self, n, rng):
-        return rng.negative_binomial(self.n_success, self.p, n).astype(float)
+        try:
+            return rng.negative_binomial(self.n_success, self.p, n).astype(float)
+        except ValueError:      # NumPy: "n too large or p too small"
+            raise InputError(f"NegativeBinomial({self.n_success:g}, {self.p:g}) is too large to sample: the counts "
+                             f"would not fit in a 64-bit integer", code="RP304", param="p",
+                             hint="The mean is n_success·(1 − p)/p; a p this small makes it astronomically large. "
+                                  "Check that p is the success probability, not a rate.") from None
 
     def pmf(self, k):
         np = _numpy()
