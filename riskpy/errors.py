@@ -29,7 +29,8 @@ RP2xx   an optional dependency that is not installed (NumPy, Matplotlib,
 RP3xx   a numerical problem: no solution exists, or a solver cannot
         bracket or reach one (an option price outside no-arbitrage bounds)
 RP4xx   a tool call that is wrong as a call: unknown tool, unknown or
-        missing argument, wrong JSON type, a size over ``tools.LIMITS``
+        missing argument, wrong JSON type, a size over ``tools.LIMITS``;
+        or a call the client cancelled
 RP5xx   data that is malformed as a whole: a life table, a claims
         triangle, a yield curve's knots, a transition matrix, a file
 RP9xx   something RiskPY did not expect — a bug worth reporting
@@ -41,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pickle
 import re
 import sys
@@ -236,7 +238,9 @@ CATALOGUE: Dict[str, Dict[str, str]] = {
     "RP405": {
         "title": "Over a tool limit",
         "meaning": "The call asks for more work than one tool call may (trials, simulated claims, payment periods, "
-                   "triangle size, list or string length, integer size). The limits are in riskpy.tools.LIMITS.",
+                   "triangle size, list or string length, the length of a tool name, argument name or scenario "
+                   "label, nesting depth, integer size), or a sensitivity / scenario_table call whose runs together "
+                   "would. The limits are in riskpy.tools.LIMITS.",
         "hint": "Lower the size named in the message, or call the library function directly, which is unbounded.",
     },
     "RP406": {
@@ -249,6 +253,14 @@ CATALOGUE: Dict[str, Dict[str, str]] = {
         "title": "Unknown error code",
         "meaning": "riskpy-explain was asked about a code that is not in the catalogue.",
         "hint": "riskpy-explain --list shows every code.",
+    },
+    "RP408": {
+        "title": "Call cancelled",
+        "meaning": "The client cancelled the call (MCP notifications/cancelled) before it finished. sensitivity and "
+                   "scenario_table stop at the next gap between the calculations they drive; the trace and the "
+                   "audit ledger record the call with this code.",
+        "hint": "Nothing to fix: call again if the answer is still wanted, with fewer scenarios or trials if it was "
+                "cancelled for taking too long.",
     },
     # -- RP5xx: data --------------------------------------------------------------------
     "RP501": {
@@ -369,6 +381,10 @@ class MissingDependencyError(RiskPyError, ImportError):
 # Turning any exception into the structured form
 
 
+_MATH_DOMAIN_HINT = ("An input is so extreme that an intermediate value underflowed to zero or went negative (a spot "
+                     "of 1e-200 against a strike of 1e200, a maturity of a million years): use inputs of a realistic "
+                     "size.")
+
 _PARAM_IN_MESSAGE = re.compile(r"^(?:\w+: )?([A-Za-z_][\w]*(?:\[\d+\])*) (?:must|is|has|needs|should|=)\b")
 
 
@@ -392,6 +408,12 @@ def from_exception(exc: BaseException) -> Dict[str, Any]:
                 code = c
     elif isinstance(exc, (OverflowError, ZeroDivisionError, ArithmeticError)):
         code = "RP304"
+    elif isinstance(exc, ValueError) and message == "math domain error":
+        # math.log(0.0), math.sqrt(-1e-300): almost always an input so extreme that an intermediate
+        # value underflowed to zero. The bare message named nothing to fix.
+        return {"code": "RP304", "message": "math domain error: a logarithm or square root was taken of zero or a "
+                                            "negative number",
+                "param": None, "hint": _MATH_DOMAIN_HINT, "docs": f"{DOCS}#rp304"}
     elif isinstance(exc, ValueError):
         code = "RP100"
     elif isinstance(exc, TypeError):
@@ -425,13 +447,36 @@ def catalogue() -> List[Dict[str, str]]:
     return [explain(code) for code in sorted(CATALOGUE)]
 
 
+def _broken_pipe() -> int:
+    """What a CLI does when stdout's reader went away (``riskpy-context | head -1``): stop quietly.
+
+    Points stdout at the null device so the interpreter's flush at exit cannot raise a second
+    BrokenPipeError, and returns 0 — the reader got what it asked for.
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
+    except (OSError, ValueError, AttributeError):  # pragma: no cover - a replaced or detached stdout
+        pass
+    return 0
+
+
+def _output_failed(prog: str, path: Any, exc: OSError, what: str = "write") -> int:
+    """RP505 on stderr for a file a CLI could not write, with the hint; returns the exit status, 1."""
+    reason = exc.strerror or str(exc) or type(exc).__name__
+    print(f"{prog}: RP505 cannot {what} {str(path)!r}: {reason}\n  hint: {CATALOGUE['RP505']['hint']}",
+          file=sys.stderr)
+    return 1
+
+
 def _safe_streams() -> None:
     """Let the CLIs print σ, — and → on a console whose code page cannot (Windows cp1252, pipes):
     unencodable characters become "?" instead of raising UnicodeEncodeError mid-report."""
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(errors="replace")
-        except (AttributeError, ValueError):  # pragma: no cover - replaced or detached streams
+        except (AttributeError, ValueError, OSError):  # pragma: no cover - replaced, detached or unflushable streams
             pass
 
 

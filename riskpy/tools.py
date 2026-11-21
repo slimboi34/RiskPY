@@ -114,8 +114,9 @@ LIMITS: Dict[str, int] = {
     "matrix": 100,                    # capital_aggregate, capital_allocation, nearest_correlation: risks
     "capital_cells": 20_000_000,      # capital_allocation: trials × lines
     "scenarios": 100,                 # scenario_table: scenarios in one call
-    "string": 200,                    # any string argument, in characters
+    "string": 200,                    # any string argument, tool name, argument name or scenario label, in characters
     "integer": 2**31 - 1,             # any integer argument, in absolute value
+    "depth": 32,                      # an object argument (arguments, scenarios): levels of nesting
 }
 
 # The commonest agent mistake is a percentage where a decimal belongs: r=5 for 5%, sigma=20
@@ -141,6 +142,35 @@ def _show(value: Any) -> str:
     """A repr short enough to put in an error message, whatever the agent sent."""
     text = repr(value)
     return text if len(text) <= 60 else text[:57] + "..."
+
+
+def _clip(text: str, limit: int = 80) -> str:
+    """At most ``limit`` characters of a name the agent chose (an error's param, a trace entry)."""
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _printable(value: Any) -> str:
+    """Text safe to print on a terminal: control characters (and so ANSI and OSC escape
+    sequences) shown as \\xNN instead of being sent raw."""
+    return _CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", str(value))
+
+
+def _nested_deeper_than(value: Any, limit: int) -> bool:
+    """True if lists and objects nest more than ``limit`` levels deep. Iterative, so a value
+    nested thousands of levels deep (which json.loads accepts) cannot hit the recursion limit."""
+    if not isinstance(value, (dict, list, tuple)):
+        return False
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        children = item.values() if isinstance(item, dict) else item
+        if depth > limit:
+            return True
+        stack.extend((child, depth + 1) for child in children if isinstance(child, (dict, list, tuple)))
+    return False
 
 
 def _json_name(value: Any) -> str:
@@ -207,6 +237,9 @@ def _check_arg(name: str, hint: Any, value: Any) -> None:
         if len(value) > LIMITS["list"]:
             raise InputError(f"{name} has {len(value)} keys; at most {LIMITS['list']} are accepted", code="RP405",
                              param=name)
+        if _nested_deeper_than(value, LIMITS["depth"]):
+            raise InputError(f"{name} is nested more than {LIMITS['depth']} levels deep", code="RP405", param=name,
+                             hint="Send plain arguments: numbers, strings, lists of numbers and at most a matrix.")
     elif origin in (list, tuple, collections.abc.Sequence):
         if not isinstance(value, (list, tuple)):
             raise ArgumentTypeError(f"{name} must be a list, got {_show(value)}", code="RP404", param=name,
@@ -438,7 +471,7 @@ def _record(name: Any, arguments: Any, started: float, error: Optional[dict], vi
         "ms": round((time.perf_counter() - started) * 1000.0, 3),
         "ok": error is None,
         "code": None if error is None else error["code"],
-        "param": None if error is None else error.get("param"),
+        "param": None if error is None or error.get("param") is None else _clip(str(error["param"])),
         "message": None if error is None else error["message"][:200],
         "via": via,
     }
@@ -524,13 +557,18 @@ def manifest() -> List[dict]:
 
 
 def _lookup(name: Any) -> Tool:
-    if not isinstance(name, str) or name not in TOOLS:
-        close = difflib.get_close_matches(str(name), list(TOOLS), n=3, cutoff=0.5)
-        hint = (f"Did you mean {' or '.join(repr(c) for c in close)}? " if close else "") + \
-            "`riskpy-tools` (or tools.manifest()) lists every tool."
-        raise UnknownNameError(f"unknown tool {name!r}; `riskpy-tools` lists them", code="RP401", param="name",
-                               hint=hint)
-    return TOOLS[name]
+    if isinstance(name, str) and name in TOOLS:
+        return TOOLS[name]
+    if isinstance(name, str) and len(name) > LIMITS["string"]:
+        # Refused before difflib (whose cost grows with the length) and never echoed in full.
+        raise InputError(f"the tool name is {len(name)} characters long; no tool name is longer than "
+                         f"{LIMITS['string']}", code="RP405", param="name",
+                         hint="`riskpy-tools` (or tools.manifest()) lists every tool.")
+    close = difflib.get_close_matches(name, list(TOOLS), n=3, cutoff=0.5) if isinstance(name, str) else []
+    hint = (f"Did you mean {' or '.join(repr(c) for c in close)}? " if close else "") + \
+        "`riskpy-tools` (or tools.manifest()) lists every tool."
+    raise UnknownNameError(f"unknown tool {_show(name)}; `riskpy-tools` lists them", code="RP401", param="name",
+                           hint=hint)
 
 
 # Names other libraries (and agents) use for RiskPY's parameters.
@@ -568,6 +606,22 @@ def _suggest(name: str, accepted: "set[str]") -> Optional[str]:
     return close[0] if close else None
 
 
+def _check_names(tool_name: str, arguments: dict, param: Optional[str] = None) -> None:
+    """Refuse an argument name longer than any string argument may be (RP405), before it reaches
+    difflib or an error message: names are as much the agent's input as values are."""
+    for key in arguments:
+        if isinstance(key, str) and len(key) > LIMITS["string"]:
+            raise InputError(f"{tool_name}: an argument name is {len(key)} characters long; names are at most "
+                             f"{LIMITS['string']}", code="RP405", param=param or _clip(key),
+                             hint=f"`riskpy-tools schema {tool_name}` lists the argument names.")
+
+
+def _list_names(names: List[Any], most: int = 5) -> str:
+    """Up to ``most`` names, each abbreviated: an error message never echoes a whole payload."""
+    shown = ", ".join(_show(n) for n in names[:most])
+    return f"[{shown}" + (f", and {len(names) - most} more]" if len(names) > most else "]")
+
+
 def _arguments(t: Tool, arguments: Any) -> dict:
     if arguments is None:
         return {}
@@ -576,15 +630,16 @@ def _arguments(t: Tool, arguments: Any) -> dict:
                                 code="RP406", param=None)
     params = inspect.signature(t.fn).parameters
     accepted = set(params)
-    unknown = sorted(set(arguments) - accepted)
+    _check_names(t.name, arguments)
+    unknown = sorted((k for k in arguments if k not in accepted), key=str)
     if unknown:
         notes = _ARGUMENT_NOTES.get(t.name, {})
         note = next((notes[str(u)] for u in unknown if str(u) in notes), None)
-        guesses = {u: _suggest(u, accepted) for u in unknown if str(u) not in notes}
-        suggestion = "; ".join(f"{u!r} → {g!r}?" for u, g in guesses.items() if g)
+        guesses = {u: _suggest(u, accepted) for u in unknown[:5] if str(u) not in notes}
+        suggestion = "; ".join(f"{_show(u)} → {g!r}?" for u, g in guesses.items() if g)
         raise ArgumentTypeError(
-            f"{t.name}: unexpected argument(s) {unknown}; accepted: {sorted(accepted)}", code="RP402",
-            param=str(unknown[0]),
+            f"{t.name}: unexpected argument(s) {_list_names(unknown)}; accepted: {sorted(accepted)}", code="RP402",
+            param=_clip(str(unknown[0])),
             hint=(f"{note} " if note else "") + (f"Did you mean {suggestion} " if suggestion else "")
             + f"`riskpy-tools schema {t.name}` lists them.")
     missing = [p for p, spec in params.items() if spec.default is spec.empty and p not in arguments]
@@ -714,7 +769,7 @@ def black_scholes(S: float, K: float, T: float, r: float, sigma: float, q: float
 
 @tool()
 def option_greeks(S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0, kind: str = "call") -> dict:
-    """Price and the five first-order Greeks (delta, gamma, vega, theta, rho) of a European option.
+    """Price and the five first-order Greeks of a European option, in trader units: delta per unit of S, gamma per unit of S squared, vega and rho per 1 percentage point (raw derivative / 100), theta per calendar day (raw derivative / 365).
 
     S: spot price of the underlying
     K: strike price
@@ -1212,6 +1267,12 @@ def short_rate_zero_bond(model: str, r: float, T: float, kappa: float, theta: fl
         raise InputError(f"model must be 'vasicek' or 'cir', got {model!r}", code="RP108", param="model")
     price = (rates.vasicek_zero_bond if key == "vasicek" else rates.cir_zero_bond)(r, t, T, kappa, theta, sigma)
     tau = T - t
+    if tau > 0 and not price > 0.0:
+        # -log(0.0) was a bare "math domain error" with no parameter to fix.
+        raise InputError(f"the bond price underflows to 0 in double precision at T - t = {tau:g} years, so it "
+                         "has no yield to report", code="RP304", param="T",
+                         hint="Use a realistic maturity: the discount factor this far out is smaller than the "
+                              "smallest representable number.")
     return {"price": float(price), "yield": (-math.log(price) / tau) if tau > 0 else None, "model": key,
             "compounding": "continuous"}
 
@@ -1483,9 +1544,15 @@ def capital_allocation(means: List[float], sds: List[float], correlation: Option
     if seed < 0:
         raise InputError(f"seed must be >= 0, got {seed!r}", code="RP102", param="seed",
                          hint="Use a positive seed for a reproducible run, or 0 for a fresh one.")
-    if correlation is not None and len(correlation) != k:
-        raise InputError(f"correlation must be a {k}x{k} matrix in the order of the lines", code="RP109",
-                         param="correlation")
+    if correlation is not None:
+        shape_hint = "One row and one column per line, in the order of means."
+        if len(correlation) != k:
+            raise InputError(f"correlation must be a {k}x{k} matrix in the order of the lines, got "
+                             f"{len(correlation)} rows", code="RP109", param="correlation", hint=shape_hint)
+        for i, row in enumerate(correlation):
+            if len(row) != k:
+                raise InputError(f"correlation must be a {k}x{k} matrix in the order of the lines, but row {i} has "
+                                 f"{len(row)} entries", code="RP109", param=f"correlation[{i}]", hint=shape_hint)
     cop = _copula(copula, k, correlation, df, copula_theta)
     u = cop.sample(trials, seed=seed or None)
     losses = {}
@@ -1673,15 +1740,20 @@ def scenario_table(tool: str, arguments: dict, scenarios: dict) -> dict:
                          code="RP405", param="scenarios")
     accepted = set(inspect.signature(t.fn).parameters)
     for label, overrides in scenarios.items():
+        if len(str(label)) > LIMITS["string"]:
+            raise InputError(f"a scenario label is {len(str(label))} characters long; labels are at most "
+                             f"{LIMITS['string']}", code="RP405", param="scenarios",
+                             hint='Give each scenario a short label a reader would understand, e.g. "rates +100bp".')
         if not isinstance(overrides, dict):
-            raise ArgumentTypeError(f"scenario {label!r} must be an object of argument overrides, got "
+            raise ArgumentTypeError(f"scenario {_show(label)} must be an object of argument overrides, got "
                                     f"{_json_name(overrides)}", code="RP404", param="scenarios",
                                     hint='Each scenario is {"argument": new value}, e.g. {"r": 0.06}.')
-        unknown = sorted(set(overrides) - accepted)
+        _check_names(t.name, overrides, "scenarios")
+        unknown = sorted((k for k in overrides if k not in accepted), key=str)
         if unknown:
             guess = _suggest(unknown[0], accepted)
-            raise ArgumentTypeError(f"scenario {label!r} overrides {unknown}, which {t.name} does not take; "
-                                    f"accepted: {sorted(accepted)}", code="RP402", param="scenarios",
+            raise ArgumentTypeError(f"scenario {_show(label)} overrides {_list_names(unknown)}, which {t.name} does "
+                                    f"not take; accepted: {sorted(accepted)}", code="RP402", param="scenarios",
                                     hint=(f"Did you mean {guess!r}? " if guess else "")
                                     + f"`riskpy-tools schema {t.name}` lists them.")
     _needs_seed(t, base_args, "arguments")
@@ -1888,8 +1960,25 @@ def _non_negative_int(text: str) -> int:
 def _print_error(detail: dict, as_json: bool = True) -> None:
     if as_json:
         print(json.dumps({"error": detail}, indent=2, ensure_ascii=False))
-    where = f" ({detail['param']})" if detail.get("param") else ""
-    print(f"riskpy-tools: {detail['code']}{where} {detail['message']}\n  hint: {detail['hint']}", file=sys.stderr)
+    where = f" ({_printable(detail['param'])})" if detail.get("param") else ""
+    print(f"riskpy-tools: {_printable(detail['code'])}{where} {_printable(detail['message'])}\n"
+          f"  hint: {_printable(detail['hint'])}", file=sys.stderr)
+
+
+def _warn_unrecorded() -> None:
+    """Say so on stderr when the audit ledger could not record this process's calls.
+
+    The ledger never breaks a calculation (an unwritable file is counted, not raised), but the
+    count lives in the process: after `riskpy-tools call` exits nobody else can read it.
+    """
+    if "riskpy.audit" not in sys.modules:
+        return
+    from . import audit
+
+    ledger = audit.active()
+    if ledger is not None and ledger.failures:
+        print(f"riskpy-tools: warning: RP505 the call was not recorded to the audit ledger {ledger.path!r} "
+              f"(RISKPY_AUDIT_FILE): check that its folder exists and is writable", file=sys.stderr)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1917,6 +2006,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                           "hint": _errors.CATALOGUE["RP406"]["hint"], "docs": f"{_errors.DOCS}#rp406"})
             return 1
         out = call(args.name, arguments, errors="return", via="cli")
+        _warn_unrecorded()
         if isinstance(out, dict) and set(out) == {"error"}:
             _print_error(out["error"])
             return 1
@@ -1936,18 +2026,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             entries = _read_trace_file(path, None) + entries
         entries = entries[-args.limit:] if args.limit else entries
         if args.trace_json:
-            print(json.dumps(_jsonable(entries), indent=2, ensure_ascii=False, allow_nan=False))
+            text = json.dumps(_jsonable(entries), indent=2, ensure_ascii=False, allow_nan=False)
+            # json.dumps escapes C0 controls; DEL and the C1 controls (U+0080–U+009F) pass through raw.
+            print(re.sub(r"[\x7f-\x9f]", lambda m: f"\\u{ord(m.group()):04x}", text))
             return 0
         if not entries:
             print("No tool calls traced. The trace lives in the process that made the calls (riskpy_status over "
                   "MCP shows the server's); set RISKPY_TRACE_FILE=/path/trace.jsonl to keep calls across processes.")
             return 0
         for e in entries:
-            outcome = "ok" if e.get("ok") else f"{e.get('code')} {e.get('param') or ''} {e.get('message') or ''}".strip()
+            # Every field may hold what an agent sent (a tool name, an argument name) or whatever the
+            # trace file holds: control characters are escaped, never sent to the terminal raw.
+            at, via, name = (str(e.get(k) or "")[:n] for k, n in (("at", 23), ("via", 12), ("tool", 80)))
+            code, param, message = (str(e.get(k) or "")[:n] for k, n in (("code", 12), ("param", 80), ("message", 200)))
+            outcome = "ok" if e.get("ok") else f"{code} {param} {message}".strip()
             ms = e.get("ms")
             ms_text = f"{ms:>9.1f}" if isinstance(ms, (int, float)) and not isinstance(ms, bool) else f"{'?':>9}"
-            print(f"{str(e.get('at') or '')[:23]}  {str(e.get('via') or ''):<6} {str(e.get('tool') or ''):<24} "
-                  f"{ms_text} ms  {outcome}")
+            print(f"{_printable(at)}  {_printable(via):<6} {_printable(name):<24} {ms_text} ms  {_printable(outcome)}")
         return 0
     if args.json:
         print(json.dumps(manifest(), indent=2))

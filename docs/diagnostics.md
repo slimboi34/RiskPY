@@ -110,6 +110,11 @@ The buffer lives in the process that made the calls, so over MCP the agent asks 
 `RISKPY_TRACE_FILE` to append every call to a JSON-lines file as well, which is how separate
 `riskpy-tools call` processes share one trace.
 
+What goes into the trace is bounded whatever the agent sent: arguments are abbreviated, the tool
+name and the parameter of an error are cut to 80 characters and the message to 200. `riskpy-tools
+trace` prints control characters as `\x1b`-style escapes, so a tool or argument name carrying a
+terminal escape sequence cannot move the cursor or retitle the window of whoever reads the trace.
+
 ## Explaining a tool
 
 `riskpy_explain` takes an error code *or* a tool name. For a tool it returns the schema plus the
