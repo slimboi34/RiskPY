@@ -47,6 +47,7 @@ import argparse
 import importlib
 import json
 import math
+import os
 import sys
 import time
 import warnings
@@ -644,7 +645,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         prog="riskpy-verify",
         description="Run the RiskPY verification suite: every identity the library claims, checked.",
     )
-    parser.add_argument("-m", "--module", action="append", dest="modules", metavar="NAME",
+    parser.add_argument("-m", "--module", action="append", dest="modules", metavar="NAME", choices=list(MODULES),
                         help=f"restrict to a module (repeatable): {', '.join(MODULES)}")
     parser.add_argument("--bench", action="store_true", help="also run the timing benchmarks")
     parser.add_argument("--no-oracle", action="store_true", help="skip the SciPy cross-checks")
@@ -665,15 +666,44 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             except (ValueError, OSError):  # pragma: no cover - closed or odd streams
                 pass
 
+    from .errors import _broken_pipe, _output_failed
+
+    # An output file that cannot be written is found out before the suite runs, not after.
+    for path in (args.json, args.markdown):
+        problem = _unwritable(path) if path else None
+        if problem is not None:
+            return _output_failed("riskpy-verify", path, problem)
     report = run(args.modules, bench=args.bench, oracle=not args.no_oracle)
-    if args.json:
-        report.to_json(args.json)
-    if args.markdown:
-        with open(args.markdown, "w", encoding="utf-8") as handle:
-            handle.write(report.to_markdown() + "\n")
-    if not args.quiet:
-        print(report.summary(verbose=args.verbose))
-    return 0 if report.ok else 1
+    status = 0 if report.ok else 1
+    outputs = ((args.json, lambda: json.dumps(report.to_dict(), indent=2)), (args.markdown, report.to_markdown))
+    for path, render in outputs:
+        if path:
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(render() + "\n")
+            except OSError as exc:       # it became unwritable while the suite ran
+                status = _output_failed("riskpy-verify", path, exc)
+    try:
+        if not args.quiet:
+            print(report.summary(verbose=args.verbose))
+            sys.stdout.flush()
+    except BrokenPipeError:          # riskpy-verify -v | head
+        _broken_pipe()
+    return status
+
+
+def _unwritable(path: str) -> Optional[OSError]:
+    """Why ``path`` cannot be written as an output file, without creating it; None if it can."""
+    import errno
+
+    folder = os.path.dirname(os.path.abspath(path))
+    if os.path.isdir(path):
+        return IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), path)
+    if not os.path.isdir(folder):
+        return FileNotFoundError(errno.ENOENT, "no such folder", folder)
+    if not os.access(folder, os.W_OK) or (os.path.exists(path) and not os.access(path, os.W_OK)):
+        return PermissionError(errno.EACCES, os.strerror(errno.EACCES), path)
+    return None
 
 
 if __name__ == "__main__":  # pragma: no cover

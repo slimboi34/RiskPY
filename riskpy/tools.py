@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import collections
 import collections.abc
+import contextlib
 import dataclasses
 import datetime
 import difflib
@@ -114,9 +115,15 @@ LIMITS: Dict[str, int] = {
     "matrix": 100,                    # capital_aggregate, capital_allocation, nearest_correlation: risks
     "capital_cells": 20_000_000,      # capital_allocation: trials × lines
     "scenarios": 100,                 # scenario_table: scenarios in one call
-    "string": 200,                    # any string argument, in characters
+    "string": 200,                    # any string argument, tool name, argument name or scenario label, in characters
     "integer": 2**31 - 1,             # any integer argument, in absolute value
+    "depth": 32,                      # an object argument (arguments, scenarios): levels of nesting
+    "meta_seconds": 20,               # scenario_table: seconds after which the remaining scenarios are not run
 }
+# sensitivity and scenario_table run another calculator several times. All those runs together may
+# ask for no more work than one call of that calculator at its own limit (RP405), estimated before
+# anything runs from the same sizes (_WORK below); "meta_seconds" is the backstop for anything the
+# estimate misses.
 
 # The commonest agent mistake is a percentage where a decimal belongs: r=5 for 5%, sigma=20
 # for 20%. Both are legal inputs to the library (a 500% rate is just a number), so the
@@ -141,6 +148,35 @@ def _show(value: Any) -> str:
     """A repr short enough to put in an error message, whatever the agent sent."""
     text = repr(value)
     return text if len(text) <= 60 else text[:57] + "..."
+
+
+def _clip(text: str, limit: int = 80) -> str:
+    """At most ``limit`` characters of a name the agent chose (an error's param, a trace entry)."""
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _printable(value: Any) -> str:
+    """Text safe to print on a terminal: control characters (and so ANSI and OSC escape
+    sequences) shown as \\xNN instead of being sent raw."""
+    return _CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", str(value))
+
+
+def _nested_deeper_than(value: Any, limit: int) -> bool:
+    """True if lists and objects nest more than ``limit`` levels deep. Iterative, so a value
+    nested thousands of levels deep (which json.loads accepts) cannot hit the recursion limit."""
+    if not isinstance(value, (dict, list, tuple)):
+        return False
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        children = item.values() if isinstance(item, dict) else item
+        if depth > limit:
+            return True
+        stack.extend((child, depth + 1) for child in children if isinstance(child, (dict, list, tuple)))
+    return False
 
 
 def _json_name(value: Any) -> str:
@@ -207,6 +243,9 @@ def _check_arg(name: str, hint: Any, value: Any) -> None:
         if len(value) > LIMITS["list"]:
             raise InputError(f"{name} has {len(value)} keys; at most {LIMITS['list']} are accepted", code="RP405",
                              param=name)
+        if _nested_deeper_than(value, LIMITS["depth"]):
+            raise InputError(f"{name} is nested more than {LIMITS['depth']} levels deep", code="RP405", param=name,
+                             hint="Send plain arguments: numbers, strings, lists of numbers and at most a matrix.")
     elif origin in (list, tuple, collections.abc.Sequence):
         if not isinstance(value, (list, tuple)):
             raise ArgumentTypeError(f"{name} must be a list, got {_show(value)}", code="RP404", param=name,
@@ -438,7 +477,7 @@ def _record(name: Any, arguments: Any, started: float, error: Optional[dict], vi
         "ms": round((time.perf_counter() - started) * 1000.0, 3),
         "ok": error is None,
         "code": None if error is None else error["code"],
-        "param": None if error is None else error.get("param"),
+        "param": None if error is None or error.get("param") is None else _clip(str(error["param"])),
         "message": None if error is None else error["message"][:200],
         "via": via,
     }
@@ -524,13 +563,18 @@ def manifest() -> List[dict]:
 
 
 def _lookup(name: Any) -> Tool:
-    if not isinstance(name, str) or name not in TOOLS:
-        close = difflib.get_close_matches(str(name), list(TOOLS), n=3, cutoff=0.5)
-        hint = (f"Did you mean {' or '.join(repr(c) for c in close)}? " if close else "") + \
-            "`riskpy-tools` (or tools.manifest()) lists every tool."
-        raise UnknownNameError(f"unknown tool {name!r}; `riskpy-tools` lists them", code="RP401", param="name",
-                               hint=hint)
-    return TOOLS[name]
+    if isinstance(name, str) and name in TOOLS:
+        return TOOLS[name]
+    if isinstance(name, str) and len(name) > LIMITS["string"]:
+        # Refused before difflib (whose cost grows with the length) and never echoed in full.
+        raise InputError(f"the tool name is {len(name)} characters long; no tool name is longer than "
+                         f"{LIMITS['string']}", code="RP405", param="name",
+                         hint="`riskpy-tools` (or tools.manifest()) lists every tool.")
+    close = difflib.get_close_matches(name, list(TOOLS), n=3, cutoff=0.5) if isinstance(name, str) else []
+    hint = (f"Did you mean {' or '.join(repr(c) for c in close)}? " if close else "") + \
+        "`riskpy-tools` (or tools.manifest()) lists every tool."
+    raise UnknownNameError(f"unknown tool {_show(name)}; `riskpy-tools` lists them", code="RP401", param="name",
+                           hint=hint)
 
 
 # Names other libraries (and agents) use for RiskPY's parameters.
@@ -568,6 +612,22 @@ def _suggest(name: str, accepted: "set[str]") -> Optional[str]:
     return close[0] if close else None
 
 
+def _check_names(tool_name: str, arguments: dict, param: Optional[str] = None) -> None:
+    """Refuse an argument name longer than any string argument may be (RP405), before it reaches
+    difflib or an error message: names are as much the agent's input as values are."""
+    for key in arguments:
+        if isinstance(key, str) and len(key) > LIMITS["string"]:
+            raise InputError(f"{tool_name}: an argument name is {len(key)} characters long; names are at most "
+                             f"{LIMITS['string']}", code="RP405", param=param or _clip(key),
+                             hint=f"`riskpy-tools schema {tool_name}` lists the argument names.")
+
+
+def _list_names(names: List[Any], most: int = 5) -> str:
+    """Up to ``most`` names, each abbreviated: an error message never echoes a whole payload."""
+    shown = ", ".join(_show(n) for n in names[:most])
+    return f"[{shown}" + (f", and {len(names) - most} more]" if len(names) > most else "]")
+
+
 def _arguments(t: Tool, arguments: Any) -> dict:
     if arguments is None:
         return {}
@@ -576,15 +636,16 @@ def _arguments(t: Tool, arguments: Any) -> dict:
                                 code="RP406", param=None)
     params = inspect.signature(t.fn).parameters
     accepted = set(params)
-    unknown = sorted(set(arguments) - accepted)
+    _check_names(t.name, arguments)
+    unknown = sorted((k for k in arguments if k not in accepted), key=str)
     if unknown:
         notes = _ARGUMENT_NOTES.get(t.name, {})
         note = next((notes[str(u)] for u in unknown if str(u) in notes), None)
-        guesses = {u: _suggest(u, accepted) for u in unknown if str(u) not in notes}
-        suggestion = "; ".join(f"{u!r} → {g!r}?" for u, g in guesses.items() if g)
+        guesses = {u: _suggest(u, accepted) for u in unknown[:5] if str(u) not in notes}
+        suggestion = "; ".join(f"{_show(u)} → {g!r}?" for u, g in guesses.items() if g)
         raise ArgumentTypeError(
-            f"{t.name}: unexpected argument(s) {unknown}; accepted: {sorted(accepted)}", code="RP402",
-            param=str(unknown[0]),
+            f"{t.name}: unexpected argument(s) {_list_names(unknown)}; accepted: {sorted(accepted)}", code="RP402",
+            param=_clip(str(unknown[0])),
             hint=(f"{note} " if note else "") + (f"Did you mean {suggestion} " if suggestion else "")
             + f"`riskpy-tools schema {t.name}` lists them.")
     missing = [p for p, spec in params.items() if spec.default is spec.empty and p not in arguments]
@@ -714,7 +775,7 @@ def black_scholes(S: float, K: float, T: float, r: float, sigma: float, q: float
 
 @tool()
 def option_greeks(S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0, kind: str = "call") -> dict:
-    """Price and the five first-order Greeks (delta, gamma, vega, theta, rho) of a European option.
+    """Price and the five first-order Greeks of a European option, in trader units: delta per unit of S, gamma per unit of S squared, vega and rho per 1 percentage point (raw derivative / 100), theta per calendar day (raw derivative / 365).
 
     S: spot price of the underlying
     K: strike price
@@ -1212,6 +1273,12 @@ def short_rate_zero_bond(model: str, r: float, T: float, kappa: float, theta: fl
         raise InputError(f"model must be 'vasicek' or 'cir', got {model!r}", code="RP108", param="model")
     price = (rates.vasicek_zero_bond if key == "vasicek" else rates.cir_zero_bond)(r, t, T, kappa, theta, sigma)
     tau = T - t
+    if tau > 0 and not price > 0.0:
+        # -log(0.0) was a bare "math domain error" with no parameter to fix.
+        raise InputError(f"the bond price underflows to 0 in double precision at T - t = {tau:g} years, so it "
+                         "has no yield to report", code="RP304", param="T",
+                         hint="Use a realistic maturity: the discount factor this far out is smaller than the "
+                              "smallest representable number.")
     return {"price": float(price), "yield": (-math.log(price) / tau) if tau > 0 else None, "model": key,
             "compounding": "continuous"}
 
@@ -1483,9 +1550,15 @@ def capital_allocation(means: List[float], sds: List[float], correlation: Option
     if seed < 0:
         raise InputError(f"seed must be >= 0, got {seed!r}", code="RP102", param="seed",
                          hint="Use a positive seed for a reproducible run, or 0 for a fresh one.")
-    if correlation is not None and len(correlation) != k:
-        raise InputError(f"correlation must be a {k}x{k} matrix in the order of the lines", code="RP109",
-                         param="correlation")
+    if correlation is not None:
+        shape_hint = "One row and one column per line, in the order of means."
+        if len(correlation) != k:
+            raise InputError(f"correlation must be a {k}x{k} matrix in the order of the lines, got "
+                             f"{len(correlation)} rows", code="RP109", param="correlation", hint=shape_hint)
+        for i, row in enumerate(correlation):
+            if len(row) != k:
+                raise InputError(f"correlation must be a {k}x{k} matrix in the order of the lines, but row {i} has "
+                                 f"{len(row)} entries", code="RP109", param=f"correlation[{i}]", hint=shape_hint)
     cop = _copula(copula, k, correlation, df, copula_theta)
     u = cop.sample(trials, seed=seed or None)
     losses = {}
@@ -1507,6 +1580,37 @@ def capital_allocation(means: List[float], sds: List[float], correlation: Option
 
 
 _META_TOOLS = ("sensitivity", "scenario_table")
+# What the meta-tools will not drive: themselves, and verify, which prices nothing and alone runs
+# for a second or more (a scenario table of it was a hundred runs of the whole suite).
+_NOT_DRIVABLE = _META_TOOLS + ("verify",)
+
+
+class _Cancelled(RiskPyError, RuntimeError):
+    """The client cancelled the call (RP408). Raised between the runs a meta-tool drives."""
+
+    default_code = "RP408"
+
+
+_cancel = threading.local()
+
+
+@contextlib.contextmanager
+def _cancellable(event: threading.Event):
+    """Run tool calls in this thread so that setting ``event`` stops a meta-tool at the next gap
+    between the calculator runs it drives. riskpy-mcp sets it when the client cancels a request:
+    a thread cannot be interrupted, but it can stop before starting the next run."""
+    previous = getattr(_cancel, "event", None)
+    _cancel.event = event
+    try:
+        yield
+    finally:
+        _cancel.event = previous
+
+
+def _checkpoint() -> None:
+    event = getattr(_cancel, "event", None)
+    if event is not None and event.is_set():
+        raise _Cancelled("the call was cancelled by the client before it finished", code="RP408", param=None)
 
 
 def _inner_tool(tool_name: str, arguments: dict) -> "tuple[Tool, dict]":
@@ -1516,8 +1620,11 @@ def _inner_tool(tool_name: str, arguments: dict) -> "tuple[Tool, dict]":
     except UnknownNameError as exc:
         exc.param = "tool"
         raise
-    if t.kind != "calculator" or t.name in _META_TOOLS:
-        raise InputError(f"{tool_name!r} is not a calculator this tool can drive", code="RP108", param="tool",
+    if t.kind != "calculator" or t.name in _NOT_DRIVABLE:
+        why = ("verify runs the verification suite and prices nothing" if t.name == "verify"
+               else f"{t.name} drives other calculators itself" if t.name in _META_TOOLS
+               else f"{t.name} is an introspection tool")
+        raise InputError(f"{tool_name!r} is not a calculator this tool can drive: {why}", code="RP108", param="tool",
                          hint="Name one of the calculators `riskpy-tools` lists, e.g. black_scholes or bond_analytics.")
     if not t.available:
         raise ToolUnavailable(f"{t.name} needs {_EXTRA_NAME.get(t.requires, t.requires)}, which is not installed: "
@@ -1529,6 +1636,124 @@ def _run_inner(t: Tool, arguments: dict) -> Any:
     raw = t.fn(**arguments)
     _check_result_finite(raw)
     return _jsonable(raw)
+
+
+# -- how much work a run asks for, so a meta-tool call can be refused before it starts
+
+
+def _size(args: dict, key: str) -> float:
+    """A numeric argument as a positive float for the work estimate; 0 for anything the calculator
+    will refuse anyway (a string, NaN, a negative number), which it does at once."""
+    value = args.get(key)
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return 0.0
+    try:
+        value = float(value)
+    except OverflowError:          # 10**400: refused by the calculator's integer limit
+        return 0.0
+    return value if math.isfinite(value) and value > 0.0 else 0.0
+
+
+def _count(args: dict, key: str) -> int:
+    value = args.get(key)
+    return len(value) if isinstance(value, (list, tuple)) else 0
+
+
+def _work_aggregate_loss(a: dict) -> "tuple[float, str]":
+    trials, frequency = _size(a, "trials"), _size(a, "expected_frequency")
+    claims = trials * frequency
+    by_claims = claims / LIMITS["simulated_claims"]
+    # A trial with almost no claims still costs something: a million of them take about a
+    # twentieth of the time a call at the simulated-claims limit does.
+    by_trials = trials / LIMITS["trials"] / 20.0
+    if by_claims >= by_trials:
+        return by_claims, (f"trials × expected_frequency = {claims:g} simulated claims; one call may simulate "
+                           f"{LIMITS['simulated_claims']:g}")
+    return by_trials, f"{trials:g} trials"
+
+
+def _work_capital_allocation(a: dict) -> "tuple[float, str]":
+    cells = _size(a, "trials") * _count(a, "means")
+    return cells / LIMITS["capital_cells"], (f"trials × lines = {cells:g} simulated cells; one call may simulate "
+                                             f"{LIMITS['capital_cells']:g}")
+
+
+def _work_periods(a: dict) -> "tuple[float, str]":
+    periods = _size(a, "maturity") * _size(a, "frequency")
+    return periods / LIMITS["periods"], (f"maturity × frequency = {periods:g} payment periods; one call may have "
+                                         f"{LIMITS['periods']}")
+
+
+def _work_bootstrap(a: dict) -> "tuple[float, str]":
+    maturities = a.get("maturities") if isinstance(a.get("maturities"), (list, tuple)) else []
+    longest = max((_size({"m": m}, "m") for m in maturities), default=0.0)
+    periods = len(maturities) * longest * _size(a, "frequency")
+    return periods / LIMITS["periods"], (f"knots × longest maturity × frequency = {periods:g} coupon periods; one "
+                                         f"call may have {LIMITS['periods']}")
+
+
+def _work_triangle(a: dict) -> "tuple[float, str]":
+    rows = a.get("triangle") if isinstance(a.get("triangle"), (list, tuple)) else []
+    width = max((len(r) for r in rows if isinstance(r, (list, tuple))), default=0)
+    side = LIMITS["triangle"]
+    return len(rows) * width / side ** 2, f"a {len(rows)} × {width} triangle; one call may take {side} × {side}"
+
+
+def _work_matrix(key: str) -> Callable[[dict], "tuple[float, str]"]:
+    def work(a: dict) -> "tuple[float, str]":
+        n = _count(a, key)
+        return (n / LIMITS["matrix"]) ** 2, f"{n} risks; one call may take {LIMITS['matrix']}"
+    return work
+
+
+def _work_returns(a: dict) -> "tuple[float, str]":
+    n = _count(a, "returns")
+    return n / LIMITS["list"], f"{n} returns; one call may take {LIMITS['list']}"
+
+
+# The calculators whose cost grows with their input, keyed by tool name. A calculator not listed
+# is a closed form that answers in microseconds to milliseconds.
+_WORK: Dict[str, Callable[[dict], "tuple[float, str]"]] = {
+    "aggregate_loss": _work_aggregate_loss,
+    "capital_allocation": _work_capital_allocation,
+    "bond_analytics": _work_periods,
+    "cds_par_spread": _work_periods,
+    "bootstrap_yield_curve": _work_bootstrap,
+    "chain_ladder": _work_triangle,
+    "mack_chain_ladder": _work_triangle,
+    "bornhuetter_ferguson": _work_triangle,
+    "capital_aggregate": _work_matrix("standalone"),
+    "nearest_correlation": _work_matrix("matrix"),
+    "value_at_risk": _work_returns,
+}
+
+
+def _work(t: Tool, arguments: dict) -> "tuple[float, str]":
+    """How much of one call's allowance a run of ``t`` uses (1.0 is a call at its limit) and what
+    drives it, estimated from the sizes the calculator's own limits bound."""
+    estimate = _WORK.get(t.name)
+    if estimate is None:
+        return 0.0, ""
+    full = {p: spec.default for p, spec in inspect.signature(t.fn).parameters.items() if spec.default is not spec.empty}
+    full.update(arguments)
+    try:
+        cost, what = estimate(full)
+    except Exception:  # noqa: BLE001 - malformed input is the calculator's to refuse, with its own code
+        return 0.0, ""
+    return (cost if math.isfinite(cost) and cost > 0.0 else 0.0), what
+
+
+def _check_budget(meta: str, t: Tool, runs: List[dict], param: str, hint: str) -> None:
+    """Refuse (RP405), before anything runs, a meta-tool call whose runs together would ask for
+    more work than one call of the calculator may: each run within LIMITS is not enough when a
+    hundred of them come in one call."""
+    costs = [_work(t, args) for args in runs]
+    total = sum(cost for cost, _ in costs)
+    if total > 1.0:
+        largest = max(costs, key=lambda c: c[0])[1]
+        raise InputError(f"{meta} would run {t.name} {len(runs)} times, {total:.3g}× the work one tool call may "
+                         f"ask for (the largest run: {largest}); all the runs together must fit within one call's "
+                         "limits", code="RP405", param=param, hint=hint)
 
 
 def _numeric_leaves(value: Any, path: str = "") -> Dict[str, float]:
@@ -1559,6 +1784,22 @@ def _needs_seed(t: Tool, arguments: dict, param: str) -> None:
                               "fresh numbers and the differences would be sampling noise.")
 
 
+def _default_bump(parameter: str, x: float, simulation: bool) -> float:
+    """The bump sensitivity uses when none is given, for a parameter that is not a whole number.
+
+    A closed form is smooth, so a tiny bump measures its derivative to many digits. A simulated
+    output moves in steps even with the seed fixed (a claim count that changes shifts every draw
+    after it), so a tiny bump differences sampling noise: 1e-4 of a frequency gave -12,566 for a
+    derivative of 1,000. One per cent clears most of that noise; a confidence level is bumped by
+    one per cent of its distance to 0 or 1, so 0.99 is not pushed into the extreme tail.
+    """
+    if not simulation:
+        return 1e-4 * max(1.0, abs(x))
+    if parameter == "level" and 0.0 < x < 1.0:
+        return 0.01 * min(x, 1.0 - x)
+    return 0.01 * abs(x) if x != 0.0 else 0.01
+
+
 @tool()
 def sensitivity(tool: str, arguments: dict, parameter: str, bump: Optional[float] = None,
                 relative: bool = False) -> dict:
@@ -1567,7 +1808,7 @@ def sensitivity(tool: str, arguments: dict, parameter: str, bump: Optional[float
     tool: the calculator to differentiate, e.g. "black_scholes" or "bond_analytics"
     arguments: the base-case arguments for that calculator, as an object
     parameter: the numeric argument to bump, e.g. "S" or "ytm"
-    bump: size of the bump in the parameter's own units (default 0.0001 × max(1, |value|); 1 for a whole-number parameter)
+    bump: size of the bump in the parameter's own units; default 0.0001 × max(1, |value|) for a closed form, 1% of |value| for a simulation (a calculator with a seed; 1% of the distance to 0 or 1 for a confidence level) so the difference is not sampling noise, and 1 for a whole-number parameter. The result's "bump" is the one used
     relative: true to read bump as a fraction of the parameter's value (0.01 means a 1% bump)
     """
     t, base_args = _inner_tool(tool, arguments)
@@ -1592,7 +1833,7 @@ def sensitivity(tool: str, arguments: dict, parameter: str, bump: Optional[float
     if bump is None:
         if relative:
             raise InputError("relative=true needs a bump (0.01 for a 1% bump)", code="RP113", param="bump")
-        h = 1 if whole else 1e-4 * max(1.0, abs(x))
+        h = 1 if whole else _default_bump(parameter, x, "seed" in params)
     else:
         h = bump * abs(x) if relative else bump
         if not h > 0.0:
@@ -1606,11 +1847,19 @@ def sensitivity(tool: str, arguments: dict, parameter: str, bump: Optional[float
             h = int(round(h))
     if x + h == x or x - h == x or (not whole and float(h) * float(h) == 0.0):
         raise InputError(f"a bump of {h!r} is too small to change {parameter} = {x!r} in double precision",
-                         code="RP102", param="bump", hint="Leave bump out for the default (0.0001 × max(1, |value|)).")
+                         code="RP102", param="bump",
+                         hint="Leave bump out for the default (see riskpy_explain sensitivity), or pass a larger one.")
+    # base, up, down, and the second point a one-sided difference needs if up or down is refused
+    far = max((x + 2 * h, x - 2 * h), key=lambda v: _work(t, {**base_args, parameter: v})[0])
+    _check_budget("sensitivity", t, [base_args] + [{**base_args, parameter: v} for v in (x + h, x - h, far)],
+                  "arguments", hint="sensitivity runs the calculator up to four times: lower the size in arguments "
+                                    "(trials, for a simulation) so that the four runs together fit.")
 
     def value_at(shift: Any) -> Dict[str, float]:
+        _checkpoint()
         return _numeric_leaves(_run_inner(t, {**base_args, parameter: x + shift}))
 
+    _checkpoint()
     base = _numeric_leaves(_run_inner(t, base_args))
     if not base:
         raise InputError(f"{t.name} returned no numbers to differentiate", code="RP113", param="tool")
@@ -1618,18 +1867,22 @@ def sensitivity(tool: str, arguments: dict, parameter: str, bump: Optional[float
     failure: Optional[RiskPyError] = None
     try:
         up = value_at(h)
+    except _Cancelled:
+        raise
     except RiskPyError as exc:
         failure = exc
     try:
         down = value_at(-h)
+    except _Cancelled:
+        raise
     except RiskPyError as exc:
         failure = failure or exc
     if up is not None and down is not None:
-        scheme, far = "central", None
+        scheme, far_values = "central", None
     elif up is not None:
-        scheme, far = "forward", value_at(2 * h)
+        scheme, far_values = "forward", value_at(2 * h)
     elif down is not None:
-        scheme, far = "backward", value_at(-2 * h)
+        scheme, far_values = "backward", value_at(-2 * h)
     else:
         assert failure is not None
         raise InputError(f"{t.name} refuses {parameter} = {x + h!r} and {x - h!r}, so nothing can be differenced: "
@@ -1643,11 +1896,11 @@ def sensitivity(tool: str, arguments: dict, parameter: str, bump: Optional[float
             second = (up[path] - 2.0 * f0 + down[path]) / (h * h)
         else:
             near = up if scheme == "forward" else down
-            if path not in near or path not in far:
+            if path not in near or path not in far_values:
                 continue
             sign = 1.0 if scheme == "forward" else -1.0
-            first = sign * (-3.0 * f0 + 4.0 * near[path] - far[path]) / (2.0 * h)
-            second = (f0 - 2.0 * near[path] + far[path]) / (h * h)
+            first = sign * (-3.0 * f0 + 4.0 * near[path] - far_values[path]) / (2.0 * h)
+            second = (f0 - 2.0 * near[path] + far_values[path]) / (h * h)
         outputs[path] = {
             "base": f0, "down": None if down is None else down.get(path), "up": None if up is None else up.get(path),
             "derivative": first, "second_derivative": second,
@@ -1673,23 +1926,41 @@ def scenario_table(tool: str, arguments: dict, scenarios: dict) -> dict:
                          code="RP405", param="scenarios")
     accepted = set(inspect.signature(t.fn).parameters)
     for label, overrides in scenarios.items():
+        if len(str(label)) > LIMITS["string"]:
+            raise InputError(f"a scenario label is {len(str(label))} characters long; labels are at most "
+                             f"{LIMITS['string']}", code="RP405", param="scenarios",
+                             hint='Give each scenario a short label a reader would understand, e.g. "rates +100bp".')
         if not isinstance(overrides, dict):
-            raise ArgumentTypeError(f"scenario {label!r} must be an object of argument overrides, got "
+            raise ArgumentTypeError(f"scenario {_show(label)} must be an object of argument overrides, got "
                                     f"{_json_name(overrides)}", code="RP404", param="scenarios",
                                     hint='Each scenario is {"argument": new value}, e.g. {"r": 0.06}.')
-        unknown = sorted(set(overrides) - accepted)
+        _check_names(t.name, overrides, "scenarios")
+        unknown = sorted((k for k in overrides if k not in accepted), key=str)
         if unknown:
             guess = _suggest(unknown[0], accepted)
-            raise ArgumentTypeError(f"scenario {label!r} overrides {unknown}, which {t.name} does not take; "
-                                    f"accepted: {sorted(accepted)}", code="RP402", param="scenarios",
+            raise ArgumentTypeError(f"scenario {_show(label)} overrides {_list_names(unknown)}, which {t.name} does "
+                                    f"not take; accepted: {sorted(accepted)}", code="RP402", param="scenarios",
                                     hint=(f"Did you mean {guess!r}? " if guess else "")
                                     + f"`riskpy-tools schema {t.name}` lists them.")
     _needs_seed(t, base_args, "arguments")
+    _check_budget("scenario_table", t, [base_args] + [{**base_args, **o} for o in scenarios.values()], "scenarios",
+                  hint="scenario_table runs the calculator once for the base and once per scenario: lower the size "
+                       "(trials, for a simulation) in arguments or in the scenarios, or split the scenarios over "
+                       "several calls.")
+    started = time.perf_counter()
+    _checkpoint()
     base_result = _run_inner(t, base_args)
     base = _numeric_leaves(base_result)
     table: Dict[str, dict] = {}
     failed = 0
-    for label, overrides in scenarios.items():
+    labels = list(scenarios)
+    not_run: List[Any] = []
+    for index, label in enumerate(labels):
+        _checkpoint()
+        if time.perf_counter() - started > LIMITS["meta_seconds"]:
+            not_run = labels[index:]
+            break
+        overrides = scenarios[label]
         try:
             result = _run_inner(t, {**base_args, **overrides})
         except RiskPyError as exc:
@@ -1705,8 +1976,19 @@ def scenario_table(tool: str, arguments: dict, scenarios: dict) -> dict:
             "relative_change": {path: ((leaves[path] - base[path]) / abs(base[path]) if base[path] != 0.0 else None)
                                 for path in shared},
         }
-    return {"tool": t.name, "base": {"arguments": base_args, "result": base_result}, "scenarios": table,
-            "failed": failed}
+    out = {"tool": t.name, "base": {"arguments": base_args, "result": base_result}, "scenarios": table,
+           "failed": failed}
+    if not_run:
+        # The backstop for work the estimate missed: what ran is returned, and the rest is named.
+        stop = InputError(f"not run: the call had taken {time.perf_counter() - started:.1f} s, past its "
+                          f"{LIMITS['meta_seconds']} s allowance, after {len(labels) - len(not_run)} of {len(labels)} "
+                          "scenarios", code="RP405", param="scenarios",
+                          hint="Run the scenarios that were not run in another call, or lower the size of each run.")
+        for label in not_run:
+            table[str(label)] = {"overrides": _jsonable(scenarios[label]), "error": stop.to_dict()}
+        out["failed"] = failed + len(not_run)
+        out["not_run"] = [str(label) for label in not_run]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1794,13 +2076,23 @@ _EXPLAIN: Dict[str, Dict[str, Any]] = {
                         "for one basis point), per 1.00 of volatility", "falls back to a three-point one-sided "
                         "difference (scheme forward/backward) when one bumped value is refused",
                         "a simulation needs a non-zero seed so both bumps share the same draws",
+                        "the default bump is 0.0001 × max(1, |value|) for a closed form and 1% of the value for a "
+                        "simulation (1% of the distance to 0 or 1 for a confidence level): a smaller one would "
+                        "difference sampling noise. A simulated derivative still carries some noise; repeat with "
+                        "another bump (or more trials) before relying on it",
+                        "the base run and the bumped runs together may ask for no more work than one call of the "
+                        "calculator at its limit (RP405); verify cannot be driven",
                         "outputs are keyed by dotted path (\"price\", \"var.0.995\", \"result\" for a bare number)"],
     },
     "scenario_table": {
         "formula": "result_k = tool(arguments with scenario k's overrides); change = result_k − base; "
                    "relative_change = change / |base|",
         "conventions": ["a scenario the calculator refuses is reported under its label with the error, and the "
-                        "rest still run", "overrides replace arguments; they are not added to them"],
+                        "rest still run", "overrides replace arguments; they are not added to them",
+                        "the base and all the scenarios together may ask for no more work than one call of the "
+                        "calculator at its limit (RP405, before anything runs); verify cannot be driven",
+                        "past LIMITS['meta_seconds'] the scenarios not yet run are reported with RP405 and listed "
+                        "under not_run, and what did run is returned"],
     },
 }
 
@@ -1888,8 +2180,25 @@ def _non_negative_int(text: str) -> int:
 def _print_error(detail: dict, as_json: bool = True) -> None:
     if as_json:
         print(json.dumps({"error": detail}, indent=2, ensure_ascii=False))
-    where = f" ({detail['param']})" if detail.get("param") else ""
-    print(f"riskpy-tools: {detail['code']}{where} {detail['message']}\n  hint: {detail['hint']}", file=sys.stderr)
+    where = f" ({_printable(detail['param'])})" if detail.get("param") else ""
+    print(f"riskpy-tools: {_printable(detail['code'])}{where} {_printable(detail['message'])}\n"
+          f"  hint: {_printable(detail['hint'])}", file=sys.stderr)
+
+
+def _warn_unrecorded() -> None:
+    """Say so on stderr when the audit ledger could not record this process's calls.
+
+    The ledger never breaks a calculation (an unwritable file is counted, not raised), but the
+    count lives in the process: after `riskpy-tools call` exits nobody else can read it.
+    """
+    if "riskpy.audit" not in sys.modules:
+        return
+    from . import audit
+
+    ledger = audit.active()
+    if ledger is not None and ledger.failures:
+        print(f"riskpy-tools: warning: RP505 the call was not recorded to the audit ledger {ledger.path!r} "
+              f"(RISKPY_AUDIT_FILE): check that its folder exists and is writable", file=sys.stderr)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1917,6 +2226,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                           "hint": _errors.CATALOGUE["RP406"]["hint"], "docs": f"{_errors.DOCS}#rp406"})
             return 1
         out = call(args.name, arguments, errors="return", via="cli")
+        _warn_unrecorded()
         if isinstance(out, dict) and set(out) == {"error"}:
             _print_error(out["error"])
             return 1
@@ -1936,18 +2246,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             entries = _read_trace_file(path, None) + entries
         entries = entries[-args.limit:] if args.limit else entries
         if args.trace_json:
-            print(json.dumps(_jsonable(entries), indent=2, ensure_ascii=False, allow_nan=False))
+            text = json.dumps(_jsonable(entries), indent=2, ensure_ascii=False, allow_nan=False)
+            # json.dumps escapes C0 controls; DEL and the C1 controls (U+0080–U+009F) pass through raw.
+            print(re.sub(r"[\x7f-\x9f]", lambda m: f"\\u{ord(m.group()):04x}", text))
             return 0
         if not entries:
             print("No tool calls traced. The trace lives in the process that made the calls (riskpy_status over "
                   "MCP shows the server's); set RISKPY_TRACE_FILE=/path/trace.jsonl to keep calls across processes.")
             return 0
         for e in entries:
-            outcome = "ok" if e.get("ok") else f"{e.get('code')} {e.get('param') or ''} {e.get('message') or ''}".strip()
+            # Every field may hold what an agent sent (a tool name, an argument name) or whatever the
+            # trace file holds: control characters are escaped, never sent to the terminal raw.
+            at, via, name = (str(e.get(k) or "")[:n] for k, n in (("at", 23), ("via", 12), ("tool", 80)))
+            code, param, message = (str(e.get(k) or "")[:n] for k, n in (("code", 12), ("param", 80), ("message", 200)))
+            outcome = "ok" if e.get("ok") else f"{code} {param} {message}".strip()
             ms = e.get("ms")
             ms_text = f"{ms:>9.1f}" if isinstance(ms, (int, float)) and not isinstance(ms, bool) else f"{'?':>9}"
-            print(f"{str(e.get('at') or '')[:23]}  {str(e.get('via') or ''):<6} {str(e.get('tool') or ''):<24} "
-                  f"{ms_text} ms  {outcome}")
+            print(f"{_printable(at)}  {_printable(via):<6} {_printable(name):<24} {ms_text} ms  {_printable(outcome)}")
         return 0
     if args.json:
         print(json.dumps(manifest(), indent=2))

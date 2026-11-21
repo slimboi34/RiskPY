@@ -14,6 +14,7 @@ import argparse
 import importlib
 import inspect
 import json
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -67,15 +68,34 @@ CONVENTIONS = [
     "expected shortfall (the same definition as `Result.tvar`), and Euler `contributions` add up to `total` "
     "exactly. `aggregate_capital` (the √(c′Rc) formula) needs standalone figures at one confidence level; "
     "`allocate` needs arrays from one joint simulation, trial for trial.",
-    "**Stress tests share the base run's draws.** `Model.stress({label: {variable: shock}})` re-evaluates the "
-    "same trials under each scenario, so differences are the shock, not noise. The `sensitivity` tool's "
-    "derivatives are per one whole unit of the input: multiply by 0.0001 for a basis point.",
+    "**A stress test shares its own base run's draws.** `Model.stress({label: {variable: shock}}, trials=, seed=, "
+    "copula=)` draws its own base run (it does not reuse an earlier `run`) and re-evaluates those same trials "
+    "under each scenario, so the differences are the shock, not noise. To compare with a `run`, pass the same "
+    "`trials`, `seed` and `copula`. The `sensitivity` tool's derivatives are per one whole unit of the input: "
+    "multiply by 0.0001 for a basis point.",
     "**Quote the ledger head.** With `RISKPY_AUDIT_FILE` set (or `riskpy.audit.start(path)`), every tool call is "
     "recorded in full and hash-chained; `riskpy_audit` returns the head digest, `riskpy-audit replay FILE` "
     "recomputes the calls. A simulation run with `seed=0` cannot be replayed.",
     "**Check, don't trust:** `riskpy-verify` runs 125 identities (139 with SciPy) against published tables and "
     "closed forms; the `verify` tool does the same and returns data. On a lean install, modules whose extra is "
     "missing are reported as skipped, not failed.",
+    "**A model end to end** — declare the inputs, register the formula, run with a copula, allocate, stress:\n\n"
+    "  ```python\n"
+    "  from riskpy import capital, mc\n"
+    "\n"
+    "  m = mc.Model(motor=mc.LogNormal.from_moments(60, 40), home=mc.LogNormal.from_moments(36, 24))\n"
+    "\n"
+    "  @m.formula\n"
+    "  def total(motor, home):              # parameters named after the variables\n"
+    "      return motor + home\n"
+    "\n"
+    "  gumbel = capital.GumbelCopula(1.5, dim=2)       # dim = number of variables, in declaration order\n"
+    "  res = m.run(100_000, seed=42, copula=gumbel)\n"
+    "  res.var(0.995), res.tvar(0.995), res.describe()\n"
+    "  capital.allocate(res.inputs, level=0.995).contributions   # Euler; adds up to res.tvar(0.995)\n"
+    "  stress = m.stress({\"motor +20%\": {\"motor\": lambda x: 1.2 * x}}, trials=100_000, seed=42, copula=gumbel)\n"
+    "  stress.delta(\"motor +20%\", \"tvar\", 0.995)\n"
+    "  ```",
     "**Every tool is a wrapper over a verified public function.** If a calculation is not a tool, the module "
     "functions below are one import away and take the same conventions.",
     "**Errors carry a stable code, the parameter and the fix.** Every deliberate error is a `RiskPyError` "
@@ -93,7 +113,7 @@ ERROR_FAMILIES = [
     ("RP3xx", "numerical — no solution exists (option price below intrinsic RP301, above the ceiling RP302, "
               "root not bracketed RP303)"),
     ("RP4xx", "tool call — unknown tool RP401, unexpected argument RP402, missing argument RP403, wrong JSON type "
-              "RP404, over a limit RP405"),
+              "RP404, over a limit RP405, cancelled by the client RP408"),
     ("RP5xx", "malformed data — life table RP501, claims triangle RP502, term structure RP503, transition matrix RP504"),
     ("RP9xx", "unexpected internal error — a bug; run riskpy-doctor and report it"),
 ]
@@ -106,9 +126,39 @@ def _signature(fn) -> str:
         return "(...)"
 
 
+def _summary(doc: Optional[str]) -> str:
+    """The first paragraph of a docstring on one line, or its first sentence when that paragraph
+    is long; never cut mid-sentence the way a first line is."""
+    paragraph = " ".join(inspect.cleandoc(doc or "").split("\n\n")[0].split())
+    if len(paragraph) <= 240:
+        return paragraph
+    first = re.match(r"(.{20,}?[.!?])\s+(?=[A-Z`(*])", paragraph)
+    if first and len(first.group(1)) <= 240:
+        return first.group(1)
+    return paragraph[:237].rsplit(" ", 1)[0] + "..."
+
+
 def _doc(obj) -> str:
-    doc = inspect.getdoc(obj) or ""
-    return doc.strip().splitlines()[0] if doc.strip() else ""
+    """A summary of the object's own docstring. For a class, only the docstring it defines itself:
+    inspect.getdoc follows the MRO, so a class without one got its base class's ("Base class. A
+    distribution has to know how to draw ...") as if it described the class."""
+    if inspect.isclass(obj):
+        own = vars(obj).get("__doc__")
+        if not isinstance(own, str) or own.startswith(f"{obj.__name__}("):   # a dataclass's generated doc
+            return ""
+        return _summary(own)
+    return _summary(inspect.getdoc(obj))
+
+
+def _class_signature(cls) -> str:
+    """How to construct the class — ``(theta: float, dim: int = 2, survival: bool = False)`` —
+    without private fields or the return annotation; "" when there is nothing to say."""
+    try:
+        sig = inspect.signature(cls)
+    except (TypeError, ValueError):
+        return ""
+    params = [p for p in sig.parameters.values() if not p.name.startswith("_")]
+    return str(sig.replace(parameters=params, return_annotation=inspect.Signature.empty)).replace("'", "")
 
 
 def _module_map(name: str) -> dict:
@@ -121,7 +171,7 @@ def _module_map(name: str) -> dict:
         if inspect.isclass(obj):
             methods = sorted(m for m, v in vars(obj).items()
                              if not m.startswith("_") and (callable(v) or isinstance(v, (property, classmethod, staticmethod))))
-            classes.append({"name": attr, "doc": _doc(obj), "methods": methods})
+            classes.append({"name": attr, "signature": _class_signature(obj), "doc": _doc(obj), "methods": methods})
         elif inspect.isfunction(obj):
             functions.append({"name": attr, "signature": _signature(obj), "doc": _doc(obj)})
     return {"doc": _doc(module), "functions": functions, "classes": classes}
@@ -240,8 +290,8 @@ def build() -> str:
             lines.append(f"- `{f['name']}{f['signature']}`{doc}")
         for c in m["classes"]:
             doc = f" — {c['doc']}" if c["doc"] else ""
-            methods = f" · {', '.join(f'`{x}`' for x in c['methods'][:14])}" if c["methods"] else ""
-            lines.append(f"- class `{c['name']}`{doc}{methods}")
+            methods = f" · {', '.join(f'`{x}`' for x in c['methods'])}" if c["methods"] else ""
+            lines.append(f"- class `{c['name']}{c['signature']}`{doc}{methods}")
         lines.append("")
     lines += [
         "## Verification",
@@ -255,18 +305,28 @@ def build() -> str:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    from .errors import _broken_pipe, _output_failed, _safe_streams
+
+    _safe_streams()      # the pack is full of σ, √ and —: a cp1252 console must not crash on them
     parser = argparse.ArgumentParser(prog="riskpy-context",
                                      description="Describe RiskPY for an AI coding tool: conventions, modules, tools.")
     parser.add_argument("--json", action="store_true", help="the description as JSON instead of Markdown")
     parser.add_argument("-o", "--output", metavar="FILE", help="write to FILE instead of stdout")
     args = parser.parse_args(argv)
     text = json.dumps(describe(), indent=2) if args.json else build()
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as fh:
-            fh.write(text.rstrip("\n") + "\n")
-        print(f"wrote {args.output}")
-    else:
-        sys.stdout.write(text if text.endswith("\n") else text + "\n")
+    try:
+        if args.output:
+            try:
+                with open(args.output, "w", encoding="utf-8") as fh:
+                    fh.write(text.rstrip("\n") + "\n")
+            except OSError as exc:
+                return _output_failed("riskpy-context", args.output, exc)
+            print(f"wrote {args.output}")
+        else:
+            sys.stdout.write(text if text.endswith("\n") else text + "\n")
+            sys.stdout.flush()
+    except BrokenPipeError:          # riskpy-context | head
+        return _broken_pipe()
     return 0
 
 

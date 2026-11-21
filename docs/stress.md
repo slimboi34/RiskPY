@@ -171,7 +171,7 @@ gamma (0.018762).
 | `tool` | the calculator to differentiate |
 | `arguments` | its base-case arguments, as an object |
 | `parameter` | the numeric argument to bump |
-| `bump` | the bump in the parameter's own units; default 0.0001 × max(1, ∣value∣), or 1 for a whole-number parameter |
+| `bump` | the bump in the parameter's own units; default 0.0001 × max(1, ∣value∣) for a closed form, 1% of ∣value∣ for a simulation (1% of the distance to 0 or 1 for a confidence level), or 1 for a whole-number parameter |
 | `relative` | `true` to read `bump` as a fraction of the value (0.01 is a 1% bump) |
 
 Things to know:
@@ -187,6 +187,12 @@ Things to know:
   `"scheme": "forward"` or `"backward"`.
 - **Simulations** need a non-zero `seed` in `arguments`, so that every
   revaluation uses the same draws. Without one the call is refused (RP113).
+  Even with the seed fixed, a simulated output moves in steps, so the default
+  bump for a simulation is 1% of the value rather than 0.0001 of it; repeat
+  with another bump before relying on a simulated derivative.
+- **Budget.** The base run and the bumped runs together may ask for no more
+  work than one call of the calculator at its limit (RP405), and the same
+  holds for the base and the scenarios of a `scenario_table`.
 
 ## Scenario tables for any calculator
 

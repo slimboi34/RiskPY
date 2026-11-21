@@ -39,7 +39,7 @@ failed call comes back as JSON instead of a traceback:
 | `RP1xx` | an input outside its domain |
 | `RP2xx` | an optional dependency that is not installed, or a compiled core that will not load |
 | `RP3xx` | a numerical problem: no solution exists, or a solver cannot reach one |
-| `RP4xx` | a tool call that is wrong as a call (unknown tool or argument, wrong JSON type, over a limit) |
+| `RP4xx` | a tool call that is wrong as a call (unknown tool or argument, wrong JSON type, over a limit), or one the client cancelled |
 | `RP5xx` | data that is malformed as a whole (a life table, a claims triangle, a curve, a matrix) |
 | `RP9xx` | something RiskPY did not expect — a bug worth reporting |
 
@@ -198,6 +198,12 @@ An intermediate result overflowed floating point (for example (1 + i)^n with a l
 
 **Fix:** Use inputs of a realistic size; the message names the calculation that overflowed.
 
+Since 0.8.0 this code also covers Python's bare `math domain error` (a logarithm or square root of
+zero or a negative number), which almost always means an input so extreme that an intermediate
+value underflowed to zero — a spot of 1e-200 against a strike of 1e200, a zero-coupon bond a
+million years long. Where the tool knows which argument is at fault (`short_rate_zero_bond`
+names `T`) the error says so.
+
 ### RP305 — Non-finite result {#rp305}
 
 A calculation produced NaN or infinity: a simulation formula divided by a variable that reached zero, or a resampled triangle had a degenerate column.
@@ -233,9 +239,16 @@ An argument has the wrong JSON type: a string where a number belongs, true/false
 
 ### RP405 — Over a tool limit {#rp405}
 
-The call asks for more work than one tool call may (trials, simulated claims, payment periods, triangle size, list or string length, integer size). The limits are in riskpy.tools.LIMITS.
+The call asks for more work than one tool call may (trials, simulated claims, payment periods, triangle size, list or string length, the length of a tool name, argument name or scenario label, nesting depth, integer size), or a sensitivity / scenario_table call whose runs together would. The limits are in riskpy.tools.LIMITS.
 
 **Fix:** Lower the size named in the message, or call the library function directly, which is unbounded.
+
+`sensitivity` and `scenario_table` run another calculator several times (up to four times, and
+once per scenario plus the base). All those runs together may ask for no more work than one call
+of that calculator at its limit — a scenario table of 100 one-million-trial simulations is
+refused before anything runs, with a message naming the largest run. A scenario table that
+still runs past `LIMITS["meta_seconds"]` (20 s) returns what it has: the scenarios not yet run
+carry this code and are listed under `not_run`.
 
 ### RP406 — Arguments are not a JSON object {#rp406}
 
@@ -248,6 +261,15 @@ The arguments for a tool call could not be parsed as a JSON object.
 riskpy-explain was asked about a code that is not in the catalogue.
 
 **Fix:** riskpy-explain --list shows every code.
+
+### RP408 — Call cancelled {#rp408}
+
+The client cancelled the call (MCP notifications/cancelled) before it finished. sensitivity and scenario_table stop at the next gap between the calculations they drive; the trace and the audit ledger record the call with this code.
+
+**Fix:** Nothing to fix: call again if the answer is still wanted, with fewer scenarios or trials if it was cancelled for taking too long.
+
+A tool call runs in a worker thread, which cannot be interrupted mid-calculation, so a single
+calculator call finishes before its cancellation takes effect; new in 0.8.0.
 
 
 ## RP5xx — data
@@ -281,6 +303,12 @@ A rating transition matrix is not square, has rows that do not sum to 1, negativ
 A file could not be read or written (an export, a context pack, a trace file).
 
 **Fix:** Check the path exists and is writable.
+
+The command-line tools report it in one line instead of a traceback: `riskpy-context -o`,
+`riskpy-verify --json` / `--markdown` (checked before the suite runs), `riskpy-mcp --audit` (the
+ledger is opened when the server starts, and the server exits if it cannot be), and
+`riskpy-tools call`, which warns on stderr when the call could not be recorded to the ledger
+named by `RISKPY_AUDIT_FILE`.
 
 
 ## RP9xx — internal
