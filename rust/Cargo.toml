@@ -1,0 +1,38 @@
+# The compiled core of RiskPY: a pure-Rust library (core/) and its PyO3
+# bindings (python/), which build the extension module riskpy.cpp_underwriter.
+# maturin builds python/ (see [tool.maturin] in ../pyproject.toml).
+[workspace]
+members = ["core", "python"]
+resolver = "3"
+
+[workspace.package]
+version = "0.9.0"
+edition = "2024"
+license = "MIT"
+# zip 9 needs 1.89; nothing in RiskPY's own code needs anything newer.
+rust-version = "1.89"
+repository = "https://github.com/slimboi34/RiskPY"
+homepage = "https://github.com/slimboi34/RiskPY"
+publish = false
+
+[workspace.dependencies]
+riskpy-core = { path = "core" }
+# Pure-Rust port of musl's libm. Every transcendental function the core calls goes
+# through it, so a seed gives the same numbers on every platform: the system libm
+# (Apple's, glibc's, the MSVC CRT) differs in the last bit between platforms.
+libm = "0.2.16"
+# Entropy for seed = 0 only.
+getrandom = "0.4.3"
+# The .xlsx container. Deflate through flate2's pure-Rust zlib-rs backend; none of
+# zip's other codecs, encryption or time features.
+zip = { version = "9.8.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# abi3-py310: one wheel per platform for CPython 3.10 and later.
+pyo3 = { version = "0.29.3", features = ["abi3-py310"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# Unwind, not abort: a panic inside the core surfaces as a Python exception
+# (pyo3's PanicException) instead of killing the interpreter.
+panic = "unwind"

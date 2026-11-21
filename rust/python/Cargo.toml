@@ -1,0 +1,21 @@
+[package]
+name = "riskpy-python"
+description = "PyO3 bindings that expose riskpy-core to Python as riskpy.cpp_underwriter."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[lib]
+# The library name is the extension module's name: maturin installs it as
+# riskpy/cpp_underwriter.*.so (module-name in ../../pyproject.toml), the path the
+# C++ core used, so `from riskpy.cpp_underwriter import ...` keeps working.
+name = "cpp_underwriter"
+crate-type = ["cdylib"]
+
+[dependencies]
+riskpy-core.workspace = true
+pyo3.workspace = true

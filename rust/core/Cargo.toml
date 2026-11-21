@@ -1,0 +1,15 @@
+[package]
+name = "riskpy-core"
+description = "RiskPY's actuarial core in plain Rust: rating, reserving, Fourier aggregate loss, Monte Carlo, Excel export."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+libm.workspace = true
+getrandom.workspace = true
+zip.workspace = true
