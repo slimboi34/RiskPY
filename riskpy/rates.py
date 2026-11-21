@@ -5,7 +5,7 @@ Two layers, split by what they cost to install:
 * **Scalar maths** — compounding conventions, :class:`YieldCurve`,
   :class:`Bond`, the Nelson–Siegel and Svensson families and the closed-form
   Vasicek and CIR bond prices — is pure Python and needs nothing beyond the
-  standard library, so it works in the same lean install as the C++ core.
+  standard library, so it works in the same lean install as the compiled core.
 * **Path simulation** (:func:`vasicek_paths`, :func:`cir_paths`) needs NumPy
   (``pip install open-riskpy[sim]``), imported lazily on first use.
 

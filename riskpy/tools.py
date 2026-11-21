@@ -326,7 +326,7 @@ def _checked(fn: Callable) -> Callable:
             if name in hints:
                 _check_arg(name, hints[name], value)
                 # A whole-number float passed for an int (JSON has one number type) is
-                # handed on as an int: the C++ core's pybind signatures refuse 1000.0.
+                # handed on as an int: the compiled core's int arguments refuse 1000.0.
                 if isinstance(value, float) and hints[name] in (int, Optional[int]):
                     bound.arguments[name] = int(value)
             _check_plausible(name, value)

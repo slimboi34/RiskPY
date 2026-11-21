@@ -6,9 +6,11 @@ from riskpy import UnderwritingApp, FactorModel, ActuarialMath
 # ==========================================
 # 2. CONFIGURE TOOL
 # ==========================================
+# excel_template is accepted for compatibility but not read: every export starts from a
+# blank workbook, as it always has.
 app = UnderwritingApp(title="Actuarial Pricing Tool", excel_template="corporate_layout.xlsx")
 
-# Add Fields automatically maps: C++ Field Engine -> Tkinter UI -> Excel Output
+# Add Fields automatically maps: compiled Field engine -> Tkinter UI -> Excel Output
 app.add_field(name="state", label="Location State", excel_col="A", choices=["NY", "CA", "TX", "FL"])
 app.add_field(name="age", label="Client Age", excel_col="B")
 app.add_field(name="property_value", label="Property Value ($)", excel_col="C")
@@ -16,7 +18,7 @@ app.add_field(name="coverage_amount", label="Coverage Amount ($)", excel_col="D"
 app.set_premium_column(excel_col="E", label="Final Premium")
 
 # ==========================================
-# 3. ACTUARIAL FACTOR MODEL (100% C++ Engine Execution)
+# 3. ACTUARIAL FACTOR MODEL (runs entirely in the compiled Rust core)
 # ==========================================
 # Actuaries don't need to write Python `if` statements anymore.
 # They just build rating tables declaratively:
@@ -38,7 +40,7 @@ app.set_factor_model(model)
 
 # Bonus: Proving out the built-in standard Actuarial computations
 pv = ActuarialMath.present_value(0.05, 10, 1000)
-print(f"System Check: Built in C++ computation for Present Value: ${pv:,.2f}")
+print(f"System Check: compiled-core computation for Present Value: ${pv:,.2f}")
 
 # ==========================================
 # 4. RUN THE GUI

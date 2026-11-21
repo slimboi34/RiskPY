@@ -1,6 +1,6 @@
 """Generic Monte Carlo — any formula, any distributions, any dependence.
 
-The C++ ``MonteCarloSimulator`` covers five specific actuarial scenarios very
+The compiled ``MonteCarloSimulator`` covers five specific actuarial scenarios very
 fast. This module covers the other case: you have a formula that is too awkward
 to solve analytically, so you feed it random inputs a hundred thousand times and
 look at the distribution that falls out.
@@ -31,7 +31,7 @@ and ``moments()`` — so the same object that feeds a simulation can be fitted,
 discretised for a Panjer recursion, or checked against the sample it produced.
 
 NumPy is required here and is an optional extra for the package as a whole
-(``pip install open-riskpy[sim]``). The C++ core keeps its zero-dependency
+(``pip install open-riskpy[sim]``). The compiled core keeps its zero-dependency
 install; this module is opt-in.
 """
 
@@ -88,7 +88,7 @@ def _numpy():
         raise MissingDependencyError(
             'riskpy.mc needs NumPy, which is not installed: pip install "open-riskpy[sim]" '
             "(or just pip install numpy).\n"
-            "The C++ core is deliberately dependency-free, so the simulation layer "
+            "The compiled core is deliberately dependency-free, so the simulation layer "
             "ships as an extra.", code="RP201", hint='pip install "open-riskpy[sim]"'
         ) from exc
     return numpy
@@ -449,7 +449,7 @@ class Normal(Distribution):
 class LogNormal(Distribution):
     """Log-normal in terms of the **underlying normal's** mu and sigma.
 
-    This is the convention the C++ ``simulate_aggregate_loss`` uses, so the two
+    This is the convention the compiled ``simulate_aggregate_loss`` uses, so the two
     agree. If you have a target mean and standard deviation on the natural
     scale, use :meth:`from_moments` instead — getting this backwards is the most
     common severity-modelling mistake there is.
@@ -912,7 +912,7 @@ class Beta(Distribution):
 class Pareto(Distribution):
     """Pareto Type I with scale ``xm`` and tail index ``alpha``.
 
-    Matches the C++ catastrophe simulator. Note the mean is infinite for
+    Matches the compiled catastrophe simulator. Note the mean is infinite for
     ``alpha <= 1`` and the variance for ``alpha <= 2`` — a sample mean will
     still print a number, and it will be meaningless. :meth:`moments` reports
     ``inf`` in those cases rather than a number.

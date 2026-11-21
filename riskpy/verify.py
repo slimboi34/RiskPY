@@ -629,8 +629,8 @@ def benchmark(repeat: int = 3) -> Dict[str, float]:
         "reserving.chain_ladder GenIns × 100": best(lambda: [reserving.chain_ladder(tri) for _ in range(100)]),
         "reserving.mack_chain_ladder GenIns × 100": best(lambda: [reserving.mack_chain_ladder(tri) for _ in range(100)]),
         "reserving.bootstrap_chain_ladder n=1000": best(lambda: reserving.bootstrap_chain_ladder(tri, n=1000, seed=1)),
-        "C++ MonteCarloSimulator aggregate loss 200k": best(lambda: sim.simulate_aggregate_loss(5.0, 8.0, 0.5)),
-        "C++ FourierTransform compound Poisson 4096": best(
+        "Rust MonteCarloSimulator aggregate loss 200k": best(lambda: sim.simulate_aggregate_loss(5.0, 8.0, 0.5)),
+        "Rust FourierTransform compound Poisson 4096": best(
             lambda: riskpy.FourierTransform.compound_poisson_pmf([0.0] + [1.0 / 200.0] * 200, 20.0, 4096)),
     }
 

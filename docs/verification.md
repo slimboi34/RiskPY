@@ -34,7 +34,7 @@ Some of what is checked, by module:
 
 | module | examples |
 |---|---|
-| `core` | `FactorModel` against hand arithmetic; the hand-checked chain ladder; the compound Poisson FFT with unit severity is `Poisson(λ)`; the C++ aggregate-loss mean is `λ·E[X]` |
+| `core` | `FactorModel` against hand arithmetic; the hand-checked chain ladder; the compound Poisson FFT with unit severity is `Poisson(λ)`; the compiled core's aggregate-loss mean is `λ·E[X]` |
 | `special` | `Φ(0) = ½`; `Φ⁻¹(Φ(x)) = x`; `P(1, x) = 1 − e⁻ˣ`; `I_x(a, b) + I_{1−x}(b, a) = 1`; the t with one degree of freedom is Cauchy; `ψ(1) = −γ`; `ψ₁(1) = π²/6`; and, when SciPy is installed, agreement with it to 1e-13 (1e-8 for the Student-t quantile) |
 | `mc` | `cdf(ppf(q)) = q` for every family; sample means within four standard errors of the analytic mean; Latin hypercube within one; Iman–Conover recovers the target Spearman and leaves the marginals untouched; a truncated density integrates to one |
 | `quant` | the canonical Black–Scholes value; put–call parity; delta as a central difference; implied vol round trip; Heston → Black–Scholes as vol-of-vol → 0; Heston put–call parity; the GBM terminal mean |

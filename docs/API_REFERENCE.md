@@ -25,14 +25,14 @@ the `simulate_economic_path`, `simulate_health_claims` and
 - [RateAnalyzer](#rateanalyzer) — On-level & indicated rate change
 - [FourierTransform](#fouriertransform) — FFT & compound-Poisson PMF
 - [UnderwritingApp](#underwritingapp) — Interactive GUI application
-- [RiskEngine](#riskengine) — Low-level C++ calculation orchestrator
+- [RiskEngine](#riskengine) — Low-level calculation orchestrator
 - [ExcelExporter](#excelexporter) — Binary Excel output engine
 
 ---
 
 ## FactorModel
 
-A declarative, multiplicative rating engine. Define pricing rules as factors — the C++ engine applies them instantly across any number of policies.
+A declarative, multiplicative rating engine. Define pricing rules as factors — the compiled Rust engine applies them instantly across any number of policies.
 
 ### Constructor
 
@@ -114,7 +114,7 @@ premium = model.calculate({"state": "CA", "driver_age": 22.0})
 
 ## MonteCarloSimulator
 
-High-performance stochastic simulation engine running natively in C++. Construct it with the trial count (and an optional seed), then call the scenario methods.
+High-performance stochastic simulation engine running natively in the Rust core. Construct it with the trial count (and an optional seed), then call the scenario methods. A non-zero seed gives the same numbers on every platform; seed 0 draws a fresh one. Seeded results changed in 0.9.0, when the core moved to a PCG64-DXSM stream with its own samplers. Every `simulate_*` method releases the GIL while it runs.
 
 ### Methods
 
@@ -179,7 +179,7 @@ print(f"Expected annual claims: ${expected_claims:,.0f}")
 
 ## ActuarialMath
 
-Core actuarial formulas implemented in C++ for maximum precision and speed. All methods are static.
+Core actuarial formulas implemented in the compiled Rust core. All methods are static.
 
 ### Methods
 
@@ -197,10 +197,10 @@ print(f"Present value: ${pv:,.2f}")  # $623,110.52
 | Parameter | Type | Description |
 |---|---|---|
 | `rate` | `float` | Discount rate per period (e.g., `0.05` for 5%) |
-| `periods` | `int` | Number of payment periods |
-| `payment` | `float` | Payment amount per period |
+| `periods` | `int` | Number of payment periods (0 or more) |
+| `payment` | `float` | Payment amount per period (finite) |
 
-**Returns**: `float` — Present value of the annuity.
+**Returns**: `float` — Present value of the annuity. Computed as `−expm1(−n·log1p(r)) / r`, so it keeps its digits for tiny rates. Since 0.9.0 negative `periods` and a NaN or infinite `payment` raise `ValueError`, as a rate of −100% or less always has.
 
 ---
 
@@ -215,10 +215,10 @@ print(f"Future value: ${fv:,.2f}")
 | Parameter | Type | Description |
 |---|---|---|
 | `rate` | `float` | Interest rate per period |
-| `periods` | `int` | Number of payment periods |
-| `payment` | `float` | Payment amount per period |
+| `periods` | `int` | Number of payment periods (0 or more) |
+| `payment` | `float` | Payment amount per period (finite) |
 
-**Returns**: `float` — Future value of the annuity.
+**Returns**: `float` — Future value of the annuity, computed as `expm1(n·log1p(r)) / r`. The same refusals as `present_value`.
 
 ---
 
@@ -259,7 +259,7 @@ print(f"Mortality rate at age 65: {qx:.4f}")
 
 ## UnderwritingApp
 
-The high-level Python class that provides a complete GUI application. It wraps the C++ engine, Excel exporter, and Monte Carlo simulator into an interactive Tkinter desktop app.
+The high-level Python class that provides a complete GUI application. It wraps the compiled engine, Excel exporter, and Monte Carlo simulator into an interactive Tkinter desktop app.
 
 ### Constructor
 
@@ -272,7 +272,7 @@ app = UnderwritingApp(title="My Pricing Tool", excel_template="template.xlsx")
 | Parameter | Type | Description |
 |---|---|---|
 | `title` | `str` | Window title for the GUI. Default: `"Actuarial Underwriter"` |
-| `excel_template` | `str` | Accepted but currently ignored: every export creates a new workbook rather than filling a template. Default: `"corporate_layout.xlsx"` |
+| `excel_template` | `str` | Accepted but not read: every export creates a new workbook rather than filling a template (the C++ core never read it either). Default: `"corporate_layout.xlsx"` |
 
 ### Methods
 
@@ -489,7 +489,7 @@ pmf = FourierTransform.compound_poisson_pmf(
 
 ## RiskEngine
 
-Low-level C++ calculation orchestrator. Most users should use `UnderwritingApp` instead, which wraps this class. Exposed for advanced use cases.
+Low-level calculation orchestrator in the compiled core. Most users should use `UnderwritingApp` instead, which wraps this class. Exposed for advanced use cases.
 
 ```python
 from riskpy import RiskEngine, Field
@@ -515,12 +515,12 @@ result = engine.execute({"age": 25.0})
 
 ## ExcelExporter
 
-Writes calculation results to binary `.xlsx` files using the C++ OpenXLSX library (bypasses Python entirely for speed).
+Writes calculation results to binary `.xlsx` files from the Rust core (bypasses Python entirely for speed). Each export is a fresh workbook with one sheet, "Sheet1": labels in row 1, values from row 2. The file is written beside the target and renamed over it, so a failed export leaves an existing file untouched; an invalid column such as `"a"` or `"AAAA"` raises `RuntimeError`.
 
 ```python
 from riskpy import ExcelExporter
 
-exporter = ExcelExporter(template="my_template.xlsx")  # template is accepted but currently ignored
+exporter = ExcelExporter(template="my_template.xlsx")  # template is accepted but not read
 exporter.map_column("A", "state", "State")
 exporter.map_column("B", "age", "Driver Age")
 ```

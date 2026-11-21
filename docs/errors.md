@@ -161,7 +161,7 @@ riskpy-mcp serves the tools over the Model Context Protocol and needs the MCP SD
 
 ### RP205 — Compiled core not importable {#rp205}
 
-The C++ extension cpp_underwriter did not load: usually a source checkout without a build, or a wheel for a different Python or platform.
+The compiled Rust extension cpp_underwriter did not load: usually a source checkout without a build, or a wheel for a different Python or platform.
 
 **Fix:** pip install --force-reinstall open-riskpy  (or build a checkout with `pip install -e .`); run riskpy-doctor for details.
 

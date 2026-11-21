@@ -1,6 +1,6 @@
 # RiskPY
 
-A risk and actuarial engine: a **C++ core** with no Python dependencies, and a
+A risk and actuarial engine: a **Rust core** with no Python dependencies, and a
 modelling layer in readable Python that covers Monte Carlo with dependence,
 life contingencies, claims reserving, yield curves and short-rate models,
 credit risk, option pricing, and twenty-two charts — with a **verification
@@ -40,6 +40,16 @@ result.plot("dashboard")         # distribution, exceedance, convergence, tornad
 [![Python](https://img.shields.io/pypi/pyversions/open-riskpy.svg)](https://pypi.org/project/open-riskpy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+> **v0.9.0** — the compiled core is now **Rust** (PyO3, built by maturin) instead of C++,
+> with the same classes, methods, arguments, defaults and errors, so nothing that imports
+> `riskpy` changes. One abi3 wheel per platform serves CPython 3.10 and later, and
+> building from source needs a Rust toolchain instead of a C++ one. **Seeded `MonteCarloSimulator`
+> results change:** the core draws from its own PCG64-DXSM stream with samplers written
+> in the core, so a seed now gives the same numbers on Linux, macOS and Windows (the
+> C++ standard library's distributions did not). `ActuarialMath.present_value` /
+> `future_value` keep their digits for tiny rates and refuse negative periods and
+> non-finite payments. See [RELEASE_NOTES.md](RELEASE_NOTES.md).
+>
 > **v0.8.0** — fixes from a planned stress test of 0.7.0: 56 defects, every one fixed,
 > plus three found while merging. Three were high severity: `Model.stress` put a 99.5%
 > VaR of 20 defaults on a PD shock whose re-run gives 4, a t copula with a huge `df`
@@ -252,22 +262,27 @@ the SciPy oracle, and the docs site publishes the latest report.
 ```bash
 git clone https://github.com/slimboi34/RiskPY.git
 cd RiskPY
-make install    # pip install -e ".[dev]"
-make test       # pytest — 522 test cases
+make install    # pip install ".[dev]" — builds the Rust core
+make test       # pytest, against the installed package
+make rust       # cargo test + clippy on the Rust core
 make verify     # the verification suite
 ```
 
 Without Make:
 
 ```bash
-pip install -e ".[dev]"
+pip install ".[dev]"
 pytest tests/
-python -m riskpy.verify
+cd /tmp && python -m riskpy.verify   # outside the checkout, so riskpy/ cannot shadow the install
 ```
 
-From source you need a **C++17** compiler and CMake ≥ 3.15 (pulled
-automatically by the build backend when missing). Pre-built wheels ship for
-Python 3.10–3.14 on Linux, macOS and Windows.
+From source you need a **Rust toolchain** (stable, via [rustup](https://rustup.rs));
+pip fetches maturin, the build backend, by itself; Rust uses the platform's
+linker (Xcode Command Line Tools, the C toolchain on Linux, MSVC Build Tools). No CMake.
+Pre-built wheels ship for Linux (x86_64, aarch64), macOS (arm64, x86_64) and
+Windows (AMD64): one abi3 wheel per platform covers Python 3.10–3.14 and later.
+The test suite always runs against the installed package, so re-install after
+changing code; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

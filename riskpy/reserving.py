@@ -866,7 +866,7 @@ def chain_ladder(
     factor per column:
 
     * ``"volume"`` — ``Σ C[i, k+1] / Σ C[i, k]``, the weighted average with
-      weights ``C[i, k]``. The default, the C++ ``LossTriangle``'s method and
+      weights ``C[i, k]``. The default, the compiled ``LossTriangle``'s method and
       the one Mack's standard errors assume. Big origins count more, which is
       right when a big origin's ratio is better information.
     * ``"simple"`` — the plain mean of the link ratios. Every origin counts the

@@ -171,7 +171,7 @@ CATALOGUE: Dict[str, Dict[str, str]] = {
     },
     "RP205": {
         "title": "Compiled core not importable",
-        "meaning": "The C++ extension cpp_underwriter did not load: usually a source checkout without a build, or "
+        "meaning": "The compiled Rust extension cpp_underwriter did not load: usually a source checkout without a build, or "
                    "a wheel for a different Python or platform.",
         "hint": "pip install --force-reinstall open-riskpy  (or build a checkout with `pip install -e .`); "
                 "run riskpy-doctor for details.",

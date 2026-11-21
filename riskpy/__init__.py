@@ -2,7 +2,7 @@
 
 Two layers, deliberately separated by what they cost you to install.
 
-The **core** is C++ compiled through pybind11 and has no Python dependencies at
+The **core** is Rust compiled through PyO3 and has no Python dependencies at
 all: factor rating, loss triangles, Fourier aggregate loss, exposure and
 experience rating, Monte Carlo, Excel export. ``import riskpy`` on a machine
 with nothing else installed works.
@@ -62,10 +62,11 @@ except ImportError as exc:  # pragma: no cover
     from .errors import MissingDependencyError
 
     raise MissingDependencyError(
-        "RiskPY C++ extension 'cpp_underwriter' is not available. "
+        "RiskPY's compiled core 'cpp_underwriter' is not available. "
         "Install/build the package first, e.g.:\n"
         "  pip install -e .\n"
-        "Requires a C++17 compiler, CMake ≥ 3.15, and pybind11.", code="RP205"
+        "Building from source requires a Rust toolchain (https://rustup.rs); "
+        "pip fetches maturin, the build backend, itself.", code="RP205"
     ) from exc
 
 __all__ = [
@@ -148,7 +149,7 @@ def __getattr__(name: str) -> Any:
             from .errors import MissingDependencyError
 
             raise MissingDependencyError(
-                f"UnderwritingApp is unavailable: {exc} The headless C++ APIs "
+                f"UnderwritingApp is unavailable: {exc} The headless core APIs "
                 "(FactorModel, MonteCarloSimulator, FourierTransform, etc.) "
                 "work without it.", code=getattr(exc, "code", "RP206")
             ) from exc

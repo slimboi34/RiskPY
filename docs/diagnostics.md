@@ -17,12 +17,12 @@ riskpy-doctor --json     # {"ok", "version", "summary", "checks": [{id, status, 
 ```
 
 ```text
-riskpy-doctor — RiskPY 0.8.0
+riskpy-doctor — RiskPY 0.9.0
 
   ok    python            Python 3.12.13 (CPython) at /…/bin/python
-  ok    riskpy_version    open-riskpy 0.8.0 (riskpy at /…/site-packages/riskpy)
-  ok    core_import       compiled core loaded from /…/riskpy/cpp_underwriter.cpython-312-darwin.so
-  ok    core_compute      the core simulates correctly (Poisson mean 3.0064 ≈ 3)
+  ok    riskpy_version    open-riskpy 0.9.0 (riskpy at /…/site-packages/riskpy)
+  ok    core_import       compiled core loaded from /…/riskpy/cpp_underwriter.abi3.so (version 0.9.0)
+  ok    core_compute      the core simulates correctly (Poisson mean 2.9840 ≈ 3)
   ok    core_hardening    the core refuses non-finite parameters (0.4.1+ build)
   ok    extra_numpy       numpy 2.5.3
   warn  extra_pandas      pandas is not installed — needed for the .to_frame() methods
@@ -40,7 +40,7 @@ riskpy-doctor — RiskPY 0.8.0
 |---|---|
 | `python` | the interpreter; RiskPY needs 3.10+ and ships wheels for 3.10–3.14 |
 | `riskpy_version` | the installed `open-riskpy` distribution, and whether the `riskpy` being imported *is* that installation — a source checkout on `sys.path` shadowing it is the commonest confusion |
-| `core_import` | the compiled C++ core imports, from the same directory as the Python layer |
+| `core_import` | the compiled Rust core imports, from the same directory as the Python layer, and reports the same version |
 | `core_compute` | the core answers a known question (a Poisson count's mean) correctly |
 | `core_hardening` | the core refuses `NaN` parameters, which only 0.4.1+ builds do — an old extension under a new Python layer shows up here |
 | `extra_*` | NumPy, SciPy, pandas, Matplotlib, the MCP SDK, Tkinter: installed or not, with the exact `pip` line |

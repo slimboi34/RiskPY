@@ -1,6 +1,6 @@
 # RiskPY
 
-A risk and actuarial engine with a C++ core and a Python modelling layer you
+A risk and actuarial engine with a Rust core and a Python modelling layer you
 can read. The compiled part — factor rating, loss triangles, Fourier aggregate
 loss, exposure and experience rating — has no Python dependencies at all. The
 modelling layers on top cover most of what a risk or actuarial team reaches
@@ -156,7 +156,7 @@ result.describe()          # the lot, as a dict
 
 ## The compiled core
 
-Everything below is C++ behind a Python interface and needs nothing installed
+Everything below is compiled Rust behind a Python interface and needs nothing installed
 beyond the wheel:
 
 ```python

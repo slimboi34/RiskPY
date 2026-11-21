@@ -72,7 +72,7 @@ app.set_factor_model(model)
 # =============================================
 # 4. PROCESS THE ENTIRE CSV
 # =============================================
-print("\nProcessing all 500 submissions through C++ engine...")
+print("\nProcessing all 500 submissions through the compiled engine...")
 total_premium, count = app.calculate_batch(csv_file, "rated_submissions.xlsx")
 
 print(f"\n--- Batch Results ---")

@@ -85,5 +85,5 @@ print(f"  {'99% VaR':<25} ${np.percentile(moderate,99):>14,.0f} ${np.percentile(
 print(f"  {'Max Simulated':<25} ${np.max(moderate):>14,.0f} ${np.max(severe):>14,.0f}")
 
 print(f"\n{'=' * 60}")
-print(f"  200,000 trials per scenario executed in C++ (<1 second)")
+print(f"  200,000 trials per scenario executed in the compiled Rust core")
 print(f"{'=' * 60}")

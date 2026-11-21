@@ -26,7 +26,8 @@ model.add_numeric_band_multiplier("driver_age", 26, 99, 1.0)
 ```python
 from riskpy import MonteCarloSimulator
 
-# Runs 1,000,000 simulations in C++ (Mersenne Twister; pass seed= for a reproducible run)
+# Runs 1,000,000 simulations in the compiled core (PCG64-DXSM; pass seed= for a run that
+# repeats on every platform)
 # Returns a Python list of the aggregated losses for plotting
 results = MonteCarloSimulator(trials=1000000).simulate_aggregate_loss(
     expected_frequency=5.0,

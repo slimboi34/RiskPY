@@ -52,7 +52,7 @@ model.add_multiplier("vehicle_type", "Sedan", 1.0)
 model.add_multiplier("vehicle_type", "Sports Car", 2.0)
 ```
 
-**How it works internally**: When `calculate()` is called, the C++ engine iterates through all registered rules. If the input dictionary contains `{"state": "FL"}`, it finds the matching rule and multiplies the premium by 2.5. If there's no match, the factor defaults to 1.0 (no change).
+**How it works internally**: When `calculate()` is called, the compiled Rust engine iterates through all registered rules. If the input dictionary contains `{"state": "FL"}`, it finds the matching rule and multiplies the premium by 2.5. If there's no match, the factor defaults to 1.0 (no change).
 
 ### Step 5: Add Continuous Band Factors
 
@@ -64,7 +64,7 @@ model.add_numeric_band_multiplier("driver_age", 26, 65, 1.0)   # Standard rate
 model.add_numeric_band_multiplier("driver_age", 66, 99, 1.3)   # Senior adjustment
 ```
 
-**How it works internally**: The C++ engine checks if the numeric input falls within `[min_val, max_val]` inclusive. If a 22-year-old is quoted, `16 <= 22 <= 25` is true, so the 2.0x factor is applied.
+**How it works internally**: The compiled engine checks if the numeric input falls within `[min_val, max_val]` inclusive. If a 22-year-old is quoted, `16 <= 22 <= 25` is true, so the 2.0x factor is applied.
 
 ### Step 6: Build the GUI
 
@@ -127,13 +127,13 @@ results = MonteCarloSimulator(trials=200000).simulate_aggregate_loss(
 )
 ```
 
-**What happens inside C++**:
+**What happens inside the compiled core**:
 1. For each of the 200,000 trials, a random claim count `N` is drawn from `Poisson(λ=5.0)`
 2. For each of the `N` claims, a random severity is drawn from `Lognormal(μ=17.7, σ=1.2)`
 3. The claims are summed to get the total aggregate loss for that trial
 4. The array of 200,000 aggregate totals is returned to Python
 
-This entire process takes **less than 1 second** in C++. In pure Python, it would take minutes.
+This entire process took **less than 1 second** on the C++ core of 0.8.0; the Rust core's measured throughput is in the 0.9.0 section of [RELEASE_NOTES.md](https://github.com/slimboi34/RiskPY/blob/main/RELEASE_NOTES.md). In pure Python, it would take minutes.
 
 ### Step 3: Analyse the Results
 
@@ -170,7 +170,7 @@ results = MonteCarloSimulator(trials=50000).simulate_life_portfolio(
 )
 ```
 
-**What happens inside C++**:
+**What happens inside the compiled core**:
 1. For each trial, a **mortality shock factor** is drawn from `Normal(mean=1.0, std=0.3)`, floored at 0
 2. The effective mortality rate = `base_rate × shock_factor`, capped at 1
 3. The number of deaths is drawn in one step from `Binomial(10,000, effective rate)`
@@ -242,6 +242,6 @@ total_premium, count = app.calculate_batch("submissions.csv", "rated_book.xlsx")
 print(f"Processed {count} policies. Total: ${total_premium:,.2f}")
 ```
 
-`calculate_batch` reads the CSV in Python and prices each row with the C++ `FactorModel`, then writes the whole book to a binary Excel file in one call to the OpenXLSX C++ library. Only the columns mapped with `add_field` and `set_premium_column` are written. Calling `set_premium_column` again moves the premium column; it never adds a second one.
+`calculate_batch` reads the CSV in Python and prices each row with the compiled `FactorModel`, then writes the whole book to a binary Excel file in one call to the core's Excel writer (a fresh workbook every time; the template argument is not read). Only the columns mapped with `add_field` and `set_premium_column` are written. Calling `set_premium_column` again moves the premium column; it never adds a second one.
 
 **Full working example**: See [`examples/batch_processing.py`](https://github.com/slimboi34/RiskPY/blob/main/examples/batch_processing.py)

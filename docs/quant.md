@@ -10,7 +10,7 @@
 | Transform pricing | NumPy | `heston_price` |
 
 The closed-form functions are pure Python, so they work in the same lean
-install as the C++ core:
+install as the compiled core:
 
 ```bash
 pip install open-riskpy        # black_scholes, greeks, implied_vol
@@ -190,7 +190,7 @@ for very short maturities, where the integrand oscillates fastest.
 
 ---
 
-## Relationship to the C++ core
+## Relationship to the compiled core
 
 The compiled `FourierTransform` class does the same trick for **aggregate loss**
 distributions — compound Poisson severity via FFT — and is the faster path when

@@ -39,7 +39,7 @@ class UnderwritingApp:
         
         self.fields_config = [] # stores dicts: {name, label, col, choices}
         # Excel column letter -> (field name, header label), in the order they were mapped.
-        # The C++ exporter's map is keyed by letter and has no unmap, so this is what lets
+        # The compiled exporter's map is keyed by letter and has no unmap, so this is what lets
         # set_premium_column move the premium instead of adding a second column.
         self._columns = {}
 
@@ -48,7 +48,7 @@ class UnderwritingApp:
         self._columns[excel_col] = (name, label)
 
     def add_field(self, name, label, excel_col, choices=None):
-        """Adds a parameter to the UI, connects it to C++ Engine, and maps it to Excel"""
+        """Adds a parameter to the UI, connects it to the compiled engine, and maps it to Excel"""
         field_type = "string" if choices else "float"
         self.engine.add_field(Field(name=name, label=label, type=field_type))
         self._map_column(excel_col, name, label)
@@ -59,7 +59,7 @@ class UnderwritingApp:
         self.engine.set_math_logic(logic_func)
 
     def set_factor_model(self, factor_model: FactorModel):
-        """Replaces manual Python callbacks with the hyper-fast C++ Factor Rating Engine"""
+        """Replaces manual Python callbacks with the compiled (Rust) factor rating engine"""
         self.engine.set_math_logic(factor_model.calculate)
 
     def set_premium_column(self, excel_col, label="Final Premium"):
@@ -167,7 +167,7 @@ class UnderwritingApp:
             
             canvas.draw()
 
-        tk.Button(frame, text="Run C++ Monte Carlo", command=run_sim, font=("Arial", 12, "bold"), fg="purple").pack(pady=10)
+        tk.Button(frame, text="Run Monte Carlo", command=run_sim, font=("Arial", 12, "bold"), fg="purple").pack(pady=10)
         return frame
 
     def run(self, export_filename="policy_quote.xlsx"):

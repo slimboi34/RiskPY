@@ -11,7 +11,7 @@ but something optional is missing or off) and ``fail`` (something RiskPY needs i
 The command exits 1 if any check fails, so it can gate a deployment or a CI job.
 
 What it checks: the Python version; the installed distribution and the version the package
-reports; that the compiled C++ core imports, comes from the same installation as the Python
+reports; that the compiled Rust core imports, comes from the same installation as the Python
 layer, and answers a known question correctly; each optional extra (NumPy, SciPy, pandas,
 Matplotlib, Tkinter, the MCP SDK) with the exact ``pip`` line when it is missing; a quick
 numerical self-check (a subset of ``riskpy-verify``); that the agent tools load; that the
@@ -102,7 +102,7 @@ def _core() -> List[Dict[str, Any]]:
     except ImportError as exc:  # pragma: no cover - environment dependent
         return [_check("core_import", FAIL, f"the compiled core riskpy.cpp_underwriter does not import: {exc}",
                        "RP205 — pip install --force-reinstall open-riskpy; a source checkout needs `pip install -e .` "
-                       "and a C++17 compiler.", code="RP205")]
+                       "and a Rust toolchain (https://rustup.rs).", code="RP205")]
     import riskpy
 
     path = getattr(core, "__file__", "?")

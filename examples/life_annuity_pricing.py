@@ -136,5 +136,5 @@ print(f"  Worst scenario:   ${worst:>12,.0f}")
 print(f"  → Reserve at 99% VaR = ${var_99:,.0f}")
 
 print(f"\n{'=' * 60}")
-print(f"  Demo complete. All calculations powered by C++ backend.")
+print(f"  Demo complete. All calculations powered by the compiled Rust core.")
 print(f"{'=' * 60}")

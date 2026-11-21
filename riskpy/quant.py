@@ -4,7 +4,7 @@ Three layers, deliberately separated by what they cost you to install:
 
 * **Closed form** (:func:`black_scholes`, :func:`greeks`, :func:`implied_vol`)
   is pure Python and needs nothing at all, so it works in the same lean install
-  as the C++ core.
+  as the compiled core.
 * **Path simulation** (:func:`gbm_paths`, :func:`merton_jump_paths`) and
   **portfolio risk** (:func:`historical_var`, :func:`parametric_var`) need
   NumPy — ``pip install open-riskpy[sim]``.

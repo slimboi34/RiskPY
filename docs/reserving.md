@@ -168,10 +168,10 @@ viz.exceedance(total)
 
 ## Agreement with the compiled core
 
-The C++ `LossTriangle` has done volume-weighted chain ladder since 0.2. The
+The compiled `LossTriangle` has done volume-weighted chain ladder since 0.2. The
 Python `chain_ladder` reproduces its ultimates to 1e-6 relative on every
 triangle in the test suite, and the verification suite checks it on GenIns
-each run. The Python side is where the uncertainty methods live; the C++ side
+each run. The Python side is where the uncertainty methods live; the compiled side
 is the one to call from a tight loop.
 
 ## References

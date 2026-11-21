@@ -6,7 +6,7 @@ Two layers, split by what they cost to install:
   structural model, hazard rates and CDS legs, the Vasicek/ASRF portfolio
   formulae, the Basel IRB risk weights and :class:`TransitionMatrix` — is pure
   Python and needs nothing beyond the standard library, so it works in the same
-  lean install as the C++ core.
+  lean install as the compiled core.
 * **Portfolio simulation** (:func:`credit_portfolio_loss`) needs NumPy
   (``pip install open-riskpy[sim]``), imported lazily on first use, and hands
   back a :class:`riskpy.mc.Result` so every VaR, TVaR and convergence
