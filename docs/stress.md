@@ -59,6 +59,15 @@ The remaining arguments (`trials`, `seed`, `fn`, `vectorised`, `sampling`,
 `copula`) are those of `Model.run`, and the base is the `Model.run` of the same
 seed, trial for trial.
 
+The formula cannot change the draws either. It is given them read-only, and a
+formula that changes an input in place (`claims -= deductible`, where
+`claims = claims - deductible` was meant) is run again on copies. It gets the
+answer it would get on fresh arrays, and the base, every scenario and
+`Result.inputs` keep the draws as drawn. *Changed in 0.9.0:* the formula was
+given the draws themselves, so such a formula applied the deductible twice in
+every scenario and left its scratch values in the base's `inputs`. `Model.run`
+and `simulate` protect the draws the same way.
+
 ### How a distribution shock keeps the dependence
 
 Under `copula=`, the new values are the shock's quantiles at the copula's own

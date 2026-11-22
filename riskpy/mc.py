@@ -2445,6 +2445,9 @@ class Model:
         shock comes from a random stream of its own, one per variable, so a scenario's
         numbers do not depend on which other scenarios are listed with it, or in what order,
         and two scenarios that redraw a variable from the same distribution agree exactly.
+        The formula cannot change the draws either: it is given them read-only, and a formula
+        that changes an input in place (``claims -= deductible``) is run again on copies, so
+        the base, every scenario and ``Result.inputs`` keep the draws as drawn.
 
         Example::
 
@@ -2659,11 +2662,39 @@ def _draw_with_latent(variables: Mapping[str, Distribution], trials: int, rng, s
     return samples, latent, False
 
 
+def _read_only(column: Any) -> Any:
+    view = column.view()
+    view.flags.writeable = False
+    return view
+
+
+def _writes_to_input(exc: BaseException) -> bool:
+    """True for the error NumPy raises when code writes into a read-only array."""
+    return isinstance(exc, ValueError) and "read-only" in str(exc)
+
+
 def _evaluate(fn: Callable[..., Any], samples: Mapping[str, Any], trials: int, vectorised: bool):
-    """Apply the formula to the drawn inputs and check what comes back."""
+    """Apply the formula to the drawn inputs and check what comes back.
+
+    The formula never changes ``samples``: they are the base run's draws, which
+    :meth:`Model.stress` reuses for every scenario and :class:`Result` keeps as ``inputs``. It
+    is handed read-only views, which cost nothing; a formula that writes into an input in place
+    (``claims -= deductible``, the common NumPy aliasing slip) fails at that line on a view, and
+    is then run again on copies. So it gets the answer it would get on fresh arrays, and the
+    draws stay as they were drawn.
+    """
     np = _numpy()
     if vectorised:
-        values = np.asarray(fn(**samples), dtype=float)
+        arrays = {name: column for name, column in samples.items() if isinstance(column, np.ndarray)}
+        try:
+            out = fn(**{**samples, **{name: _read_only(column) for name, column in arrays.items()}})
+        except Exception as exc:  # noqa: BLE001 - re-raised unless it is the formula writing into an input
+            if not arrays or not _writes_to_input(exc):
+                raise
+            out = fn(**{**samples, **{name: column.copy() for name, column in arrays.items()}})
+        values = np.asarray(out, dtype=float)
+        if not values.flags.writeable or any(np.may_share_memory(values, column) for column in arrays.values()):
+            values = values.copy()            # the formula returned an input itself: keep values separate
         if values.shape != (trials,):
             raise InputError(
                 f"The formula returned shape {values.shape}, expected ({trials},). "

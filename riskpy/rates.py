@@ -685,24 +685,43 @@ class Bond:
     def _present_values(self, ytm: float) -> List[Tuple[float, float]]:
         base = self._period_base(ytm)
         m = self.frequency
-        return [(t, amount * base ** (-m * t)) for t, amount in self.cashflows()]
+        try:
+            return [(t, amount * base ** (-m * t)) for t, amount in self.cashflows()]
+        except OverflowError:
+            # A deeply negative yield over a long bond: (1 + y/m)^(−m·t) beyond the largest double.
+            raise InputError(f"the present value at ytm = {ytm!r} over {self.maturity:g} years is beyond double "
+                             "precision", code="RP304", param="ytm",
+                             hint="Yields are decimals (4.5% is 0.045); a yield near -100% over a long bond "
+                                  "discounts by an astronomically large factor.") from None
 
     def price(self, ytm: float) -> float:
         """Dirty price at yield ``ytm`` (compounded ``frequency`` times a year)."""
         return sum(pv for _, pv in self._present_values(ytm))
+
+    def _price_or_inf(self, ytm: float) -> float:
+        """The price, or +inf where it is too large for a double (the solver's low bracket)."""
+        try:
+            return self.price(ytm)
+        except InputError as exc:
+            if exc.code != "RP304":
+                raise
+            return math.inf
 
     def yield_to_maturity(self, price: float) -> float:
         """The yield that reproduces ``price``, by bisection on ``[-99%, +100%]``.
 
         The upper bracket is widened automatically for a distressed price;
         a price above what ``-99%`` produces is rejected as not a price.
-        Accurate to ``1e-14`` in yield.
+        Accurate to ``1e-14`` in yield. On a long bond the price at ``-99%``
+        can be too large for a double (annual coupons past 154 years); it then
+        counts as infinite, which brackets any price.
         """
         price = _check_positive("price", price)
         low, high = -0.99, 1.0
-        if self.price(low) < price:
+        at_low = self._price_or_inf(low)
+        if at_low < price:
             raise ConvergenceError(
-                f"price {price!r} exceeds {self.price(low):.4f}, the price at a -99% yield — "
+                f"price {price!r} exceeds {at_low:.4f}, the price at a -99% yield — "
                 f"check the face and the units (the price is in the same units as face)", code="RP302", param="price", hint="Prices are in the same units as face (a bond quoted at 101.8 per 100 face with face=100)."
             )
         for _ in range(6):
@@ -713,7 +732,7 @@ class Bond:
             raise ConvergenceError(
                 f"price {price!r} is below what a {high:.0%} yield produces — check the inputs", code="RP301", param="price"
             )
-        return _bisect_root(lambda y: self.price(y) - price, low, high)
+        return _bisect_root(lambda y: self._price_or_inf(y) - price, low, high)
 
     def macaulay_duration(self, ytm: float) -> float:
         """PV-weighted average time to cash flow, in years.
@@ -833,6 +852,7 @@ def _check_horizon(t: float, T: float) -> float:
 
 # The largest x with a finite math.exp(x).
 _MAX_EXP = 709.782712893384
+_SQRT2 = math.sqrt(2.0)
 
 _SIGMA_HINT = ("sigma is the absolute volatility of the short rate, as a decimal (0.01 is 1 percentage point a "
                "year, not 1%), and its convexity term grows like sigma²·τ³: check its units and the horizon.")
@@ -927,28 +947,61 @@ def _cir_log_price(r: float, t: float, T: float, kappa: float, theta: float, sig
     tau = _check_horizon(t, T)
     if tau == 0.0:
         return 0.0
-    gamma = math.sqrt(kappa * kappa + 2.0 * sigma * sigma)
+    # hypot, not sqrt(κ² + 2σ²): for κ = σ = 1e-170 the squares underflow to 0, γ came out 0,
+    # and B was 0/0 (a bare ZeroDivisionError).
+    gamma = math.hypot(kappa, _SQRT2 * sigma)
     total = gamma + kappa
     # gamma - kappa, computed without cancellation: it is O(sigma²), and the
     # exponent 2κθ/σ² multiplies whatever rounding error it carries.
     gap = 2.0 * sigma * sigma / total
     decay = math.exp(-gamma * tau)
-    denominator = total * (1.0 - decay) + 2.0 * gamma * decay
-    B = 2.0 * (1.0 - decay) / denominator
+    # B = 2(1 − e^{−γτ}) / ((γ + κ)(1 − e^{−γτ}) + 2γe^{−γτ}), divided through by γ: with
+    # g = (1 − e^{−γτ})/γ (→ τ as γτ → 0, where 1 − decay rounds to 0) this is
+    # B = 2g / ((γ + κ)g + 2e^{−γτ}), which tends to τ, the zero-mean-reversion limit.
+    x = gamma * tau
+    g = tau * (1.0 - 0.5 * x) if x < 1e-8 else -math.expm1(-x) / gamma
+    B = 2.0 * g / (total * g + 2.0 * decay)
     # σ² below 1e-300 is subnormal or zero (σ < 1.5e-154 squares to nothing useful), and
     # gap/total that small has lost its digits too; the σ → 0 limit is exact to far
     # better than double precision long before either happens.
     if sigma * sigma < 1e-300 or gap < 1e-300 * total:
         log_A = -theta * (tau - B)
     else:
-        # ln A = (2κθ/σ²)·ln[2γ·e^{(κ−γ)τ/2} / denominator]. Written as a
-        # difference of two O(1) logarithms the bracket cancels to O(σ²) and
-        # the prefactor blows the rounding error up to O(1) for small σ.
-        # With 2γ = total + gap and denominator = total + gap·decay, each
-        # term is a log1p of something small and the precision survives.
-        log_base = math.log1p(gap / total) - 0.5 * gap * tau - math.log1p(gap * decay / total)
-        log_A = (2.0 * kappa * theta / (sigma * sigma)) * log_base
+        # ln A = (2κθ/σ²)·F with F = ln[2γ·e^{(κ−γ)τ/2} / ((γ + κ)(1 − e^{−γτ}) + 2γe^{−γτ})]. With
+        # 2γ = total + gap, p = gap/(2γ) (below ½) and y = γτ, F = −ln(1 − p·(1 − e^{−y})) − p·y, which is
+        # L(p·(1 − e^{−y})) − p·E(y): L(u) = −ln(1 − u) − u and E(y) = y − (1 − e^{−y}) are both >= 0 and
+        # computed without cancellation, and p < ½ keeps their difference from cancelling. F is O(p·y²), and
+        # the forms used before (a difference of two logarithms of 1 + O(σ²), then of terms O(p·y)) kept
+        # only about ε/y² of it: a price 1e-9 out at κ = 1e-8, σ = 1e-9, τ = 10, against 120-digit mpmath.
+        two_gamma = total + gap
+        p = gap / two_gamma
+        y = 0.5 * two_gamma * tau
+        F = _neg_log1m_minus(p * -math.expm1(-y)) - p * _exp_tail(y)
+        log_A = (2.0 * kappa * theta / (sigma * sigma)) * F
     return log_A - B * r
+
+
+def _neg_log1m_minus(u: float) -> float:
+    """``−ln(1 − u) − u`` for 0 <= u < 1, without cancellation: u²/2 + u³/3 + … for small u."""
+    if u < 0.1:
+        acc = 0.0
+        for k in range(17, 1, -1):          # Horner: u²·(1/2 + u·(1/3 + … + u/17)); u^16 < 1e-16 here
+            acc = 1.0 / k + u * acc
+        return u * u * acc
+    return -math.log1p(-u) - u
+
+
+_INV_FACTORIAL = [1.0 / math.factorial(k) for k in range(15)]
+
+
+def _exp_tail(y: float) -> float:
+    """``y − (1 − e^{−y})`` for y >= 0, without cancellation: y²/2 − y³/6 + … for small y."""
+    if y < 0.1:
+        acc = 0.0
+        for k in range(14, 1, -1):          # Horner: y²·Σ (−y)^(k−2)/k!, k = 2 … 14; the next term is below 1e-23
+            acc = _INV_FACTORIAL[k] - y * acc
+        return y * y * acc
+    return y + math.expm1(-y)
 
 
 def vasicek_curve(

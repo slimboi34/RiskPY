@@ -143,8 +143,9 @@ def black_scholes(
                          hint="sigma is the annual volatility as a decimal (0.2 means 20%) and cannot be negative.")
 
     # No time left, or no uncertainty: the forward is known, so the option is
-    # worth its discounted intrinsic value and nothing more.
-    if T == 0 or sigma == 0:
+    # worth its discounted intrinsic value and nothing more. That includes a
+    # sigma·√T too small for a double (sigma = 5e-324, T = 1e-4): d1 would divide by 0.
+    if T == 0 or sigma == 0 or sigma * math.sqrt(T) == 0.0:
         forward = S * math.exp(-q * T) - K * math.exp(-r * T)
         return max(forward, 0.0) if kind == "call" else max(-forward, 0.0)
 
@@ -210,8 +211,8 @@ def greeks(
             intrinsic_delta = -1.0
         return Greeks(price=price, delta=intrinsic_delta, gamma=0.0, vega=0.0, theta=0.0, rho=0.0)
 
-    if sigma == 0:
-        # Zero volatility with time left: the payoff is the deterministic
+    if sigma == 0 or sigma * math.sqrt(T) == 0.0:
+        # Zero volatility (or a sigma·√T that underflows) with time left: the payoff is the deterministic
         # forward S·e^(−qT) − K·e^(−rT), so moneyness is decided by the
         # forward, not by S against K, and theta and rho are the derivatives of
         # that discounted intrinsic value — not zero.

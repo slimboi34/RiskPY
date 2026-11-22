@@ -70,12 +70,26 @@ def norm_pdf(x: float) -> float:
     return math.exp(-0.5 * x * x) / _SQRT_2PI
 
 
+# Acklam's rational approximation to the normal quantile: (a, b) for the central region,
+# (c, d) for the tails.
+_ACKLAM_A = (-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+             1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00)
+_ACKLAM_B = (-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+             6.680131188771972e+01, -1.328068155288572e+01)
+_ACKLAM_C = (-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+             -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00)
+_ACKLAM_D = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+             3.754408661907416e+00)
+
+
 def norm_ppf(p: float) -> float:
     """Inverse standard normal CDF, full double precision.
 
-    Acklam's rational approximation (relative error 1.15e-9) followed by one
-    Halley refinement step against ``erfc``, which takes it to machine
-    precision everywhere in (0, 1).
+    Acklam's rational approximation (relative error 1.15e-9), refined to
+    machine precision: in the central band ¼ < p < ¾ by a Newton step on
+    ``erf``, which keeps the *relative* precision however close p is to ½
+    (``p − ½`` is exact there; within 6e-16 relative of 40-digit mpmath);
+    elsewhere by one Halley step against ``erfc``, which keeps it in the tails.
     """
     if not (0.0 < p < 1.0):
         if p == 0.0:
@@ -83,20 +97,16 @@ def norm_ppf(p: float) -> float:
         if p == 1.0:
             return math.inf
         raise ValueError(f"p must be in [0, 1], got {p!r}")
+    if 0.25 < p < 0.75:
+        # Refining against erfc carries the answer as cdf(x)/p − 1, a difference of numbers
+        # near 1, and left it about 1e-9 relative for |p − ½| < 1e-7.
+        return _norm_ppf_central(p)
     if p > 0.5:
         # Work in the lower tail, where ``erfc`` keeps its relative precision;
         # refining directly against ``1 - tiny`` loses the tail digits.
         return -norm_ppf(1.0 - p)
 
-    a = (-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
-         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00)
-    b = (-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
-         6.680131188771972e+01, -1.328068155288572e+01)
-    c = (-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
-         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00)
-    d = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
-         3.754408661907416e+00)
-
+    a, b, c, d = _ACKLAM_A, _ACKLAM_B, _ACKLAM_C, _ACKLAM_D
     low, high = 0.02425, 1.0 - 0.02425
     if p < low:
         q = math.sqrt(-2.0 * math.log(p))
@@ -468,17 +478,27 @@ def _t_tail_large_df(t: float, df: float) -> float:
     return norm_cdf(-z)
 
 
+# One Newton step from Acklam's 1.15e-9 leaves an error of order 1e-18, below rounding: measured
+# against 40-digit mpmath, at most 5 ulps (6e-16 relative) over the band and down to |p − ½| = 1e-16,
+# the limit of erf itself. A second step does not improve it.
+_CENTRAL_NEWTON_STEPS = 1
+
+
 def _norm_ppf_central(p: float) -> float:
     """Φ⁻¹(p) for p in (¼, ¾) to full *relative* precision, however close p is to ½.
 
-    :func:`norm_ppf` refines against ``erfc``, which near the centre carries the answer
-    as ``1 + tiny`` and leaves it about 1e-9 relative (an absolute error of 1e-19 there,
-    harmless for a quantile but not for a series that multiplies it). Newton steps on
-    ``½·erf(x/√2) = p − ½``, with ``p − ½`` exact in this range, restore the digits.
+    A refinement against ``erfc`` (as :func:`norm_ppf` uses in the tails) carries the answer
+    near the centre as ``1 + tiny`` and leaves it about 1e-9 relative (an absolute error of
+    1e-19 there, harmless for a quantile but not for a series that multiplies it). A Newton
+    step on ``½·erf(x/√2) = p − ½`` from Acklam's approximation, with ``p − ½`` exact in this
+    range, keeps every digit. :func:`norm_ppf` uses this for the whole band since 0.9.0.
     """
     q = p - 0.5
-    x = norm_ppf(p)
-    for _ in range(2):
+    r = q * q
+    a, b = _ACKLAM_A, _ACKLAM_B
+    x = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
+        (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
+    for _ in range(_CENTRAL_NEWTON_STEPS):
         if x == 0.0:
             break
         x -= (0.5 * math.erf(x / _SQRT2) - q) / norm_pdf(x)
