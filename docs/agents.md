@@ -72,15 +72,19 @@ direct Python call): numbers must be finite numbers (no `NaN`, `Infinity`, `true
 whole numbers whole, and the work one call can ask for is bounded — `aggregate_loss` takes at
 most 1,000,000 trials and 10⁸ simulated claims (trials × expected frequency),
 `bond_analytics` and `cds_par_spread` at most 100,000 payment periods (maturity × frequency),
-the triangle tools at most 300 × 300, the capital tools at most 100 risks and 2 × 10⁷ simulated cells
-(trials × lines), `scenario_table` at most 100 scenarios. Strings, tool names, argument names and
+the triangle tools at most 300 × 300, the capital tools at most 100 risks and 5 × 10⁶ simulated cells
+(trials × lines: about 2 s and 250 MB at the limit), `scenario_table` at most 100 scenarios. Strings, tool names, argument names and
 scenario labels are at most 200 characters, and an object argument nests at most 32 levels deep. The
 limits are in `riskpy.tools.LIMITS`; a call over one fails at once with code RP405 and a message naming
 it, and never echoes the oversized value back. The tools also refuse percentages where
 decimals belong — a rate above 100% (RP104), a volatility above 500% (RP105), an LGD above 1
 (RP103), an expected loss ratio above 500% (RP104) — because the library would compute a confident wrong answer from them
-(`riskpy.tools.PLAUSIBLE`). Results never contain `NaN` or `Infinity` (they become `null`), so
-they are strict JSON.
+(`riskpy.tools.PLAUSIBLE`). Results never contain `NaN` or `Infinity`, so they are strict JSON: a
+number that overflowed is refused with RP304, never returned as `null`. A `null` number is a value
+that is undefined by construction, and a `note` beside it says why: `merton`'s
+`distance_to_default` when σ√T is zero (with `"deterministic": true`), `mack_chain_ladder`'s
+`total_cv` when the total reserve is 0, `black_scholes`' `explain.d1` / `d2` when σ√T is too small
+for them to be finite.
 
 ## When a call fails
 

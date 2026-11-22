@@ -166,13 +166,20 @@ def test_merton_survives_an_assets_debt_ratio_that_underflows():
     ("black_scholes", {"S": 1e-200, "K": 1e200, "T": 1, "r": 0.05, "sigma": 0.2, "explain": True}),
     ("option_greeks", {"S": 5e-324, "K": 100, "T": 1, "r": 0.05, "sigma": 0.2}),
     ("implied_vol", {"price": 1.0, "S": 5e-324, "K": 100, "T": 1, "r": 0.05}),
-    ("merton", {"assets": 1e-200, "debt": 1e200, "T": 1, "r": 0.05, "sigma": 0.25}),
 ])
 def test_tools_no_longer_leak_math_domain_error(name, args):
     out = tools.call(name, args, errors="return")
     error = out.get("error") if isinstance(out, dict) else None
     assert not (error and error["message"] == "math domain error")
     assert not (error and error["code"] in ("RP100", "RP900", "RP304"))
+
+
+def test_merton_tool_names_the_overflowing_leverage():
+    # No math domain error either, but the quasi-debt ratio here is e^921: 0.8.0 answered leverage: null, which
+    # an agent reads as a successful answer (0.8.0 machine testing, finding 1). It is now a coded RP304 naming assets.
+    out = tools.call("merton", {"assets": 1e-200, "debt": 1e200, "T": 1, "r": 0.05, "sigma": 0.25}, errors="return")
+    assert out["error"]["code"] == "RP304" and out["error"]["param"] == "assets", out
+    assert out["error"]["message"] != "math domain error" and "e^921" in out["error"]["message"]
 
 
 # ---------------------------------------------------------------------------

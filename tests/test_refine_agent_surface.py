@@ -350,12 +350,13 @@ def test_mcp_cancellation_stops_a_scenario_table_and_long_names_stay_small(tmp_p
         reply, size = io.request("tools/call", {"name": "x" * 100_000, "arguments": {}})
         assert reply["result"]["isError"] is True and reply["result"]["structuredContent"]["error"]["code"] == "RP405"
         assert size < 4_000
-        # ten capital allocations of 2 million cells each: within the budget, about a second apiece
+        # ten capital allocations of 500,000 cells each: the whole budget (LIMITS["capital_cells"] since 0.9.0),
+        # about 0.2 s apiece
         args = {"tool": "capital_allocation", "scenarios": {f"s{k}": {"seed": k + 2} for k in range(9)},
                 "arguments": {"means": [10, 20], "sds": [5, 5], "correlation": [[1, 0.3], [0.3, 1]],
-                              "trials": 1_000_000, "seed": 1}}
+                              "trials": 250_000, "seed": 1}}
         long_call = io.start("tools/call", {"name": "scenario_table", "arguments": args})
-        time.sleep(1.0)
+        time.sleep(0.5)
         io.send({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": long_call}})
         cancelled = time.time()
         quick, _ = io.request("tools/call", {"name": "black_scholes", "arguments": BS})

@@ -113,7 +113,7 @@ LIMITS: Dict[str, int] = {
     "triangle": 300,                  # chain_ladder, mack_chain_ladder: origin and development periods
     "list": 1_000,                    # any other list argument
     "matrix": 100,                    # capital_aggregate, capital_allocation, nearest_correlation: risks
-    "capital_cells": 20_000_000,      # capital_allocation: trials × lines
+    "capital_cells": 5_000_000,       # capital_allocation: trials × lines (about 2 s and 250 MB at the limit)
     "scenarios": 100,                 # scenario_table: scenarios in one call
     "string": 200,                    # any string argument, tool name, argument name or scenario label, in characters
     "integer": 2**31 - 1,             # any integer argument, in absolute value
@@ -430,6 +430,10 @@ def _jsonable(value: Any) -> Any:
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_jsonable(v) for v in value]
+    if isinstance(value, (bytes, bytearray)):
+        # One spelling for both: the audit ledger stores a bytearray as bytes, so an echo of the
+        # value (a refused scenario's overrides) must not depend on which of the two it was.
+        return str(bytes(value))
     tolist = getattr(value, "tolist", None)       # NumPy arrays and scalars
     if callable(tolist):
         return _jsonable(tolist())
@@ -661,19 +665,37 @@ def _check_result_finite(value: Any, path: str = "result") -> None:
     """Refuse a calculator result holding an overflowed number.
 
     ``_jsonable`` turns inf and NaN into null, which an agent reads as a successful answer
-    with a missing field; a duration that overflowed is an error, so say so.
+    with a missing field; a duration that overflowed is an error, so say so. Dataclasses and
+    NumPy arrays and scalars are looked inside, as ``_jsonable`` would convert them.
     """
-    if isinstance(value, float):
+    if isinstance(value, (bool, int, str)) or value is None:
+        return
+    if isinstance(value, numbers.Real) and not isinstance(value, numbers.Integral):
         if not math.isfinite(value):
-            raise InputError(f"{path} is {value!r}: an intermediate value overflowed double precision",
+            raise InputError(f"{path} is {float(value)!r}: an intermediate value overflowed double precision",
                              code="RP304", param=None,
                              hint="Use inputs of a realistic size (amounts in thousands or millions, times in years).")
+    elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+        for f in dataclasses.fields(value):
+            _check_result_finite(getattr(value, f.name), f"{path}.{f.name}")
     elif isinstance(value, dict):
         for key, item in value.items():
             _check_result_finite(item, f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _check_result_finite(item, f"{path}[{index}]")
+    elif callable(getattr(value, "tolist", None)) and not isinstance(value, (bytes, bytearray)):
+        _check_result_finite(value.tolist(), path)
+
+
+def _numbers(value: Any, path: str = "result") -> Any:
+    """``value`` as JSON, refused with RP304 if any number in it overflowed.
+
+    A calculator that builds its JSON itself (to add a field, or convert a dataclass) must
+    still be refused for an overflowed number, as :func:`call` refuses one in a raw result:
+    ``_jsonable`` alone would turn the inf or NaN into null."""
+    _check_result_finite(value, path)
+    return _jsonable(value)
 
 
 def call(name: str, arguments: Optional[dict] = None, *, errors: str = "raise", via: str = "python") -> Any:
@@ -739,16 +761,30 @@ def _bs_explain(S: float, K: float, T: float, r: float, sigma: float, q: float, 
                         "sigma is the annual volatility of log returns, as a decimal",
                         "T is in years; European exercise only"],
     }
-    if T == 0 or sigma == 0:
-        out["degenerate"] = ("T = 0 or sigma = 0: the price is the discounted intrinsic value "
-                             "max(±(S·e^(−qT) − K·e^(−rT)), 0); d1 and d2 are undefined")
-        return out
     vol_t = sigma * math.sqrt(T)
+    if T == 0 or sigma == 0 or vol_t == 0.0:
+        out["degenerate"] = ("T = 0 or sigma = 0 (or sigma·√T too small for double precision): the price is the "
+                             "discounted intrinsic value max(±(S·e^(−qT) − K·e^(−rT)), 0); d1 and d2 are undefined")
+        return out
     # ln S − ln K, not ln(S/K): the ratio underflows to 0 for S = 1e-200, K = 1e200 (as in quant._d1_d2).
     d1 = (math.log(S) - math.log(K) + (r - q + 0.5 * sigma * sigma) * T) / vol_t
     d2 = d1 - vol_t
-    out.update({"d1": d1, "d2": d2, "N(d1)": quant.norm_cdf(d1), "N(d2)": quant.norm_cdf(d2),
-                "discounted_spot": S * math.exp(-q * T), "discounted_strike": K * math.exp(-r * T)})
+    values = {"d1": d1, "d2": d2, "N(d1)": quant.norm_cdf(d1), "N(d2)": quant.norm_cdf(d2)}
+    with contextlib.suppress(OverflowError):
+        values["discounted_spot"] = S * math.exp(-q * T)
+    with contextlib.suppress(OverflowError):
+        values["discounted_strike"] = K * math.exp(-r * T)
+    # explain only adds diagnostics: a price black_scholes gives is never refused because a
+    # diagnostic is infinite. A tiny sigma·√T makes d1 and d2 legitimately ±inf (N(d1), N(d2) are
+    # then exactly 0 or 1); those are reported as null and named.
+    undefined = [k for k in ("d1", "d2", "N(d1)", "N(d2)", "discounted_spot", "discounted_strike")
+                 if not math.isfinite(values.get(k, math.inf))]
+    for key in undefined:
+        values[key] = None
+    out.update(values)
+    if undefined:
+        out["degenerate"] = (f"{', '.join(undefined)} not finite in double precision (sigma·√T = {vol_t:.3g}): "
+                             "reported as null; N(d1) and N(d2) are their limits 0 or 1")
     return out
 
 
@@ -788,7 +824,7 @@ def option_greeks(S: float, K: float, T: float, r: float, sigma: float, q: float
     """
     from . import quant
 
-    return _jsonable(quant.greeks(S, K, T, r, sigma, q=q, kind=kind))
+    return _numbers(quant.greeks(S, K, T, r, sigma, q=q, kind=kind))
 
 
 @tool()
@@ -858,9 +894,9 @@ def basel_irb_capital(pd: float, lgd: float, ead: float, maturity: float = 2.5, 
     from . import credit
 
     result = credit.basel_irb_capital(pd=pd, lgd=lgd, ead=ead, maturity=maturity, asset_class=asset_class)
-    out = _jsonable(result)
+    out = {f.name: getattr(result, f.name) for f in dataclasses.fields(result)}
     out["risk_weight"] = result.risk_weight
-    return out
+    return _numbers(out)
 
 
 @tool()
@@ -888,7 +924,24 @@ def merton(assets: float, debt: float, T: float, r: float, sigma: float) -> dict
     """
     from . import credit
 
-    return _jsonable(credit.merton(assets=assets, debt=debt, T=T, r=r, sigma=sigma))
+    result = credit.merton(assets=assets, debt=debt, T=T, r=r, sigma=sigma)
+    if not math.isfinite(result.leverage):
+        # 0.8.0 answered leverage: null here; an overflowed number is an error, and this one has a culprit.
+        log_ratio = math.log(debt) - math.log(assets) - r * T
+        raise InputError(f"the quasi-debt ratio debt·e^(−rT) / assets = e^{log_ratio:.4g} is beyond double "
+                         "precision", code="RP304", param="assets",
+                         hint="assets and debt are amounts in the same money units; a firm whose debt is "
+                              "astronomically larger than its assets has pd 1 and needs no model.")
+    out: Dict[str, Any] = {f.name: getattr(result, f.name) for f in dataclasses.fields(result)}
+    if math.isinf(result.distance_to_default):
+        # sigma·√T is zero or so small that d2 overflows: the assets at T are certain, default is
+        # certain or impossible (pd 1 or 0), and the distance is ±infinite by construction.
+        out["distance_to_default"] = None
+        out["deterministic"] = True
+        out["note"] = ("sigma·√T is zero or too small for double precision, so the asset value at T is certain: "
+                       "distance_to_default is " + ("+" if result.distance_to_default > 0 else "−")
+                       + "infinite (reported as null) and pd is exactly " + f"{result.pd:g}")
+    return _numbers(out)
 
 
 @tool()
@@ -1005,7 +1058,25 @@ def aggregate_loss(expected_frequency: float, severity_mean: float, severity_sd:
     try:
         sigma_sq = math.log(1.0 + (severity_sd / severity_mean) ** 2)     # the same conversion as LogNormal.from_moments
         mu, sigma = math.log(severity_mean) - 0.5 * sigma_sq, math.sqrt(sigma_sq)
-        losses = sorted(MonteCarloSimulator(trials=trials, seed=seed).simulate_aggregate_loss(expected_frequency, mu, sigma))
+        if sigma == 0.0:
+            # (sd/mean)² underflows: the core needs a lognormal sigma > 0 and would say so without a parameter.
+            raise InputError(f"severity_sd / severity_mean = {severity_sd / severity_mean:.3g} is too small to simulate: "
+                             "the claim sizes would all equal severity_mean", code="RP102", param="severity_sd",
+                             hint="Give severity_sd on the same money scale as severity_mean (a coefficient of "
+                                  "variation severity_sd / severity_mean of at least about 1e-8), or price a fixed "
+                                  "claim size directly.")
+        simulator = MonteCarloSimulator(trials=trials, seed=seed)
+        try:
+            draws = simulator.simulate_aggregate_loss(expected_frequency, mu, sigma)
+        except RiskPyError:
+            raise
+        except ValueError as exc:
+            # Anything else the core refuses, named by the argument the agent sent.
+            text = str(exc)
+            param = ("severity_sd" if "sigma" in text else "severity_mean" if "mu" in text
+                     else "expected_frequency" if "requency" in text else "trials")
+            raise InputError(f"the simulation core refused the arguments: {text}", code="RP102", param=param) from None
+        losses = sorted(draws)
         n = len(losses)
         mean = sum(losses) / n
         std = math.sqrt(sum((x - mean) ** 2 for x in losses) / (n - 1)) if n > 1 else 0.0
@@ -1053,8 +1124,9 @@ def _triangle(data: List[List[Optional[float]]]):
 def _reserve_dict(res) -> dict:
     return {
         "method": res.method, "total_latest": res.total_latest, "total_ultimate": res.total_ultimate,
-        "total_reserve": res.total_reserve, "factors": _jsonable(res.factors), "origin": _jsonable(res.origin),
-        "latest": _jsonable(res.latest), "ultimate": _jsonable(res.ultimate), "reserve": _jsonable(res.reserve),
+        "total_reserve": res.total_reserve, "factors": _numbers(res.factors, "result.factors"),
+        "origin": _jsonable(res.origin), "latest": _numbers(res.latest, "result.latest"),
+        "ultimate": _numbers(res.ultimate, "result.ultimate"), "reserve": _numbers(res.reserve, "result.reserve"),
     }
 
 
@@ -1081,7 +1153,13 @@ def mack_chain_ladder(triangle: List[List[Optional[float]]], tail: float = 1.0) 
 
     res = reserving.mack_chain_ladder(_triangle(triangle), tail=tail)
     out = _reserve_dict(res)
-    out.update({"se": _jsonable(res.se), "total_se": res.total_se, "total_cv": res.total_cv})
+    out.update({"se": _numbers(res.se, "result.se"), "total_se": res.total_se, "total_cv": res.total_cv})
+    if res.total_reserve == 0.0:
+        # total_cv = total_se / total_reserve is undefined (NaN by design) for a fully developed
+        # triangle; that is not an overflow, so it is reported as null with the reason.
+        out["total_cv"] = None
+        out["note"] = ("total_cv is null: the total reserve is 0 (every origin is fully developed), so the "
+                       "coefficient of variation total_se / total_reserve is undefined")
     return out
 
 
@@ -1362,8 +1440,9 @@ def bornhuetter_ferguson(triangle: List[List[Optional[float]]], premiums: List[f
     res = reserving.bornhuetter_ferguson(tri, premiums, expected_loss_ratio, tail=tail)
     return {
         "method": res.method, "total_latest": res.total_latest, "total_ultimate": res.total_ultimate,
-        "total_reserve": res.total_reserve, "origin": _jsonable(res.origin), "latest": _jsonable(res.latest),
-        "ultimate": _jsonable(res.ultimate), "reserve": _jsonable(res.reserve),
+        "total_reserve": res.total_reserve, "origin": _jsonable(res.origin),
+        "latest": _numbers(res.latest, "result.latest"), "ultimate": _numbers(res.ultimate, "result.ultimate"),
+        "reserve": _numbers(res.reserve, "result.reserve"),
     }
 
 
@@ -1776,9 +1855,19 @@ def _numeric_leaves(value: Any, path: str = "") -> Dict[str, float]:
     return {}
 
 
+def _fresh_seed(value: Any) -> bool:
+    """True for a seed that draws a fresh random stream on every run: 0 (or 0.0, False) and None."""
+    if value is None:
+        return True
+    try:
+        return bool(value == 0)
+    except Exception:  # noqa: BLE001 - an array or an object whose == is not a truth value
+        return False
+
+
 def _needs_seed(t: Tool, arguments: dict, param: str) -> None:
     spec = inspect.signature(t.fn).parameters.get("seed")
-    if spec is not None and arguments.get("seed", spec.default) in (0, None):
+    if spec is not None and _fresh_seed(arguments.get("seed", spec.default)):
         raise InputError(f"{t.name} is a simulation: pass a non-zero seed in arguments so every revaluation uses "
                          "the same random draws", code="RP113", param=param,
                          hint='Add "seed": 1 (any positive whole number) to arguments; with seed 0 each run draws '
@@ -1820,6 +1909,13 @@ def sensitivity(tool: str, arguments: dict, parameter: str, bump: Optional[float
         raise InputError(f"{t.name} has no argument {parameter!r}; it takes {sorted(params)}", code="RP108",
                          param="parameter", hint=(f"Did you mean {guess!r}? " if guess else "")
                          + f"`riskpy-tools schema {t.name}` lists them.")
+    if parameter == "seed":
+        # A seed names a random stream; it is not a quantity. seed ± 1 draws unrelated numbers (and
+        # seed 0 a fresh, unrepeatable set), so a "derivative" with respect to it is sampling noise.
+        raise InputError(f"seed cannot be bumped: it names {t.name}'s random stream, it is not a quantity, so a "
+                         "derivative with respect to it is sampling noise", code="RP108", param="parameter",
+                         hint="Bump a model input instead; to see how much the answer moves from one seed to "
+                              "another, use scenario_table with a few non-zero seeds.")
     hint = typing.get_type_hints(t.fn).get(parameter)
     members = [a for a in typing.get_args(hint) if a is not type(None)] or [hint]
     if members[0] not in (float, int):
@@ -1830,6 +1926,7 @@ def sensitivity(tool: str, arguments: dict, parameter: str, bump: Optional[float
     if isinstance(x, bool) or not isinstance(x, numbers.Real):
         raise InputError(f"{parameter!r} has no numeric value to bump: give it in arguments", code="RP403",
                          param="arguments")
+    _check_arg(parameter, members[0], x)      # NaN, ±inf, 10**400: refused by name, as the calculator would
     x = int(x) if whole else float(x)
     if bump is None:
         if relative:
@@ -1944,6 +2041,17 @@ def scenario_table(tool: str, arguments: dict, scenarios: dict) -> dict:
                                     hint=(f"Did you mean {guess!r}? " if guess else "")
                                     + f"`riskpy-tools schema {t.name}` lists them.")
     _needs_seed(t, base_args, "arguments")
+    if "seed" in accepted:
+        for label, overrides in scenarios.items():
+            if "seed" in overrides and _fresh_seed(overrides["seed"]):
+                # A scenario that reseeds with 0 would draw fresh, unrepeatable numbers: its "change" would be
+                # sampling noise and the call could not be replayed from the audit ledger.
+                raise InputError(f"scenario {_show(label)} sets seed to {_show(overrides['seed'])}, which draws a fresh "
+                                 f"seed on every run: {t.name} is a simulation, so every scenario must use a non-zero "
+                                 "seed", code="RP113", param="scenarios",
+                                 hint="Leave seed out of the scenario to share the base case's draws (the usual "
+                                      "choice: the change is then the scenario's effect alone), or give it another "
+                                      "positive seed.")
     _check_budget("scenario_table", t, [base_args] + [{**base_args, **o} for o in scenarios.values()], "scenarios",
                   hint="scenario_table runs the calculator once for the base and once per scenario: lower the size "
                        "(trials, for a simulation) in arguments or in the scenarios, or split the scenarios over "
@@ -2060,7 +2168,9 @@ _EXPLAIN: Dict[str, Dict[str, Any]] = {
     "copula_dependence": {
         "formula": "tau: gaussian/t 2/π·asin(ρ), clayton θ/(θ+2), gumbel 1 − 1/θ, frank 1 − 4/θ·(1 − D₁(θ)); upper "
                    "tail dependence: t 2·t_{ν+1}(−√((ν+1)(1−ρ)/(1+ρ))), gumbel 2 − 2^(1/θ), clayton lower 2^(−1/θ); "
-                   "joint_exceedance = 1 − 2q + C(q, q)",
+                   "joint_exceedance = P(U > q, V > q) = 1 − 2q + C(q, q), computed without that subtraction: "
+                   "C(1 − q, 1 − q) for gaussian, t, frank and the survival families, a sum of non-negative terms "
+                   "for clayton and gumbel, so a small joint probability keeps its relative precision",
         "conventions": ["rho for gaussian and t, copula_theta for clayton, gumbel and frank",
                         "a gaussian copula has zero tail dependence at any correlation below 1",
                         "survival_clayton / survival_gumbel swap the tails"],
@@ -2162,7 +2272,7 @@ def _read_trace_file(path: str, limit: Optional[int]) -> List[dict]:
             for line in fh:
                 try:
                     entry = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):      # torn, foreign, or nested ~100,000 deep
                     continue
                 if isinstance(entry, dict):
                     entries.append(entry)

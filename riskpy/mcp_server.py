@@ -290,6 +290,97 @@ def _register_extras(server: Any) -> None:
         server.prompt(name=name, description=description)(fn)
 
 
+def _unparsable_reply(exc: BaseException) -> Any:
+    """The JSON-RPC error answering a request line the MCP SDK's parser rejected, or None.
+
+    The SDK's stdio transport parses each line with pydantic (jiter), which refuses some JSON
+    that Python's parser and most clients accept: a lone UTF-16 surrogate escape (``"\\ud800"``)
+    and nesting deeper than about 200 levels. It drops such a line without the JSON-RPC
+    ``-32700 Parse error`` reply, so the client waits for its request forever. The parse error
+    still carries the raw line, so the request id can be recovered and the request answered:
+    -32700 for a line the SDK could not parse, -32600 for valid JSON that is not a JSON-RPC
+    message. A notification (no id), a response, or a line whose id cannot be read gets no reply.
+    """
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return None
+    try:
+        first = errors()[0]
+    except Exception:  # noqa: BLE001 - not a pydantic ValidationError after all
+        return None
+    raw = first.get("input")
+    if isinstance(raw, (str, bytes, bytearray)):
+        try:
+            message = json.loads(raw)
+        except (ValueError, RecursionError):
+            return None
+        code, what = -32700, "Parse error"
+    elif isinstance(raw, dict):
+        message, code, what = raw, -32600, "Invalid Request"
+    else:
+        return None
+    if not isinstance(message, dict) or not isinstance(message.get("method"), str):
+        return None
+    request_id = message.get("id")
+    if isinstance(request_id, bool) or not isinstance(request_id, (str, int)):
+        return None
+    from mcp.types import ErrorData, JSONRPCError
+
+    detail = str(first.get("msg") or "invalid message")[:200]
+    return JSONRPCError(jsonrpc="2.0", id=request_id, error=ErrorData(
+        code=code, message=f"{what}: the server's JSON-RPC parser rejected the request ({detail}). It does not accept "
+                           "lone UTF-16 surrogate escapes such as \\ud800, or nesting deeper than about 200 levels."))
+
+
+class _AnsweringReadStream:
+    """The SDK's stdio read stream, unchanged, except that a request line its parser dropped is
+    answered (see :func:`_unparsable_reply`) before the parse error is passed on as before."""
+
+    def __init__(self, inner: Any, write_stream: Any):
+        self._inner, self._write = inner, write_stream
+
+    @property
+    def last_context(self) -> Any:
+        return getattr(self._inner, "last_context", None)
+
+    async def receive(self) -> Any:
+        item = await self._inner.receive()
+        if isinstance(item, Exception):
+            reply = _unparsable_reply(item)
+            if reply is not None:
+                import anyio
+                from mcp.shared.message import SessionMessage
+
+                try:
+                    await self._write.send(SessionMessage(reply))
+                except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+                    pass                      # the client has gone; nothing to answer
+        return item
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def __aiter__(self) -> "_AnsweringReadStream":
+        return self
+
+    async def __anext__(self) -> Any:
+        import anyio
+
+        try:
+            return await self.receive()
+        except anyio.EndOfStream:
+            raise StopAsyncIteration from None
+
+    async def __aenter__(self) -> "_AnsweringReadStream":
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        await self.aclose()
+
+
 def build_server():
     """An MCP server whose tool calls run through :func:`riskpy.tools.call`."""
     try:
@@ -304,6 +395,16 @@ def build_server():
     class RiskPyServer(MCPServer):
         async def list_tools(self):  # noqa: D401 - SDK hook
             return tool_list(self)
+
+        async def run_stdio_async(self) -> None:  # SDK hook: the SDK's own stdio loop, answering parse errors
+            lowlevel = getattr(self, "_lowlevel_server", None)
+            if lowlevel is None:             # an SDK that changed its internals: serve exactly as it would
+                return await super().run_stdio_async()
+            from mcp.server.stdio import stdio_server
+
+            async with stdio_server() as (read_stream, write_stream):
+                await lowlevel.run(_AnsweringReadStream(read_stream, write_stream), write_stream,
+                                   lowlevel.create_initialization_options())
 
         async def call_tool(self, name: str, arguments: dict, context: Any = None):  # SDK hook
             # The call runs in a worker thread, which cannot be interrupted. When the client cancels
