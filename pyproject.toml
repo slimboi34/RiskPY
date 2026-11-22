@@ -2,7 +2,7 @@
 # maturin compiles the Rust core (rust/) into riskpy/cpp_underwriter and packs it with
 # the pure-Python riskpy/ package. Building from source needs a Rust toolchain
 # (https://rustup.rs) and the platform linker it uses; no CMake, no C++ libraries.
-requires = ["maturin>=1.10,<2.0"]
+requires = ["maturin>=1.16.0,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -85,41 +85,41 @@ riskpy-audit = "riskpy.audit:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
-    "build>=1.0.0",
-    "numpy>=1.20.0",
-    "matplotlib>=3.5.0",
-    "scipy>=1.10.0",
+    "pytest>=9.2.0",
+    "build>=1.6.1",
+    "numpy>=2.2.6",
+    "matplotlib>=3.10.9",
+    "scipy>=1.15.3",
     # Only the to_frame() tests use it, and they skip without it — so without
     # this line CI silently never exercised them.
-    "pandas>=1.5.0",
+    "pandas>=2.3.3",
     # The MCP server test needs the SDK; it skips when the SDK is absent.
-    "mcp>=2; python_version >= '3.10'",
+    "mcp>=2.3.0; python_version >= '3.10'",
 ]
 # riskpy-mcp — the tools over the Model Context Protocol, for Claude Code and friends.
 mcp = [
     "mcp>=2",
 ]
 gui = [
-    "matplotlib>=3.5.0",
-    "numpy>=1.20.0",
+    "matplotlib>=3.10.9",
+    "numpy>=2.2.6",
 ]
 # riskpy.mc — the generic Monte Carlo engine. NumPy only: it vectorises the
 # formula across trials, which is what makes 100k trials a single expression.
 sim = [
-    "numpy>=1.20.0",
+    "numpy>=2.2.6",
 ]
 # riskpy.viz — the plotting layer. Implies sim, since every chart takes a Result.
 viz = [
-    "matplotlib>=3.5.0",
-    "numpy>=1.20.0",
+    "matplotlib>=3.10.9",
+    "numpy>=2.2.6",
 ]
 docs = [
-    "mkdocs>=1.6.0",
-    "mkdocs-material>=9.5.0",
-    "pymdown-extensions>=10.0",
-    "matplotlib>=3.5.0",
-    "numpy>=1.20.0",
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.7",
+    "pymdown-extensions>=12.3",
+    "matplotlib>=3.10.9",
+    "numpy>=2.2.6",
 ]
 
 [tool.maturin]
