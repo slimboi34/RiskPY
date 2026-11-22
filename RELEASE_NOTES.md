@@ -1,6 +1,6 @@
 # RiskPY v0.9.0 — Release Notes
 
-**Release date:** not yet released (prepared 2026-11-21; machine-testing fixes 2026-11-22)  
+**Release date:** 2026-11-22  
 **Type:** Minor release — the compiled core is rewritten in Rust, and the 21 defects that machine-driven testing found in 0.8.0 are fixed or documented. Seeded Monte Carlo results change, and some inputs are now refused; see Changed  
 **Install:** `pip install -U open-riskpy`
 
