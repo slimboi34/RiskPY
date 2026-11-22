@@ -37,10 +37,30 @@ len(ledger)        # 2
 
 | Function | What it does |
 |---|---|
-| `audit.record(path=None, note=None)` | context manager: record the calls inside the block |
-| `audit.start(path=None, note=None)` / `audit.stop()` | the same without a block |
-| `audit.active()` | the ledger currently recording, or `None` |
+| `audit.record(path=None, note=None)` | context manager: record the calls this thread makes inside the block |
+| `audit.start(path=None, note=None)` / `audit.stop()` | the same without a block, for the whole process |
+| `audit.active()` | the ledger this thread's calls go to, or `None` |
 | `audit.status(check=False, replay_last=50, replay_seconds=10)` | recording or not, the file, the entry count and the head; with `check=True`, a replay of the most recent entries |
+
+**Threads.** A call is recorded to the first of these that exists:
+
+1. the innermost `record()` block of the thread, or asyncio task, making the
+   call;
+2. for a thread with no block of its own, such as a worker started inside a
+   block, the most recently entered block still open in the process;
+3. the ledger `start()` set;
+4. the file `RISKPY_AUDIT_FILE` names.
+
+So two threads can each record into their own block at once, and when a block
+ends, the thread that entered it goes back to what it had before, whatever
+other threads are doing. Workers started inside a block record to it, as in
+0.8. When blocks are open in several threads at once, a worker that must record
+to one particular block should run in a copy of that block's context:
+`contextvars.copy_context().run(...)`, or `asyncio.to_thread`, which copies it.
+*Changed in 0.9.0:* the active ledger was one process-wide value that each block
+saved and restored, so with two threads in their own blocks a call could land in
+the other thread's ledger or in none, and a ledger could stay active after its
+block had ended.
 
 With `path=None` the ledger is kept in memory (`ledger.entries`). A file that
 already holds a ledger is continued from its last entry, so separate processes
@@ -107,7 +127,10 @@ there.
 | arguments nested more than 256 levels deep | `{"$riskpy": "unserialisable", "reason": …, "sha256": …}`; the call is still in the chain, replay skips it |
 
 Tuples are stored as lists, which the tools treat the same way. Ledgers
-written by 0.7.0 hold no tags and verify and replay as before.
+written by 0.7.0 hold no tags and verify and replay as before. A `bytearray` is
+stored as bytes. Neither difference shows on replay: a scenario that
+`scenario_table` refused is compared by its error code, as a refused call is,
+not by the message that quotes the value.
 
 ## Checking a ledger
 
@@ -141,10 +164,22 @@ chain does not end exactly at that head, and says whether entries were added
 after it or the head is missing (entries removed from the end, or a different
 ledger). *New in 0.8.0.*
 
-The digest covers an entry's values, not its formatting. A ledger re-serialised
-by another JSON tool, with different spacing or key order, still verifies. A
-line that repeats a key is damaged, because JSON readers disagree on which value
-it holds.
+The digest covers the canonical form of the parsed entry, so a ledger
+re-serialised with different spacing, key order or string escapes still
+verifies. Number spelling is part of it: the canonical form writes `9.0` and
+`9` differently, as Python's `json` does. A ledger passed through a tool that
+keeps number spelling (Python's `json`, jq 1.7 or later) still verifies; one
+passed through a tool that rewrites `9.0` as `9` (JavaScript's `JSON.parse` /
+`JSON.stringify`, Go's `interface{}` decoding, jq 1.6) does not, though no
+value changed. See [Limits](#limits). A line that repeats a key is damaged,
+because JSON readers disagree on which value it holds.
+
+`verify` names the position of the first bad line, counted from 1. *Changed in
+0.9.0:* a line without a digest was reported at the `seq` it claimed, which a
+foreign line chooses itself. A file ledger that has not recorded anything yet
+(its file is created by the first entry) verifies, replays and reports as an
+empty ledger, as `ledger.head` and the status already said; a path given as a
+string that does not exist is still RP505.
 
 **`replay`** runs every recorded call again with the installed library and
 compares the results number by number (relative tolerance 1e-9 by default,
@@ -155,9 +190,18 @@ call is refused again with the same error code. The report lists:
 - `drifted`: calls whose result differs, with the path of each differing
   number, the recorded and the new value;
 - `skipped`: calls that cannot be recomputed, with the reason: an unseeded
-  simulation, a tool this installation does not have, an argument that could
-  not be stored exactly, a damaged line, or a foreign entry for a tool that is
-  never recorded (`riskpy_audit` and the other introspection tools).
+  simulation (including a `scenario_table` scenario or a `sensitivity` bump
+  that reseeded with 0, which earlier versions allowed), a tool this
+  installation does not have, an argument that could not be stored exactly, a
+  call refused for a tool name too long to store, a damaged line, or a foreign
+  entry for a tool that is never recorded (`riskpy_audit` and the other
+  introspection tools).
+
+Integers are compared exactly, however large: a refused scenario's overrides
+are echoed in the result, so a ledger can hold `10**400`. *Changed in 0.9.0:*
+such a ledger made `replay`, `report(check=True)` and the status check fail
+with OverflowError. An entry that cannot be replayed for any other reason is
+skipped with the reason rather than stopping the replay.
 
 Replayed calls are not themselves recorded, even when the ledger being
 replayed is the one `RISKPY_AUDIT_FILE` names.
@@ -186,7 +230,17 @@ unexpected.
 
 - **Seeds.** A simulation called with `seed=0` draws a fresh seed, so it is
   recorded but cannot be replayed; it appears under `skipped`. Pass a non-zero
-  seed for any number that will be quoted.
+  seed for any number that will be quoted. `scenario_table` and `sensitivity`
+  refuse a seed of 0 anywhere (RP113 in a scenario, RP108 for
+  `parameter="seed"`).
+- **Number spelling.** The digest is computed over Python's spelling of
+  numbers, so a ledger rewritten by a tool that turns `9.0` into `9`
+  (JavaScript, Go, jq 1.6) no longer verifies. Keep the file as written, or
+  re-serialise it with Python's `json` or jq 1.7+. Normalising numbers in the
+  canonical form would fix this, but every ledger written that way would then
+  fail `verify` under RiskPY 0.8 and under any other verifier written to the
+  format above, so 0.9.0 keeps the format; a versioned digest would be the
+  way to change it.
 - **What the chain proves.** On its own, the chain proves the ledger is
   internally consistent: nothing inside it was edited, removed, inserted or
   reordered. It cannot show that entries were not cut off the end, appended

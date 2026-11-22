@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import contextvars
 import dataclasses
 import datetime
 import hashlib
@@ -76,7 +77,17 @@ GENESIS = "0" * 64          # the "previous digest" of the first entry
 _VOLATILE_FIELDS: Dict[str, Tuple[str, ...]] = {"verify": ("seconds", "version")}
 
 _lock = threading.RLock()
+# Where a call is recorded, in order (see active()):
+# 1. the innermost record() block of the thread, or asyncio task, that makes the call: a contextvars
+#    variable, so two threads each inside their own block keep their own calls, and leaving a block
+#    restores what that thread had before, whatever other threads are doing;
+# 2. for a thread with no block of its own (a worker started inside a block), the most recently
+#    entered record() block that is still open anywhere in the process, as in 0.8.x;
+# 3. the ledger start() set, process-wide;
+# 4. RISKPY_AUDIT_FILE.
 _active: Optional["Ledger"] = None
+_scoped: "contextvars.ContextVar[Optional[Ledger]]" = contextvars.ContextVar("riskpy_audit_ledger", default=None)
+_open_blocks: List["Ledger"] = []          # every record() block now open, oldest first (under _lock)
 _env_ledgers: Dict[str, "Ledger"] = {}
 _replaying = threading.local()
 
@@ -556,8 +567,10 @@ def start(path: Optional[str] = None, note: Optional[str] = None) -> Ledger:
     note: a label written into every entry
 
     Returns the :class:`Ledger`. Recording continues until :func:`stop`; starting again
-    replaces the active ledger. Setting the environment variable ``RISKPY_AUDIT_FILE`` does
-    the same for a whole process (the CLI, the MCP server) without any code.
+    replaces the active ledger. It is process-wide: calls from every thread go to it while no
+    :func:`record` block is open (an open block takes precedence; see :func:`record`).
+    Setting the environment variable ``RISKPY_AUDIT_FILE`` does the same for a whole process
+    (the CLI, the MCP server) without any code.
 
     Example::
 
@@ -576,6 +589,7 @@ def stop() -> Optional[Ledger]:
     """Stop the recording that :func:`start` began; returns its ledger (None if none was active).
 
     A ledger named by ``RISKPY_AUDIT_FILE`` is not affected: unset the variable to stop it.
+    Nor is an open :func:`record` block: it records until it ends.
     """
     global _active
     with _lock:
@@ -584,9 +598,16 @@ def stop() -> Optional[Ledger]:
 
 
 def active() -> Optional[Ledger]:
-    """The ledger calls are being recorded to: the one from :func:`start`, else the file
-    named by ``RISKPY_AUDIT_FILE``, else None."""
+    """The ledger this thread's calls are recorded to: the innermost :func:`record` block open
+    in this thread (or asyncio task); for a thread without one, the most recently entered
+    block still open in another thread; else the one from :func:`start`, else the file named
+    by ``RISKPY_AUDIT_FILE``, else None."""
+    scoped = _scoped.get()
+    if scoped is not None:
+        return scoped
     with _lock:
+        if _open_blocks:
+            return _open_blocks[-1]
         if _active is not None:
             return _active
         path = os.environ.get(ENV)
@@ -604,7 +625,15 @@ def record(path: Optional[str] = None, note: Optional[str] = None) -> Iterator[L
     path: a JSON-lines file to append to, or None to record in memory
     note: a label written into every entry
 
-    Yields the :class:`Ledger`; the previously active ledger (if any) resumes afterwards.
+    Yields the :class:`Ledger`. The calls the entering thread (or asyncio task) makes inside
+    the block go to this ledger, and when the block ends that thread's previous ledger (an
+    enclosing block's, :func:`start`'s, or none) resumes, whatever other threads are doing:
+    two threads can each record into their own block at the same time. A thread with no
+    block of its own, such as a worker started inside the block, records to the most
+    recently entered block still open in the process. When blocks are open in several
+    threads at once, a worker that must record to one particular block should run in a copy
+    of that block's context (``contextvars.copy_context().run``, or ``asyncio.to_thread``,
+    which copies it).
 
     Example::
 
@@ -612,15 +641,25 @@ def record(path: Optional[str] = None, note: Optional[str] = None) -> Iterator[L
             tools.call("basel_irb_capital", {"pd": 0.01, "lgd": 0.45, "ead": 1_000_000})
         ledger.entries[0]["result"]["risk_weight"]     # 0.9232…
     """
-    global _active
     ledger = Ledger(path, note)
+    previous = _scoped.get()
+    token = _scoped.set(ledger)
     with _lock:
-        previous, _active = _active, ledger
+        _open_blocks.append(ledger)
     try:
         yield ledger
     finally:
         with _lock:
-            _active = previous
+            # This block's own ledger, wherever it is in the list: blocks in different threads need
+            # not end in the order they began.
+            for k in range(len(_open_blocks) - 1, -1, -1):
+                if _open_blocks[k] is ledger:
+                    del _open_blocks[k]
+                    break
+        try:
+            _scoped.reset(token)
+        except ValueError:          # left in a different context than it was entered in
+            _scoped.set(previous)
 
 
 def _record(name: Any, arguments: Any, result: Any, error: Optional[dict], ms: float, via: str) -> None:
@@ -656,6 +695,11 @@ def _read(source: Source) -> List[Item]:
     if isinstance(source, Ledger):
         if source.path is None:
             return [dict(e) for e in source.entries]
+        if not os.path.exists(source.path):
+            # Nothing recorded yet (the file is created by the first append): an empty, intact
+            # ledger, as ledger.head (64 zeros) and status() already say. A path given as a string
+            # is still RP505 when missing: a typo must not pass for an empty ledger.
+            return []
         source = source.path
     if isinstance(source, (str, os.PathLike)):
         path = os.fspath(source)
@@ -735,7 +779,9 @@ def _verify(items: Sequence[Item]) -> Tuple[ChainReport, List[str]]:
         if isinstance(entry, _Damaged):
             return ChainReport(False, len(items), prev, position, entry.reason), digests
         seq = entry.get("seq", position)
-        where = seq if isinstance(seq, int) and not isinstance(seq, bool) else position
+        # The position, never the entry's own claim: a foreign line saying "seq": 999 is still where it is.
+        # (Once the sequence check below has passed, the two are equal anyway.)
+        where = position
         if not isinstance(entry.get("digest"), str):
             return ChainReport(False, len(items), prev, where, "the entry has no digest"), digests
         if seq != position:
@@ -806,9 +852,13 @@ def verify_chain(source: Source, expected_head: Optional[str] = None,
     different head: only ``expected_head`` (or ``expected_entries``) catches those, which is
     why the head has to be kept outside the ledger.
 
-    Whitespace and key order on a line do not matter — the digest covers the entry's
-    values, so a ledger re-serialised by another JSON tool still verifies — but a line that
-    repeats a key is damaged, because readers disagree on which value it holds.
+    Whitespace, key order and string escapes on a line do not matter: the digest is taken over
+    the canonical form of the parsed entry. Number spelling does: the canonical form writes
+    ``9.0`` and ``9`` differently, as Python's ``json`` does, so a ledger re-serialised by a
+    tool that keeps number spelling (Python's ``json``, jq 1.7 or later) still verifies, but
+    one passed through a tool that rewrites ``9.0`` as ``9`` (JavaScript's ``JSON.parse`` /
+    ``JSON.stringify``, Go's ``interface{}`` decoding, jq 1.6) does not. A line that repeats
+    a key is damaged, because readers disagree on which value it holds.
 
     Example::
 
@@ -836,8 +886,22 @@ def _differences(recorded: Any, replayed: Any, rel_tol: float, abs_tol: float, p
         return isinstance(v, (int, float)) and not isinstance(v, bool)
 
     if is_num(recorded) and is_num(replayed):
-        gap = abs(float(recorded) - float(replayed))
-        scale = max(abs(float(recorded)), abs(float(replayed)))
+        if isinstance(recorded, int) and isinstance(replayed, int):
+            # Exactly: an int may be far beyond float range (10**400 echoed from a refused scenario).
+            if recorded != replayed:
+                try:
+                    relative: Optional[float] = abs(recorded - replayed) / max(abs(recorded), abs(replayed))
+                except OverflowError:
+                    relative = None
+                out.append({"path": path, "recorded": recorded, "replayed": replayed,
+                            "relative_difference": relative})
+            return
+        try:
+            gap = abs(float(recorded) - float(replayed))
+            scale = max(abs(float(recorded)), abs(float(replayed)))
+        except OverflowError:           # an int beyond float range against a float: they cannot be equal
+            out.append({"path": path, "recorded": recorded, "replayed": replayed, "relative_difference": None})
+            return
         if gap > max(abs_tol, rel_tol * scale):
             out.append({"path": path, "recorded": recorded, "replayed": replayed,
                         "relative_difference": gap / scale if scale else None})
@@ -862,21 +926,32 @@ def _differences(recorded: Any, replayed: Any, rel_tol: float, abs_tol: float, p
 
 
 def _unseeded(tool_name: Any, arguments: Any) -> bool:
-    """True when the call drew a fresh random seed, so recomputing it cannot give the same numbers."""
-    from .tools import TOOLS
+    """True when the call drew a fresh random seed somewhere, so recomputing it cannot give the same
+    numbers: its own seed is 0, or (for sensitivity and scenario_table) the base arguments', a
+    scenario's override's, or a bumped seed's. Since 0.9.0 the meta-tools refuse the last two, so
+    this matters for ledgers recorded by earlier versions."""
+    from .tools import TOOLS, _fresh_seed
 
     if not isinstance(arguments, dict):
         return False
     if isinstance(arguments.get("tool"), str) and isinstance(arguments.get("arguments"), dict):
-        return _unseeded(arguments["tool"], arguments["arguments"])       # sensitivity / scenario_table
+        inner, base = arguments["tool"], arguments["arguments"]          # sensitivity / scenario_table
+        if _unseeded(inner, base):
+            return True
+        if tool_name == "sensitivity" and arguments.get("parameter") == "seed":
+            return True                       # seed ± bump: unrelated streams, and seed 0 among them
+        scenarios = arguments.get("scenarios") if tool_name == "scenario_table" else None
+        if isinstance(scenarios, dict):
+            return any(isinstance(o, dict) and "seed" in o and _unseeded(inner, {**base, **o})
+                       for o in scenarios.values())
+        return False
     t = TOOLS.get(tool_name) if isinstance(tool_name, str) else None
     if t is None:
         return False
     parameter = inspect.signature(t.fn).parameters.get("seed")
     if parameter is None:
         return False
-    seed = arguments.get("seed", parameter.default)
-    return seed in (0, None)
+    return _fresh_seed(arguments.get("seed", parameter.default))
 
 
 @dataclass
@@ -961,6 +1036,13 @@ def _replay_one(tools: Any, position: int, entry: Item, rel_tol: float, abs_tol:
         return skip("the entry has neither a result nor an error")
     if "error" in entry and not isinstance(entry["error"], dict):
         return skip("the entry's error is not an object {code, message, param}")
+    error = entry.get("error")
+    if (isinstance(error, dict) and error.get("code") == "RP405" and error.get("param") == "name"
+            and not (isinstance(name, str) and name in tools.TOOLS)):
+        # Refused for a tool name over LIMITS["string"] characters, which the ledger keeps only as a clipped
+        # repr: calling that short repr would be an unknown name (RP401), not the same call.
+        return skip("the call was refused for an over-long tool name, of which the ledger keeps only the start, "
+                    "so it cannot be recomputed")
     t = tools.TOOLS.get(name) if isinstance(name, str) else None
     if t is not None and t.kind != "calculator":
         # Introspection tools are never recorded; replaying one (riskpy_audit with check=true) would start
@@ -980,7 +1062,8 @@ def _replay_one(tools: Any, position: int, entry: Item, rel_tol: float, abs_tol:
     except _CannotRebuild:
         return skip("the recorded result could not be stored, so there is nothing to compare it with")
     if "error" not in entry and _unseeded(name, arguments):
-        return skip("run with seed=0 (a fresh seed), so it cannot be reproduced")
+        return skip("run with seed=0 (a fresh seed) in its arguments, a scenario or a bumped seed, so it cannot be "
+                    "reproduced")
     got = tools.call(name, arguments, errors="return", via="replay")
     failed = isinstance(got, dict) and set(got) == {"error"}
     differences: List[dict] = []
@@ -995,10 +1078,30 @@ def _replay_one(tools: Any, position: int, entry: Item, rel_tol: float, abs_tol:
                             "replayed": f"error {got['error']['code']}: {got['error']['message']}",
                             "relative_difference": None})
     else:
+        if name == "scenario_table":
+            recorded, got = _scenario_errors_by_code(recorded), _scenario_errors_by_code(got)
         _differences(recorded, got, rel_tol, abs_tol, "result", _VOLATILE_FIELDS.get(str(name), ()), differences)
     if differences:
         return "drifted", {"seq": seq, "tool": name, "differences": differences}
     return "matched", {}
+
+
+def _scenario_errors_by_code(result: Any) -> Any:
+    """A scenario_table result with each refused scenario's error cut to its code and param.
+
+    A refused call matches on replay when it fails again with the same code; a scenario refused
+    inside a successful scenario_table is compared the same way. Its message and hint quote the
+    value the agent sent, whose repr the ledger cannot always keep (a tuple is stored as a list:
+    "got (1.0, 2.0)" would replay as "got [1.0, 2.0]"), and a scenario not run in time says how
+    many seconds had passed."""
+    if not isinstance(result, dict) or not isinstance(result.get("scenarios"), dict):
+        return result
+    scenarios = {}
+    for label, row in result["scenarios"].items():
+        if isinstance(row, dict) and isinstance(row.get("error"), dict):
+            row = {**row, "error": {k: row["error"].get(k) for k in ("code", "param")}}
+        scenarios[label] = row
+    return {**result, "scenarios": scenarios}
 
 
 def _replay_items(items: Sequence[Item], chain: ChainReport, rel_tol: float, abs_tol: float,
@@ -1031,6 +1134,11 @@ def _replay_items(items: Sequence[Item], chain: ChainReport, rel_tol: float, abs
                 assert isinstance(entry, dict)
                 outcome, detail = "skipped", {"seq": entry.get("seq", index + 1), "tool": entry.get("tool"),
                                               "reason": "the entry is nested too deeply to replay"}
+            except Exception as exc:  # noqa: BLE001 - one odd entry must not stop the replay of the rest
+                where = entry if isinstance(entry, dict) else {}
+                outcome, detail = "skipped", {"seq": where.get("seq", index + 1), "tool": where.get("tool"),
+                                              "reason": _clip(f"the entry could not be replayed ({type(exc).__name__}: "
+                                                              f"{exc})", 300)}
             if outcome == "matched":
                 out.matched += 1
             elif outcome == "drifted":
