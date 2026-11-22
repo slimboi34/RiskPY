@@ -662,9 +662,10 @@ def test_archimedean_cdfs_stay_accurate_at_extreme_theta():
     for theta in ("1e-9", "0.5", "0.99", "1.01", "20", "499", "-1e-9", "-0.99", "-1.01", "-50", "-499"):
         for u, v in points:
             assert FrankCopula(float(theta)).cdf(float(u), float(v)) == pytest.approx(frank(u, v, theta), abs=1e-14)
-    # near-perfect dependence: both exceed together almost always, or (negative Frank) never
+    # near-perfect dependence: both exceed together almost always, or (negative Frank) almost never. 0.8.0 returned
+    # exactly 0.0 for the Frank case, 1 - 2q + C(q, q) cancelled; 0.9.0 keeps the digits (600-digit mpmath value).
     assert ClaytonCopula(1e6, survival=True).joint_exceedance(0.995) == pytest.approx(0.005, rel=1e-3)
-    assert FrankCopula(-499.0).joint_exceedance(0.995) == 0.0
+    assert FrankCopula(-499.0).joint_exceedance(0.995) == pytest.approx(4.800626903177893e-218, rel=1e-12)
 
 
 def test_tools_refuse_what_double_precision_cannot_hold():

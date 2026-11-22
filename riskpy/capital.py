@@ -133,33 +133,85 @@ def _check_level(level: Any, name: str = "level") -> float:
     return float(level)
 
 
+def _frechet_exceedance(value: float, q: float) -> float:
+    """A joint exceedance P(U > q, V > q) held to its Fréchet bounds [max(1 − 2q, 0), 1 − q]."""
+    return min(max(value, 1.0 - 2.0 * q, 0.0), 1.0 - q)
+
+
+def _expm1_ratio(x: float) -> float:
+    """(eˣ − 1)/x, which is 1 at x = 0, to full relative precision for any x below 709."""
+    if abs(x) < 1e-5:
+        return 1.0 + x * (0.5 + x * (1.0 / 6.0 + x / 24.0))
+    return math.expm1(x) / x
+
+
+def _log1p_ratio(y: float) -> float:
+    """ln(1 + y)/y, which is 1 at y = 0, to full relative precision for y > −1."""
+    if abs(y) < 1e-5:
+        return 1.0 - y * (0.5 - y * (1.0 / 3.0 - y / 4.0))
+    return math.log1p(y) / y
+
+
 # ---------------------------------------------------------------------------
 # Closed forms (pure Python)
 
 
-def _adaptive_simpson(f, a: float, b: float, tol: float = 1e-11, depth: int = 40) -> float:
-    """∫ₐᵇ f by adaptive Simpson: intervals are halved until the Richardson error meets ``tol``."""
+_SIMPSON_BUDGET = 40_000         # integrand evaluations one integral may use, whatever the input
+
+
+def _adaptive_simpson(f, a: float, b: float, rel: float = 1e-12, floor: float = 1e-300, depth: int = 40) -> float:
+    """∫ₐᵇ f for a non-negative ``f`` by adaptive Simpson, to a *relative* tolerance ``rel``.
+
+    Intervals are halved until the Richardson error meets ``rel`` times the integral (but never
+    less than ``floor`` absolute), or a piece is at the rounding level of its own value. The
+    tolerance is relative because the copula CDFs below are sums of this integral and non-negative
+    terms: a joint probability of 1e-17 needs 1e-17's digits, which an absolute 1e-11 never gave.
+    The first estimate sets the tolerance; if the refined integral turns out much smaller, it is
+    refined again against that. ``_SIMPSON_BUDGET`` bounds the work, so no input can make it spin.
+
+    The rounding level of a piece assumes ``f`` is an exponential, as the Plackett integrands
+    are: e^(−x) carries a relative rounding error of about x·2⁻⁵², so a value of 1e-140 (x ≈ 320)
+    is only good to about 1e-13, and asking for more would refine noise until the budget ran out.
+    """
+    if a == b:
+        return 0.0
+    used = [0]
+    eps = 2.0 ** -52
+
     def recurse(lo, flo, hi, fhi, mid, fmid, whole, tolerance, level):
         left_mid, right_mid = 0.5 * (lo + mid), 0.5 * (mid + hi)
         f_left, f_right = f(left_mid), f(right_mid)
+        used[0] += 2
         left = (mid - lo) / 6.0 * (flo + 4.0 * f_left + fmid)
         right = (hi - mid) / 6.0 * (fmid + 4.0 * f_right + fhi)
         delta = left + right - whole
-        if level <= 0 or abs(delta) <= 15.0 * tolerance:
+        size = abs(left) + abs(right)
+        # |ln| of the piece's mean value: the exponent whose rounding sets the noise in f.
+        exponent = abs(math.log(size / (hi - lo))) if size > 0.0 else 0.0
+        if (level <= 0 or abs(delta) <= 15.0 * tolerance or abs(delta) <= eps * (32.0 + 8.0 * exponent) * size
+                or used[0] > _SIMPSON_BUDGET):
             return left + right + delta / 15.0
         return (recurse(lo, flo, mid, fmid, left_mid, f_left, left, 0.5 * tolerance, level - 1)
                 + recurse(mid, fmid, hi, fhi, right_mid, f_right, right, 0.5 * tolerance, level - 1))
 
-    if a == b:
-        return 0.0
-    total = 0.0
     pieces = 16                    # a fixed first split, so a narrow peak cannot hide between three points
     width = (b - a) / pieces
+    nodes = [a + k * width for k in range(pieces)] + [b]
+    first = []
     for k in range(pieces):
-        lo, hi = a + k * width, a + (k + 1) * width
+        lo, hi = nodes[k], nodes[k + 1]
         mid = 0.5 * (lo + hi)
         flo, fmid, fhi = f(lo), f(mid), f(hi)
-        total += recurse(lo, flo, hi, fhi, mid, fmid, (hi - lo) / 6.0 * (flo + 4.0 * fmid + fhi), tol / pieces, depth)
+        first.append((lo, flo, hi, fhi, mid, fmid, (hi - lo) / 6.0 * (flo + 4.0 * fmid + fhi)))
+    used[0] += 3 * pieces
+    estimate = abs(sum(piece[-1] for piece in first))
+    total = 0.0
+    for _ in range(3):
+        tol = max(rel * estimate, floor)
+        total = sum(recurse(*piece, tol / pieces, depth) for piece in first)
+        if abs(total) >= 0.25 * estimate or used[0] > _SIMPSON_BUDGET:
+            break
+        estimate = abs(total)       # the first estimate was far too large: tighten the tolerance to match
     return total
 
 
@@ -177,7 +229,9 @@ def _plackett_integral(a: float, b: float, lower: float, upper: float, df: Optio
 
     def integrand(theta: float) -> float:
         sin_t = math.sin(theta)
-        c2 = (1.0 - sin_t) * (1.0 + sin_t)
+        # cos²θ from cos θ, not (1 − sin θ)(1 + sin θ): within 1e-8 of ±π/2 sin θ rounds to ±1 and the
+        # product to 0, which dropped the integrand there when a ± b was tiny but not zero.
+        c2 = math.cos(theta) ** 2
         # Two algebraically equal forms of q; each is stable at one end of (−π/2, π/2).
         if theta < 0.0:
             head, rest = plus, -2.0 * ab / (1.0 - sin_t)
@@ -198,14 +252,29 @@ def _plackett_integral(a: float, b: float, lower: float, upper: float, df: Optio
 
 
 def _bvn_cdf(a: float, b: float, rho: float) -> float:
-    """P(X ≤ a, Y ≤ b) for a standard bivariate normal with correlation ``rho``."""
+    """P(X ≤ a, Y ≤ b) for a standard bivariate normal with correlation ``rho``.
+
+    From independence (ρ = 0), where it is the product Φ(a)·Φ(b), plus Plackett's integral. For
+    ρ ≥ 0 every term is non-negative, so a tiny joint probability keeps its relative precision.
+    For ρ < 0 the integral is subtracted, which is exact only while the answer is a fair share of
+    the product; a smaller answer (the corners, strong negative correlation) is summed from the
+    countermonotone case max(Φ(a) + Φ(b) − 1, 0) instead. Subtracting there left C(u, v) up to
+    3e-14 below the Fréchet bound, not monotone, and a joint exceedance of 7.012e-13 for 7.023e-13.
+    """
     pa, pb = _special.norm_cdf(a), _special.norm_cdf(b)
+    upper, lower = min(pa, pb), max(pa + pb - 1.0, 0.0)
     if rho >= 1.0:
-        return min(pa, pb)
+        return upper
     if rho <= -1.0:
-        return max(pa + pb - 1.0, 0.0)
-    # From independence (ρ = 0), where the joint probability is the product.
-    return min(max(pa * pb + _plackett_integral(a, b, 0.0, math.asin(rho), None), 0.0), min(pa, pb))
+        return lower
+    product = pa * pb
+    if rho >= 0.0:
+        value = product + _plackett_integral(a, b, 0.0, math.asin(rho), None)
+    else:
+        value = product - _plackett_integral(a, b, math.asin(rho), 0.0, None)
+        if value < 0.5 * product:
+            value = lower + _plackett_integral(a, b, -0.5 * math.pi, math.asin(rho), None)
+    return min(max(value, lower), upper)
 
 
 def _bvt_cdf(a: float, b: float, rho: float, df: float) -> float:
@@ -217,11 +286,15 @@ def _bvt_cdf(a: float, b: float, rho: float, df: float) -> float:
     if rho <= -1.0:
         return lower
     # An uncorrelated bivariate t is not independent, so there is no product to start from:
-    # integrate from the nearer of the two perfectly dependent cases instead.
+    # integrate from one of the two perfectly dependent cases instead. From the comonotone end
+    # (ρ ≥ 0) the integral is subtracted, which is exact only while the answer is a fair share of
+    # min(Φ(a), Φ(b)); a smaller answer (a joint tail, weak correlation) is summed from the
+    # countermonotone end instead, where every term is non-negative.
     if rho >= 0.0:
         value = upper - _plackett_integral(a, b, math.asin(rho), 0.5 * math.pi, df)
-    else:
-        value = lower + _plackett_integral(a, b, -0.5 * math.pi, math.asin(rho), df)
+        if value >= 0.5 * upper:
+            return min(max(value, lower), upper)
+    value = lower + _plackett_integral(a, b, -0.5 * math.pi, math.asin(rho), df)
     return min(max(value, lower), upper)
 
 
@@ -317,14 +390,20 @@ class Copula:
         level: the quantile as a decimal, e.g. 0.995 for the 1-in-200
 
         Independent risks give ``(1 − level)²`` (2.5e-5 at 0.995); comonotonic risks give
-        ``1 − level``. Computed as ``1 − 2·level + C(level, level)``.
+        ``1 − level``. It equals ``1 − 2·level + C(level, level)``, but that form subtracts
+        numbers near 1 and keeps few digits of a small answer, so each copula here computes it
+        without the subtraction: ``C(1 − level, 1 − level)`` for the radially symmetric Gaussian,
+        t and Frank copulas and for the survival copulas, and a sum of non-negative terms for
+        Clayton and Gumbel. The answer is relatively accurate down to the smallest joint
+        probabilities. A copula of your own gets the ``1 − 2·level + C(level, level)`` form
+        unless it overrides this method.
 
         Example::
 
             GumbelCopula(2.0).joint_exceedance(0.995)     # 0.00294, 117× the independent 2.5e-5
         """
         q = _check_level(level)
-        return max(1.0 - 2.0 * q + self.cdf(q, q), 0.0)
+        return _frechet_exceedance(1.0 - 2.0 * q + self.cdf(q, q), q)
 
     def _check_pair(self, u: Any, v: Any) -> Tuple[float, float]:
         for name, value in (("u", u), ("v", v)):
@@ -480,12 +559,17 @@ class GaussianCopula(_Elliptical):
             return v
         if v == 1.0:
             return u
-        return _bvn_cdf(_special.norm_ppf(u), _special.norm_ppf(v), rho)
+        # Held to the copula's own Fréchet bounds in u and v too: the quantile round trip Φ(Φ⁻¹(u)) is
+        # u only to rounding (7.8e-14 relative at u = 1e-300, where |Φ⁻¹(u)| = 37).
+        return min(max(_bvn_cdf(_special.norm_ppf(u), _special.norm_ppf(v), rho), u + v - 1.0, 0.0), min(u, v))
 
     def joint_exceedance(self, level: float, i: int = 0, j: int = 1) -> float:
-        """P(both variables ``i`` and ``j`` exceed their ``level`` quantile). See :meth:`Copula.joint_exceedance`."""
+        """P(both variables ``i`` and ``j`` exceed their ``level`` quantile). See :meth:`Copula.joint_exceedance`.
+
+        The copula is radially symmetric, so this is ``C(1 − level, 1 − level)``.
+        """
         q = _check_level(level)
-        return max(1.0 - 2.0 * q + self.cdf(q, q, i, j), 0.0)
+        return _frechet_exceedance(self.cdf(1.0 - q, 1.0 - q, i, j), q)
 
     @classmethod
     def from_kendall_tau(cls, tau: float) -> "GaussianCopula":
@@ -614,12 +698,16 @@ class StudentTCopula(_Elliptical):
             raise InputError(f"the t quantile at this level is beyond double precision for df = {self.df:g}",
                              code="RP304", param="df",
                              hint="Use more degrees of freedom (df >= 1 is safe at any level) or a level nearer 0.5.")
-        return _bvt_cdf(a, b, rho, self.df)
+        # t(t⁻¹(u)) is u only to rounding: hold the answer to the Fréchet bounds in u and v as well.
+        return min(max(_bvt_cdf(a, b, rho, self.df), u + v - 1.0, 0.0), min(u, v))
 
     def joint_exceedance(self, level: float, i: int = 0, j: int = 1) -> float:
-        """P(both variables ``i`` and ``j`` exceed their ``level`` quantile). See :meth:`Copula.joint_exceedance`."""
+        """P(both variables ``i`` and ``j`` exceed their ``level`` quantile). See :meth:`Copula.joint_exceedance`.
+
+        The copula is radially symmetric, so this is ``C(1 − level, 1 − level)``.
+        """
         q = _check_level(level)
-        return max(1.0 - 2.0 * q + self.cdf(q, q, i, j), 0.0)
+        return _frechet_exceedance(self.cdf(1.0 - q, 1.0 - q, i, j), q)
 
     @classmethod
     def from_kendall_tau(cls, tau: float, df: float) -> "StudentTCopula":
@@ -664,9 +752,20 @@ class _Archimedean(Copula):
         """C(u, v) = P(U ≤ u, V ≤ v) for any pair of the copula's variables (closed form)."""
         u, v = self._check_pair(u, v)
         if self.survival:
-            # The survival copula of C: Ĉ(u, v) = u + v − 1 + C(1 − u, 1 − v).
-            return min(max(u + v - 1.0 + self._edge(1.0 - u, 1.0 - v), 0.0), min(u, v))
+            if u == 0.0 or v == 0.0:
+                return 0.0
+            if u == 1.0:
+                return v
+            if v == 1.0:
+                return u
+            # The survival copula of C: Ĉ(u, v) = u + v − 1 + C(1 − u, 1 − v) = P(U > 1 − u, V > 1 − v).
+            return min(max(self._joint_survival(u, v), u + v - 1.0, 0.0), min(u, v))
         return self._edge(u, v)
+
+    def _joint_survival(self, u: float, v: float) -> float:
+        """P(U > 1 − u, V > 1 − v) under the base copula, for u, v in (0, 1). Clayton and Gumbel
+        override it with forms that keep their relative precision when u or v is small."""
+        return u + v - 1.0 + self._edge(1.0 - u, 1.0 - v)
 
     def _edge(self, u: float, v: float) -> float:
         if u == 0.0 or v == 0.0:
@@ -675,7 +774,20 @@ class _Archimedean(Copula):
             return v
         if v == 1.0:
             return u
-        return min(max(self._cdf(u, v), 0.0), min(u, v))
+        return min(max(self._cdf(u, v), u + v - 1.0, 0.0), min(u, v))
+
+    def joint_exceedance(self, level: float) -> float:
+        """P(U > level, V > level). See :meth:`Copula.joint_exceedance`."""
+        q = _check_level(level)
+        if self.survival:
+            # (U, V) under the survival copula is (1 − U', 1 − V') under the base copula, so both
+            # exceed q exactly when both U' and V' are below 1 − q: the base C(1 − q, 1 − q).
+            return _frechet_exceedance(self._edge(1.0 - q, 1.0 - q), q)
+        return _frechet_exceedance(self._upper_corner(q), q)
+
+    def _upper_corner(self, q: float) -> float:
+        """P(U > q, V > q) under the base copula (overridden where 1 − 2q + C(q, q) cancels)."""
+        return 1.0 - 2.0 * q + self._edge(q, q)
 
     def _tails(self) -> TailDependence:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -750,6 +862,17 @@ class ClaytonCopula(_Archimedean):
         rest = math.exp(-t * (top - lu)) + math.exp(-t * (top - lv)) - math.exp(-t * top)
         return math.exp(-(top + math.log(rest) / t))
 
+    def _joint_survival(self, u: float, v: float) -> float:
+        if min(u, v) <= 0.5:
+            return _clayton_joint_survival(u, v, self.theta)
+        return super()._joint_survival(u, v)
+
+    def _upper_corner(self, q: float) -> float:
+        if q >= 0.5:
+            delta = 1.0 - q                          # exact for q >= 1/2
+            return _clayton_joint_survival(delta, delta, self.theta)
+        return super()._upper_corner(q)              # at least (1 − q)² >= 1/4: nothing to lose
+
     def kendall_tau(self) -> float:
         """Kendall's tau: ``θ/(θ + 2)``."""
         return self.theta / (self.theta + 2.0)
@@ -820,22 +943,21 @@ class GumbelCopula(_Archimedean):
         log_root = max(la, lb) + math.log1p(math.exp(-t * abs(la - lb))) / t
         return math.exp(-math.exp(log_root))
 
-    def joint_exceedance(self, level: float) -> float:
-        """P(U > level, V > level). See :meth:`Copula.joint_exceedance`.
-
-        On the diagonal C(q, q) = q^c with c = 2^(1/θ), so ``1 − 2q + C(q, q)`` can be
-        rewritten as ``q·(q^(c−2) − 1) + (1 − q)·(1 − q^(c−1))``: two non-negative terms, where
-        the textbook form subtracts numbers near 1 and kept only a few digits of a joint
-        probability of 1e-9 (at θ = 1, independence, it returned 0 for (1 − q)² = 1e-18).
-        """
-        q = _check_level(level)
-        if self.survival:
-            return super().joint_exceedance(q)
+    def _upper_corner(self, q: float) -> float:
+        # On the diagonal C(q, q) = q^c with c = 2^(1/θ), so 1 − 2q + C(q, q) can be rewritten as
+        # q·(q^(c−2) − 1) + (1 − q)·(1 − q^(c−1)): two non-negative terms, where the textbook form
+        # subtracts numbers near 1 and kept only a few digits of a joint probability of 1e-9 (at
+        # θ = 1, independence, it returned 0 for (1 − q)² = 1e-18).
         delta = 1.0 - q
         log_q = math.log1p(-delta) if q >= 0.5 else math.log(q)          # 1 − q is exact only for q >= ½
         c = math.expm1(math.log(2.0) / self.theta)                        # 2^(1/θ) − 1
         c_minus_1 = 2.0 * math.expm1(-(self.theta - 1.0) / self.theta * math.log(2.0))    # 2^(1/θ) − 2
-        return min(max(q * math.expm1(c_minus_1 * log_q) - delta * math.expm1(c * log_q), 0.0), delta)
+        return q * math.expm1(c_minus_1 * log_q) - delta * math.expm1(c * log_q)
+
+    def _joint_survival(self, u: float, v: float) -> float:
+        if min(u, v) <= 0.5:
+            return _gumbel_joint_survival(u, v, self.theta)
+        return super()._joint_survival(u, v)
 
     def kendall_tau(self) -> float:
         """Kendall's tau: ``1 − 1/θ``."""
@@ -924,11 +1046,12 @@ class FrankCopula(_Archimedean):
         return -np.log(-np.expm1(-s) + np.exp(-t - s)) / t
 
     def _cdf(self, u: float, v: float) -> float:
-        t = self.theta
-        if t < 0.0:
-            # Negative dependence is the positive case reflected: C_θ(u, v) = u − C_{−θ}(u, 1 − v).
-            return u - _frank_cdf(u, 1.0 - v, -t)
-        return _frank_cdf(u, v, t)
+        return _frank_cdf(u, v, self.theta)
+
+    def _upper_corner(self, q: float) -> float:
+        # The Frank copula is radially symmetric: P(U > q, V > q) = C(1 − q, 1 − q), which _frank_cdf
+        # computes to full relative precision in the corner for either sign of θ.
+        return self._edge(1.0 - q, 1.0 - q)
 
     def kendall_tau(self) -> float:
         """Kendall's tau: ``1 − 4/θ·(1 − D₁(θ))``."""
@@ -994,18 +1117,78 @@ def _logseries_frailty(theta: float, n: int, rng: Any):
 
 
 def _frank_cdf(u: float, v: float, t: float) -> float:
-    """The Frank copula C(u, v) for θ = t > 0, arranged so that a large θ neither overflows nor cancels.
+    """The Frank copula C(u, v) for any non-zero θ = t, without overflow, underflow or cancellation.
 
-    −(1/θ)·ln(1 + (e^(−θu) − 1)(e^(−θv) − 1)/(e^(−θ) − 1)) with the bracket written as
-    (e^(−θu) + e^(−θv) − e^(−θ) − e^(−θ(u+v))) / (1 − e^(−θ)) and e^(−θ·min(u, v)) factored out.
+    C = −(1/θ)·ln(1 + A) with A = (e^(−θu) − 1)(e^(−θv) − 1)/(e^(−θ) − 1). Writing each e^x − 1 as
+    x·E(x), E(x) = (eˣ − 1)/x, gives A = −θ·K with K = u·v·E(−θu)·E(−θv)/E(−θ), and so
+    C = K·L(−θK), L(y) = ln(1 + y)/y: a product of factors near 1 for a small θ (no underflow:
+    the old expm1·expm1 product was 0 for |θ| below about 1e-160, so C(u, v) collapsed to 0), and
+    a product of positive factors in the corner u, v → 0 (no cancellation: the old reflection
+    u − C_{−θ}(u, 1 − v) for θ < 0 kept only absolute precision). For θ > 0 with θK > ½ (u and v
+    near 1, θ >= 1) 1 + A cancels instead, and the bracket is written as
+    (e^(−θu) + e^(−θv) − e^(−θ) − e^(−θ(u+v))) / (1 − e^(−θ)) with e^(−θ·min(u, v)) factored out.
     """
-    if t < 1.0:
-        return -math.log1p(math.expm1(-t * u) * math.expm1(-t * v) / math.expm1(-t)) / t
-    lo, hi = min(u, v), max(u, v)
-    inner = 1.0 + math.exp(-t * (hi - lo)) - math.exp(-t * (1.0 - lo)) - math.exp(-t * hi)
-    if inner <= 0.0:
-        return 0.0
-    return lo - (math.log(inner) - math.log(-math.expm1(-t))) / t
+    if t > 0.0:
+        k = u * _expm1_ratio(-t * u) / _expm1_ratio(-t) * (v * _expm1_ratio(-t * v))
+        b = t * k                       # (1 − e^(−θu))(1 − e^(−θv))/(1 − e^(−θ)), in (0, 1)
+        if t < 1.0 or b <= 0.5:         # below θ = 1, b <= 1 − e^(−1): 1 − b cannot cancel
+            return k * _log1p_ratio(-b)
+        lo, hi = min(u, v), max(u, v)
+        inner = 1.0 + math.exp(-t * (hi - lo)) - math.exp(-t * (1.0 - lo)) - math.exp(-t * hi)
+        if inner <= 0.0:
+            return 0.0
+        return lo - (math.log(inner) - math.log(-math.expm1(-t))) / t
+    # θ = −s < 0: A = (e^(su) − 1)(e^(sv) − 1)/(e^s − 1) > 0 and C = ln(1 + A)/s. The first factor,
+    # u·E(su)/E(s) = (e^(su) − 1)/(e^s − 1), is at most 1, so nothing overflows for |θ| up to 500.
+    s = -t
+    k = u * _expm1_ratio(s * u) / _expm1_ratio(s) * (v * _expm1_ratio(s * v))
+    return k * _log1p_ratio(s * k)
+
+
+def _clayton_joint_survival(u: float, v: float, theta: float) -> float:
+    """P(U > 1 − u, V > 1 − v) for a Clayton copula, for u, v in (0, 1) with min(u, v) <= ½.
+
+    With 1 − u = e^(−α), 1 − v = e^(−γ) and C(1 − u, 1 − v) = e^(−β),
+    1 − (1 − u) − (1 − v) + C = u·v + (1 − u)(1 − v)·(e^(α + γ − β) − 1): the independence term
+    plus a non-negative excess (the copula is positively quadrant dependent), where the
+    textbook form cancels. For Clayton θ·(α + γ − β) = ln(1 + aₓ·a_y/(1 + aₓ + a_y)) with
+    aₓ = e^(θα) − 1, a_y = e^(θγ) − 1; for large θα or θγ it is taken in logs. α + γ − β is at most
+    min(α, γ) <= ln 2, so the excess term cannot overflow.
+    """
+    alpha, gamma = -math.log1p(-u), -math.log1p(-v)
+    lo, hi = min(alpha, gamma), max(alpha, gamma)
+    if theta * hi <= 30.0:
+        ea, eg = math.expm1(theta * alpha), math.expm1(theta * gamma)
+        r = math.log1p(ea / (1.0 + ea + eg) * eg) / theta
+    else:
+        # ln(e^(θα) + e^(θγ) − 1) = θ·hi + ln(1 + e^(−θ(hi − lo)) − e^(−θ·hi)), so
+        # α + γ − β = lo − ln(1 + e^(−θ(hi − lo)) − e^(−θ·hi))/θ (θ may be as large as the largest double).
+        r = lo - math.log1p(math.exp(-theta * (hi - lo)) - math.exp(-theta * hi)) / theta
+    return u * v + (1.0 - u) * (1.0 - v) * math.expm1(r)
+
+
+def _gumbel_joint_survival(u: float, v: float, theta: float) -> float:
+    """P(U > 1 − u, V > 1 − v) for a Gumbel copula, for u, v in (0, 1) with min(u, v) <= ½.
+
+    As for Clayton, u·v + (1 − u)(1 − v)·(e^(α + γ − β) − 1), here with β = (α^θ + γ^θ)^(1/θ).
+    α + γ − β = −(α + γ)·(S^(1/θ) − 1) with S = w^θ + (1 − w)^θ, w = α/(α + γ). Near θ = 1, S − 1 =
+    w·(w^(θ−1) − 1) + (1 − w)·((1 − w)^(θ−1) − 1) keeps its digits; for a large θ, S is small and
+    ln S is taken by log-sum-exp instead.
+    """
+    alpha, gamma = -math.log1p(-u), -math.log1p(-v)
+    total = alpha + gamma
+    # The smaller weight from its own ratio, the larger as 1 − it: the larger one rounds to 1 when
+    # the other is below 2⁻⁵³, and (1 − w)^(θ−1) − 1 ≈ −(θ − 1)·w is all the answer there is.
+    w = min(alpha, gamma) / total
+    w1 = 1.0 - w
+    lw, lw1 = math.log(w), math.log1p(-w)
+    s_minus_1 = w * math.expm1((theta - 1.0) * lw) + w1 * math.expm1((theta - 1.0) * lw1)
+    if s_minus_1 > -0.5:
+        log_root = math.log1p(s_minus_1) / theta                  # ln S^(1/θ)
+    else:
+        log_root = max(lw, lw1) + math.log1p(math.exp(-theta * abs(lw - lw1))) / theta
+    r = -total * math.expm1(log_root)
+    return u * v + (1.0 - u) * (1.0 - v) * math.expm1(r)
 
 
 def _open_unit(u, out=None):
