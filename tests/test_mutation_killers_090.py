@@ -114,7 +114,8 @@ def test_t_cdf_vec_with_infinite_df_is_the_normal_cdf():
     # kills m00037 (the math.isinf(df) guard in _hill_z_vec) and m00066
     x = np.array([-3.0, -1.0, 0.0, 0.5, 2.0])
     got = S.t_cdf_vec(x, math.inf)
-    assert np.allclose(got, [S.norm_cdf(v) for v in x], rtol=0, atol=1e-16)
+    # a few ulps: the vector path's NumPy ufuncs and the scalar math library round differently on Linux/Windows
+    assert np.allclose(got, [S.norm_cdf(v) for v in x], rtol=1e-14, atol=0)
 
 
 def test_vectorised_normal_functions_on_more_than_one_block():
@@ -559,6 +560,7 @@ def test_a_tool_name_that_is_not_a_name_is_recorded_as_a_repr_of_80_characters()
     assert ledger.entries[0]["tool"] == repr(name[:200])[:80]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits; Windows reports 0o666 for any writable file")
 def test_a_new_ledger_file_gets_the_usual_permissions(tmp_path):
     # kills m00946, m00947 (0o666 before the umask)
     old = os.umask(0o022)

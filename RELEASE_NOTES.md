@@ -76,6 +76,12 @@ files, or let an edited ledger entry pass `verify_chain(expected_head=...)`.
 
 ## Fixed
 
+- **Windows: concurrent ledger writers no longer overwrite each other's lines.** The C runtime's
+  `O_APPEND` on Windows is a seek to the end followed by a write, so two processes appending at
+  once could land on the same offset (CI saw 8 to 13 of 60 entries lost). Each append now holds a
+  byte-range lock on Windows while it reads the tail and writes its line. POSIX appends were
+  already atomic. The one-writer-at-a-time advice stands.
+
 ### Agent tools and MCP
 
 - **An overflowed number is RP304, never `null`.** `option_greeks`, `basel_irb_capital` and

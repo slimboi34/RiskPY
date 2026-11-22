@@ -371,10 +371,12 @@ def test_unparsable_reply_recovers_the_request_id():
     assert mcp_server._unparsable_reply(ValueError("not pydantic")) is None
 
 
-def test_riskpy_mcp_answers_lines_its_parser_rejects():
+def test_riskpy_mcp_answers_lines_its_parser_rejects(tmp_path):
     pytest.importorskip("mcp")
+    # cwd outside the checkout: from the repo root `-m riskpy.mcp_server` imports the uncompiled tree
     proc = subprocess.Popen([sys.executable, "-m", "riskpy.mcp_server"], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1,
+                            cwd=str(tmp_path))
     replies = {}
     reader = threading.Thread(target=lambda: [replies.setdefault(m.get("id"), m)
                                               for m in map(json.loads, proc.stdout)], daemon=True)

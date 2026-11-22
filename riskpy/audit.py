@@ -392,6 +392,35 @@ def _file_key(st: os.stat_result) -> Tuple[int, int, int, int]:
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
+#: Where the Windows append lock sits: one byte far past any real ledger, so the lock (Windows
+#: byte-range locks are mandatory) never blocks a reader of the entries themselves.
+_LOCK_OFFSET = 1 << 62
+
+
+@contextlib.contextmanager
+def _appending(fd: int) -> Iterator[None]:
+    """Hold the ledger for one append: reading the tail and writing the line.
+
+    On POSIX an O_APPEND write is one atomic append, so this does nothing. On Windows the C
+    runtime's O_APPEND is a seek to the end followed by a write, so two processes appending at
+    once can land on the same offset and one line overwrites the other (CI lost 8 to 13 of 60
+    entries). There the append holds a byte-range lock (msvcrt.locking retries for about 10 s,
+    then raises OSError, which is recorded as a failure like any other write error).
+    """
+    if os.name != "nt":
+        yield
+        return
+    import msvcrt
+
+    os.lseek(fd, _LOCK_OFFSET, os.SEEK_SET)
+    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+    try:
+        yield
+    finally:
+        os.lseek(fd, _LOCK_OFFSET, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+
+
 def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
     while view:
@@ -522,15 +551,16 @@ class Ledger:
             flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0)
             fd = os.open(self.path, flags, 0o666)
             try:
-                seq, prev, ends_with_newline = self._tail_info()
-                entry = {"seq": seq + 1, **entry, "prev": prev}
-                entry["digest"] = digest(entry)
-                line = (json.dumps(entry, ensure_ascii=True, allow_nan=False) + "\n").encode("ascii")
-                # A torn last line (a crash or a full disk mid-write) gets its newline back first, so this
-                # entry stays a line of its own. Newline and entry go in one O_APPEND write (the loop only
-                # continues a short write), so the line lands whole at the end of the file.
-                _write_all(fd, line if ends_with_newline else b"\n" + line)
-                self._tail_cache = (_file_key(os.fstat(fd)), entry["seq"], entry["digest"], True)
+                with _appending(fd):
+                    seq, prev, ends_with_newline = self._tail_info()
+                    entry = {"seq": seq + 1, **entry, "prev": prev}
+                    entry["digest"] = digest(entry)
+                    line = (json.dumps(entry, ensure_ascii=True, allow_nan=False) + "\n").encode("ascii")
+                    # A torn last line (a crash or a full disk mid-write) gets its newline back first, so
+                    # this entry stays a line of its own. Newline and entry go in one O_APPEND write (the
+                    # loop only continues a short write), so the line lands whole at the end of the file.
+                    _write_all(fd, line if ends_with_newline else b"\n" + line)
+                    self._tail_cache = (_file_key(os.fstat(fd)), entry["seq"], entry["digest"], True)
             finally:
                 os.close(fd)
             self.entries.append(entry)

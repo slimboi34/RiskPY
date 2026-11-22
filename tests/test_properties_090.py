@@ -197,8 +197,9 @@ def test_vectorised_special_functions_agree_with_scalar(a, df, seed):
     xs = a * 10.0 ** rng.uniform(-3, 1, size=40)
     for x, p, q in zip(xs, S.gammainc_vec(a, xs), S.gammaincc_vec(a, xs)):
         sp, sq = S.gammainc(a, x), S.gammaincc(a, x)
-        assert abs(p - sp) <= 1e-13 * max(sp, 1e-300) or abs(p - sp) < 1e-300
-        assert abs(q - sq) <= 1e-13 * max(sq, 1e-300) or abs(q - sq) < 1e-300
+        # 1e-11: NumPy's SIMD exp/log (Linux) and the scalar math library differ by ~3e-13 in deep tails
+        assert abs(p - sp) <= 1e-11 * max(sp, 1e-300) or abs(p - sp) < 1e-300
+        assert abs(q - sq) <= 1e-11 * max(sq, 1e-300) or abs(q - sq) < 1e-300
     ts = rng.choice([-1, 1], size=40) * 10.0 ** rng.uniform(-8, 5, size=40)
     for t, v in zip(ts, S.t_cdf_vec(ts, df)):
         s = S.t_cdf(t, df)
