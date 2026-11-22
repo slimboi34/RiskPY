@@ -1,7 +1,7 @@
 # RiskPY v0.9.0 — Release Notes
 
-**Release date:** not yet released (prepared 2026-11-21)  
-**Type:** Minor release — the compiled core is rewritten in Rust. Seeded Monte Carlo results change, and two inputs are now refused; see Changed  
+**Release date:** not yet released (prepared 2026-11-21; machine-testing fixes 2026-11-22)  
+**Type:** Minor release — the compiled core is rewritten in Rust, and the 21 defects that machine-driven testing found in 0.8.0 are fixed or documented. Seeded Monte Carlo results change, and some inputs are now refused; see Changed  
 **Install:** `pip install -U open-riskpy`
 
 ---
@@ -33,8 +33,135 @@ the same classes, methods, argument names, defaults, conversions and exceptions,
   toolchain instead of a C++ compiler, CMake, pybind11 and OpenXLSX.
 - **Speed.** Six of the eight measured workloads are faster, from 1.15× to 2.56×; two are
   slower, at 0.82× and 0.87×. See Speed.
+- **Machine-driven testing of 0.8.0.** About 270,000 schema-driven tool calls, in process and
+  over MCP stdio, with coverage-guided fuzzing; 890,198 byte and line tamper edits of audit
+  ledgers; numerics against 40–50-digit mpmath oracles and closed forms; and 2,207 mutants on
+  the 2,790 lines 0.8.0 changed. It confirmed 21 defects: none critical or high, 5 medium, 16
+  low. All 21 are fixed here, except one documented as a limit (a ledger whose numbers another
+  JSON tool re-spells). Every repro script exits 0 against this build but that one. The
+  campaign's 162 property tests and 192 mutation-killing tests are in the suite. See Security
+  and Fixed.
 
 Measurements, scripts and tables: `benchmarks/rust_core/` (RESULTS.md).
+
+---
+
+## Security
+
+From the machine testing of 0.8.0. Nothing found was memory-unsafe, gave an agent access to
+files, or let an edited ledger entry pass `verify_chain(expected_head=...)`.
+
+- **One agent call could disable the audit check.** A `scenario_table` scenario that
+  overrides an argument with an integer beyond float range (one JSON number, `10**400`) is
+  refused, and its overrides are echoed in the successful result. The ledger stored the
+  integer exactly and verified, but `audit.replay`, `report(check=True)`, `status(check=True)`
+  and `riskpy_audit(check=true)` then failed on it with OverflowError (RP304 or RP900) for
+  every later check of that ledger. Replay now compares integers exactly, and any entry that
+  cannot be replayed is skipped with the reason instead of stopping the replay.
+- **`audit.record()` in two threads mixed up the evidence.** The active ledger was one
+  process-wide value that each block saved and restored. With two threads each in their own
+  block, a call landed in the other thread's ledger or in none, and a ledger stayed active
+  after its block and recorded calls made outside every block. Each thread (and asyncio task)
+  now has its own innermost block; see Changed.
+- **Meta-tools ran unrepeatable simulations.** `scenario_table` checked the seed only in the
+  base arguments, so a scenario `{"seed": 0}` drew fresh numbers; `sensitivity` accepted
+  `parameter="seed"`, whose down run was seed 0. The numbers were sampling noise, and replay
+  reported drift on a ledger nobody had touched. Both are refused now (RP113 and RP108), and
+  replay skips such calls in ledgers written by 0.8.
+- **`capital_allocation` at its own limit took about 10 s and 0.6–0.8 GB per call**, and
+  `riskpy-mcp` runs calls concurrently. `LIMITS["capital_cells"]` drops from 2 × 10⁷ to
+  5 × 10⁶: about 2 s and at most 250 MB at the new limit (20 lines × 250,000 trials with the
+  Gaussian, t and Gumbel copulas, measured on the same Apple M4, its speed normalised by the
+  repository's own capital benchmark). The meta-tools' work budget uses the same limit.
+
+## Fixed
+
+### Agent tools and MCP
+
+- **An overflowed number is RP304, never `null`.** `option_greeks`, `basel_irb_capital` and
+  `merton` built their JSON themselves, so `call()`'s finite check saw `null` where a number
+  had overflowed, and the call succeeded with missing fields (`black_scholes` with the same
+  inputs said RP304). Every tool that builds its own JSON now runs the check first, and the
+  check looks inside dataclasses and NumPy values. `merton` names `assets` when its leverage
+  overflows.
+- **A `null` that is null by construction says why.** `merton`'s `distance_to_default` is
+  ±infinite when σ√T is zero: it is `null`, with `"deterministic": true` and a `note`.
+  `mack_chain_ladder` refused a fully developed triangle (reserve 0) with a false RP304,
+  because `total_cv` = `total_se / total_reserve` is NaN there by design; it now answers with
+  `total_cv` `null` and a `note`. `chain_ladder` already answered.
+- **`black_scholes(explain=true)` never refuses a price `explain=false` gives.** For a tiny
+  σ√T, d1 is legitimately −inf, and the whole answer was refused with RP304. Diagnostics that
+  are not finite are now `null`, named in `explain.degenerate`.
+- **Coded errors with the parameter named**, for the four that were bare:
+  - `black_scholes`, `option_greeks` and `merton` with a σ√T that underflows to 0 (σ = 5e-324,
+    T = 1e-4) divided by zero. They now price the discounted intrinsic value, as at σ = 0.
+  - `aggregate_loss` with `severity_sd` so small that the lognormal σ is 0 got the core's bare
+    "Severity sigma must be strictly positive" (RP100, no parameter); the Rust core raises the
+    same as the C++ did. The tool now refuses it first: RP102, `severity_sd`. Any other
+    refusal from the core is mapped to the argument it concerns.
+  - `sensitivity` with a base value too large for a float: RP405 naming the parameter, not
+    RP304 "int too large to convert to float".
+  - `short_rate_zero_bond` with CIR and a tiny `kappa` and `sigma` (1e-170) divided by zero. It
+    now prices the limit, e^(−rτ).
+- **`riskpy-tools trace`** no longer dies with a RecursionError traceback on a trace-file line
+  nested 100,000 deep; the line is skipped, as documented.
+- **`riskpy-mcp` answers a request its SDK's parser drops.** The MCP SDK's stdio transport
+  (2.3.0) refuses a lone surrogate escape (`"\ud800"`) or nesting deeper than about 200, which
+  Python's parser and most clients accept, and drops the line without a reply, so the client
+  waited forever. The server now recovers the request id from the parse error and answers
+  `-32700 Parse error` (or `-32600 Invalid Request` for valid JSON that is not JSON-RPC), and
+  carries on.
+
+### Numerics
+
+- **`Model.stress`: a formula that changes an input in place corrupted every scenario.**
+  `claims -= deductible` applied the deductible twice in each scenario, because every scenario
+  was built from the arrays the base run's formula had changed, and the base's `inputs` held
+  the formula's scratch values. The formula now gets the draws read-only and, if it writes
+  into one, is run again on copies. `Model.run` and `simulate` protect the draws the same way.
+  Formulas that do not write into their inputs cost nothing extra.
+- **`joint_exceedance` keeps its digits for every copula** (`copula_dependence` too). It was
+  1 − 2q + C(q, q) for all but the plain Gumbel, which cancels: at q = 1 − 1e-9 a near-
+  independent copula gave 0, a Frank copula with θ = 1e-6 was "2.22× independent" at
+  q = 1 − 1e-8, and `GaussianCopula(−0.7)` gave 5.55e-16 for 3.0e-17 at 0.999. It is now
+  C(1 − q, 1 − q) for the Gaussian, t, Frank and survival copulas and a sum of non-negative
+  terms for Clayton and Gumbel. Worst error against 50-digit mpmath: 6.2e-13 Gaussian, 5.3e-14
+  t, 3.3e-14 or better for the Archimedean families. The Gaussian and t CDFs integrate to a
+  relative tolerance, so their corner values keep their digits too.
+- **`FrankCopula` at a tiny θ.** For |θ| below about 1e-160 the CDF was 0 (or min(u, v) for
+  θ < 0) instead of uv. It is now uv to rounding for a tiny θ, at any non-zero θ down to
+  5e-324, and a negative θ keeps relative precision in the corner. So do the survival Clayton
+  and Gumbel CDFs.
+- **`GaussianCopula.cdf`** stays within both Fréchet bounds and is monotone. At strong
+  negative correlation it fell up to 3e-14 below u + v − 1 and was not monotone along a row.
+- **`Bond.yield_to_maturity`** raised a bare OverflowError for annual bonds longer than 154
+  years (520 semi-annual): the price at its −99% lower bracket overflowed. That price now
+  counts as infinite, and a price beyond double precision is RP304 naming `ytm`.
+- **`norm_ppf` is machine precision near p = 0.5, as documented.** It was 1.1e-9 relative for
+  |p − 0.5| below 1e-7, though never more than 1.3e-16 absolute. The central band
+  ¼ < p < ¾ now refines with a Newton step on erf: within 6e-16 relative of 40-digit mpmath
+  down to |p − 0.5| = 1e-16, at the same speed.
+- **CIR bond prices for a small κτ.** Found while fixing the tiny-`kappa` error above: two
+  cancellations lost digits when κτ and σ were small, up to 1.1e-4 relative at κ = 1.3e-14
+  and 1.3e-9 at κ = 1e-8, σ = 1e-9, τ = 10. γ is now a hypot and B and ln A are written
+  without cancellation: within 2.3e-15 of 120-digit mpmath over 1,506 random cases with κ from
+  1e-14 to 10, σ from 0 to 0.3 and τ from 1e-4 to 100.
+
+### Audit ledger
+
+- **Replay of a call refused for an over-long tool name** reported false drift: the ledger
+  keeps such a name as a clipped repr, which replays as an unknown name (RP401, not RP405). It
+  is skipped with the reason.
+- **Replay of a `scenario_table` with a tuple or bytearray override** reported false drift:
+  the refused scenario's message quotes the value's repr, and the ledger stores a tuple as a
+  list. A scenario refused inside a successful `scenario_table` is now compared by its error
+  code, as a refused call is, and a bytearray is echoed like bytes.
+- **`verify_chain` names the position of a line without a digest**, not the `seq` the line
+  claims for itself (a foreign `{"seq": 999}` at line 2 was "BROKEN at entry 999").
+- **A file ledger that has recorded nothing yet** (its file is created by the first entry) is
+  an empty, intact ledger for `verify_chain`, `replay` and `report`, as `ledger.head` and the
+  status already said. They raised RP505. A path given as a string that does not exist is
+  still RP505.
 
 ---
 
@@ -113,6 +240,45 @@ Measurements, scripts and tables: `benchmarks/rust_core/` (RESULTS.md).
   `ValueError("Periods must be non-negative")`. With a NaN or infinite `payment` they
   raise `ValueError("Payment must be finite")`. These were 0.8.0's known limit.
 
+### From the machine testing of 0.8.0
+
+- **New refusals.**
+  - `scenario_table`: a scenario that sets `seed` to 0 (or 0.0, or null) for a simulation,
+    RP113 on `scenarios`, before anything runs.
+  - `sensitivity`: `parameter="seed"`, RP108 on `parameter`.
+  - `capital_allocation`: more than 5 × 10⁶ trials × lines, RP405 (it was 2 × 10⁷). Six lines
+    of 1,000,000 trials are now refused; five are not.
+  - `aggregate_loss`: a `severity_sd` whose lognormal σ underflows is RP102 on `severity_sd`
+    (it was RP100 with no parameter).
+  - `merton` whose leverage overflows is RP304 on `assets`, and `option_greeks` /
+    `basel_irb_capital` with an overflowed number are RP304; 0.8.0 answered `null` for them.
+- **New fields.** `merton`: `"deterministic": true` and `note` when the distance to default is
+  infinite. `mack_chain_ladder`: `note` when `total_cv` is null. `black_scholes` with
+  `explain=true`: `explain.degenerate` when a diagnostic is null.
+- **`riskpy-mcp`** sends `-32700` / `-32600` error responses for request lines its SDK
+  cannot parse (above). It serves through the SDK's own stdio transport as before; only the
+  read stream is wrapped.
+- **`audit.record()` is per thread.** A call is recorded to the innermost block of the thread
+  (or asyncio task) making it; for a thread with no block of its own, such as a worker
+  started inside a block, to the most recently entered block still open; then `start()`'s
+  ledger; then `RISKPY_AUDIT_FILE`. Single-threaded code, and workers started inside one
+  block, record exactly as before. `audit.stop()` no longer ends an open `record()` block.
+- **`verify_chain`'s `broken_at`** is always the line's position.
+- **Results that move.**
+  - `joint_exceedance` and the copula CDFs: wherever 0.8.0 lost digits (above); elsewhere by
+    rounding.
+  - The Gaussian and t copula CDFs and joint exceedance take about 0.1–2.3 ms instead of
+    0.02–0.25 ms (up to about 7 ms in extreme corners; one integral is capped at 40,000
+    evaluations, about 40 ms). Nothing loops over them;
+    `copula_dependence` calls them once.
+  - `norm_ppf` in ¼ < p < ¾: by at most 1.3e-16 absolute. Through it, `mc.Normal` and
+    `mc.LogNormal` quantiles and LHS or copula runs that use them move by rounding.
+  - CIR prices and curves: by rounding for ordinary parameters; by up to 1.1e-4 relative where
+    κτ was tiny (above).
+  - Seeded `capital_allocation` results: the copula fixes change none of them (SHA-256 of
+    seven seeded results, one per copula, before and after). The `norm_ppf` change moves one
+    of the seven, the t copula's, by 1.6e-16 relative.
+
 ### ExcelExporter
 
 - **What the C++ core did with templates: nothing.** `ExcelExporter(template=...)` stored
@@ -181,9 +347,28 @@ Measurements, scripts and tables: `benchmarks/rust_core/` (RESULTS.md).
 
 ## Verified
 
-- **Test suite:** 1,596 passed on CPython 3.12 with every extra, including the MCP SDK.
-  0.8.0 passes 1,568 in the same environment; the new 28 are in
-  `tests/test_rust_core.py`. In a fresh 3.13 venv with numpy, scipy, pandas, pytest,
+- **Test suite:** 2,115 passed on CPython 3.12 with every extra, including the MCP SDK. The
+  Rust core itself brought 28 new tests (`tests/test_rust_core.py`; 1,596 then, against
+  0.8.0's 1,568). The machine-testing fixes add 519:
+  - `tests/test_properties_090.py`, 162: the campaign's property tests. Its 30 strict xfails
+    (findings 1–14 and 16–20) all pass now; finding 20's is rewritten to pin the documented
+    limit.
+  - `tests/test_mutation_killers_090.py`, 192.
+  - `tests/test_capital_090.py`, 125: the copula fixes against hard-coded mpmath values.
+  - `tests/test_fixes_090.py`, 40: the rest of the fixes, including `riskpy-mcp` over stdio.
+- **Machine-testing repros:** of the 21 repro scripts, 20 exit 0 against this build. The
+  one that does not, for finding 20, accepts a docs change as the fix. The property file also
+  passed as a 10× randomized campaign (`RISKPY_PROPS_CAMPAIGN=10`, 157 tests). Five tests were
+  left out of that run: they cover the Student-t, gamma, beta and chi-square functions, which
+  this release does not touch, and their mpmath oracles take too long at 10×.
+- **Golden values:** the mutation-killing tests carry seeded values computed on 0.8.0. All of
+  them come from `riskpy.mc` and `riskpy.capital`, which draw from NumPy's Generator in pure
+  Python, so the Rust core does not change them. To check that none depends on the core's
+  stream, both campaign files were run with every `MonteCarloSimulator` seed permuted: all
+  pass, with 123 simulations through the permuted stream. Two values pinned 0.8.0 behaviour
+  that 0.9.0 changes on purpose: `LIMITS["capital_cells"]` and the `broken_at` of a line
+  without a digest. One assertion in `tests/test_capital.py` pinned a cancelled 0.0: Frank
+  θ = −499 at 0.995 is 4.8006269031779e-218, checked against a 600-digit evaluation. In a fresh 3.13 venv with numpy, scipy, pandas, pytest,
   hypothesis, mpmath and matplotlib (no MCP SDK), the same abi3 wheel passes 1,591 and
   skips 5.
 - **Python 3.10:** 1,585 pass and 6 fail in `test_capital` / `test_refine_capital`.
@@ -249,12 +434,39 @@ machine was measured.
   have not been through it, and CI does not check formatting.
 - **Still open from 0.8.0:** every item in 0.8.0's Known limits except the C++ core item,
   which is fixed here.
+- **A ledger whose numbers are re-spelled no longer verifies** (machine-testing finding 20,
+  documented rather than changed). The digest covers Python's spelling of numbers, so a ledger
+  passed through a tool that writes `9.0` as `9` fails `verify`, though no value changed:
+  JavaScript's `JSON.parse` / `JSON.stringify`, Go's `interface{}` decoding, jq 1.6. Spacing,
+  key order and escapes do not matter, and Python's `json` and jq 1.7+ keep the spelling.
+  - A number-normalising canonical form would fix it, and could keep 0.7 and 0.8 ledgers
+    verifying by accepting the old form too.
+  - But every ledger written that way would then fail `verify` under RiskPY 0.8, and under any
+    other verifier written to the documented format. That is the same false alarm, for the
+    commoner case of an auditor on an older install.
+  - So the format is unchanged and docs/audit.md now says which tools are safe. A versioned
+    digest field would be the way to change it later.
+- **Unanswerable MCP lines.** `riskpy-mcp` answers a request whose id it can read from the
+  SDK's parse error. A line that is not JSON at all, or valid JSON whose `method` is not a
+  string, still gets no reply. The SDK should answer `-32700` itself: an issue for the MCP
+  Python SDK, not filed from here. The fix overrides `MCPServer.run_stdio_async` and uses
+  its `_lowlevel_server`; an SDK without that attribute is served exactly as the SDK would.
+- **Blocks open in several threads.** A thread with no `record()` block of its own records to
+  the most recently entered block, which is not necessarily the one that started it: Python
+  does not track which thread started which. Run a worker in a copy of its block's context
+  (`contextvars.copy_context().run`) to tie it to that block.
+- **`capital_allocation` still costs about 0.4 µs a cell**, most of it in the per-element
+  normal CDF and quantile. The limit was lowered rather than the cost cut.
+- **The campaign itself ran against 0.8.0.** Every finding was re-checked on this build with
+  its repro and its test, and the property tests ran at 1× and (all but five) at 10×, but the 270,000-call fuzz
+  and the tamper and mutation campaigns were not re-run in full on the Rust core.
 
 ## Upgrading
 
 `pip install -U open-riskpy`. Code that pinned a seeded `MonteCarloSimulator` result, or a
 seeded `aggregate_loss` tool result, gets new numbers: compare against the distribution,
-or re-pin. Tolerance-based checks are unaffected. To build from a checkout, install Rust
+or re-pin. An agent that ran `capital_allocation` above 5 × 10⁶ trials × lines must lower
+`trials`; one that reseeded scenarios with 0 should leave `seed` out of them. Tolerance-based checks are unaffected. To build from a checkout, install Rust
 with [rustup](https://rustup.rs), then `pip install .`; CONTRIBUTING.md has the details.
 
 ---
