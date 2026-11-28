@@ -27,7 +27,7 @@ getrandom = "0.4.3"
 # zip's other codecs, encryption or time features.
 zip = { version = "9.8.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # abi3-py310: one wheel per platform for CPython 3.10 and later.
-pyo3 = { version = "0.29.3", features = ["abi3-py310"] }
+pyo3 = { version = "0.30.1", features = ["abi3-py310"] }
 
 [profile.release]
 opt-level = 3
